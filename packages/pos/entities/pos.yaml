@@ -1,0 +1,359 @@
+- name: ModeOfPaymentAccount
+  label: Mode of Payment Account
+  kind: child
+  fields:
+    - {name: company, type: link, to: Company, required: true, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+
+- name: ModeOfPayment
+  label: Mode of Payment
+  label_plural: Modes of Payment
+  kind: master
+  module: pos
+  title_field: mode_name
+  fields:
+    - {name: mode_name, type: data, required: true, unique: true, in_list: true}
+    - name: mode_type
+      type: select
+      options: [Cash, Bank, General, Credit, Loyalty Points]
+      required: true
+      default: Cash
+      in_list: true
+      in_filter: true
+      description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points."
+    - {name: accounts, type: table, of: ModeOfPaymentAccount, label: Accounts per Company, description: "Empty: Cash uses the company cash account, Bank the company bank account"}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [mode_name, mode_type], sort: mode_name asc}
+
+- name: ItemBarcode
+  label: Item Barcode
+  kind: master
+  module: pos
+  title_field: barcode
+  description: Extra barcodes of an item (pack barcodes, supplier codes). The item's own barcode and item code scan too.
+  fields:
+    - {name: barcode, type: data, required: true, unique: true, max_length: 64, in_list: true}
+    - {name: item, type: link, to: Item, required: true, on_delete: cascade, in_list: true, in_filter: true}
+    - {name: uom, type: link, to: Uom, label: Pack Unit, description: "Informational (e.g. Box); invoices use the item's stock unit"}
+    - {name: qty, type: decimal, default: 1, min: "0.000000001", label: Units per Scan, in_list: true, description: Stock units one scan adds (12 for a box of 12)}
+  list: {columns: [barcode, item, qty], sort: barcode asc}
+
+- name: PosProfileUser
+  label: POS Profile User
+  kind: child
+  fields:
+    - {name: user, type: email, required: true, label: User Email, in_list: true}
+
+- name: PosProfilePayment
+  label: POS Payment Method
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+    - {name: is_default, type: check, label: Default, in_list: true}
+    - {name: allow_in_returns, type: check, default: true, in_list: true}
+
+- name: PosItemGroup
+  label: POS Item Group
+  kind: child
+  fields:
+    - {name: item_group, type: link, to: ItemGroup, required: true, in_list: true}
+
+- name: PosCustomerGroup
+  label: POS Customer Group
+  kind: child
+  fields:
+    - {name: customer_group, type: link, to: CustomerGroup, required: true, in_list: true}
+
+- name: PosProfile
+  label: POS Profile
+  kind: master
+  module: pos
+  title_field: profile_name
+  company_scoped: true
+  description: A register (or a group of registers) and its rules.
+  fields:
+    - {name: profile_name, type: data, required: true, unique: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_list: true, in_filter: true}
+    - {name: warehouse, type: link, to: Warehouse, required: true, link_filters: {is_group: false}, in_list: true, description: Stock leaves (and returns come back to) this warehouse}
+    - {name: price_list, type: link, to: PriceList, link_filters: {selling: true}, description: Empty = the default selling price list}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
+    - {name: customer, type: link, to: Customer, label: Default Customer, description: The walk-in customer used when the cashier picks none}
+    - {name: tax_template, type: link, to: TaxTemplate, link_filters: {kind: Sales}, description: Empty = the company's default sales template}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: invoice_prefix, type: data, default: POS, max_length: 12, description: "Invoice numbers are PREFIX-<fiscal year>-000001, gapless per prefix; give each register its own"}
+    - {name: payments, type: table, of: PosProfilePayment, required: true, label: Payment Methods}
+    - {name: users, type: table, of: PosProfileUser, label: Allowed Users, description: Empty = anyone with the Cashier role}
+    - {name: write_off_account, type: link, to: Account, link_filters: {is_group: false}, description: Small unpaid differences; defaults to the company round-off account}
+    - {name: write_off_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: write_off_limit, type: currency, default: 0, min: "0", description: Largest unpaid difference written off automatically}
+    - {name: cash_difference_account, type: link, to: Account, link_filters: {is_group: false}, description: Shortages and excesses found when counting at closing; defaults to the company round-off account}
+    - {name: allow_negative_stock, type: check, description: Sell even when the system shows no stock}
+    - {name: allow_discount_change, type: check, description: Cashiers may give discounts up to Max Discount %}
+    - {name: max_discount, type: percent, min: "0", max: "100", label: Max Discount %}
+    - {name: allow_rate_change, type: check, description: Cashiers may type a different price}
+    - {name: item_groups, type: table, of: PosItemGroup, label: Item Groups Shown, description: Empty = all}
+    - {name: customer_groups, type: table, of: PosCustomerGroup, label: Customer Groups Allowed, description: Empty = all}
+    - {name: print_format, type: select, options: [Thermal 80mm, Thermal 58mm, A4], default: Thermal 80mm}
+    - {name: receipt_header, type: text}
+    - {name: receipt_footer, type: text}
+    - {name: disabled, type: check, in_filter: true}
+  form:
+    - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
+    - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
+    - {label: Cashier Rights, fields: [users, allow_negative_stock, allow_discount_change, max_discount, allow_rate_change]}
+    - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
+  rules:
+    - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
+  list: {columns: [profile_name, company, warehouse], sort: profile_name asc}
+
+- name: PosOpeningBalance
+  label: POS Opening Balance
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+    - {name: opening_amount, type: currency, default: 0, min: "0", in_list: true}
+
+- name: PosOpeningEntry
+  label: POS Opening Entry
+  label_plural: POS Opening Entries
+  kind: document
+  module: pos
+  submittable: true
+  company_scoped: true
+  title_field: user
+  owner_fields: [user]
+  numbering: {template: "POS-OPEN-{FY}-{seq:5}", date_field: posting_date}
+  description: A cashier's session at a register, from opening float to closing count.
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, required: true, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_profile.company, read_only: true, in_filter: true}
+    - {name: user, type: email, label: Cashier, in_list: true, in_filter: true, description: Defaults to you; only a POS Manager opens sessions for others}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: period_start, type: datetime, read_only: true, no_copy: true, label: Opened At}
+    - {name: period_end, type: datetime, read_only: true, no_copy: true, label: Closed At}
+    - {name: balance_details, type: table, of: PosOpeningBalance, label: Opening Balances}
+    - {name: status, type: select, options: [Draft, Open, Closed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
+    - {name: open_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: Set while open; the unique index allows one open session per profile and cashier}
+    - {name: remarks, type: text}
+  list: {columns: [number, pos_profile, user, posting_date, status], sort: created_at desc}
+
+- name: PosInvoiceItem
+  label: POS Invoice Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, in_list: true, description: Negative on returns}
+    - {name: price_list_rate, type: currency, read_only: true, label: Price}
+    - {name: manual_rate, type: currency, min: "0", label: Price Override, description: Price typed by the cashier (needs Allow Rate Change on the profile)}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: base_net_amount, type: currency, read_only: true}
+    - {name: income_account, type: link, to: Account, read_only: true}
+    - {name: cost_center, type: link, to: CostCenter, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, read_only: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text, description: One serial number per line}
+    - {name: original_line, type: data, label: Returned Line, description: "Returns: id of the sold line (found automatically when the item appears once on the original)"}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: PosInvoicePayment
+  label: POS Payment
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+    - {name: mode_type, type: data, fetch_from: mode_of_payment.mode_type, read_only: true}
+    - {name: amount, type: currency, in_list: true, description: Tendered amount (negative on returns); computed for loyalty points}
+    - {name: loyalty_points, type: int, min: 0, description: Points redeemed with the Loyalty Points mode}
+    - {name: account, type: link, to: Account, read_only: true}
+    - {name: reference_no, type: data, label: Reference, description: "Card approval code, UPI reference..."}
+
+- name: PosInvoice
+  label: POS Invoice
+  kind: document
+  module: pos
+  submittable: true
+  company_scoped: true
+  title_field: customer_name
+  numbering: {template: "{field:invoice_prefix}-{FY}-{seq:6}", gapless: true, on: submit, date_field: posting_date}
+  search_fields: [cashier]
+  owner_fields: [cashier]
+  description: A sale (or return) at the register. Stock moves on submit; revenue, taxes and payments reach the books when the session closes.
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, required: true, in_filter: true}
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, label: Session, in_filter: true, description: Empty = your open session at this profile}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_profile.company, read_only: true, in_filter: true}
+    - {name: invoice_prefix, type: data, fetch_from: pos_profile.invoice_prefix, read_only: true, hidden: true}
+    - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true}
+    - {name: customer, type: link, to: Customer, in_filter: true, description: Empty = the profile's default customer}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, description: "HH:MM:SS of the sale on the device (UTC); empty = now"}
+    - {name: is_return, type: check, in_filter: true}
+    - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return", required_if: "doc.is_return"}
+    - {name: currency, type: link, to: Currency, read_only: true}
+    - {name: conversion_rate, type: decimal, default: 1, read_only: true}
+    - {name: price_list, type: link, to: PriceList, read_only: true}
+    - {name: tax_template, type: link, to: TaxTemplate, read_only: true}
+    - {name: cost_center, type: link, to: CostCenter, read_only: true}
+    - {name: set_warehouse, type: link, to: Warehouse, read_only: true, label: Warehouse}
+    - {name: items, type: table, of: PosInvoiceItem, required: true}
+    - {name: taxes, type: table, of: TaxRow, read_only: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100", label: Additional Discount %}
+    - {name: total, type: currency, currency: currency, read_only: true}
+    - {name: discount_amount, type: currency, currency: currency, read_only: true}
+    - {name: net_total, type: currency, currency: currency, read_only: true}
+    - {name: total_taxes, type: currency, currency: currency, read_only: true}
+    - {name: grand_total, type: currency, currency: currency, read_only: true}
+    - {name: rounding_adjustment, type: currency, currency: currency, read_only: true}
+    - {name: rounded_total, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: base_net_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: base_rounded_total, type: currency, read_only: true}
+    - {name: payments, type: table, of: PosInvoicePayment}
+    - {name: paid_amount, type: currency, currency: currency, read_only: true}
+    - {name: change_amount, type: currency, currency: currency, read_only: true, description: Cash handed back}
+    - {name: write_off_amount, type: currency, currency: currency, read_only: true}
+    - {name: loyalty_program, type: link, to: LoyaltyProgram, read_only: true, no_copy: true}
+    - {name: loyalty_points_earned, type: int, read_only: true, no_copy: true}
+    - {name: loyalty_points_redeemed, type: int, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, Paid, Unpaid, Return, Consolidated, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: consolidated_invoice, type: link, to: SalesInvoice, read_only: true, no_copy: true}
+    - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
+    - {name: remarks, type: text}
+  form:
+    - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, cashier]}
+    - {label: Items, fields: [items, discount_percent]}
+    - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
+    - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}
+    - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
+  rules:
+    - {name: time_format, check: "doc.posting_time == null || doc.posting_time.matches('^[0-2][0-9]:[0-5][0-9](:[0-5][0-9])?$')", message: "Posting time must be HH:MM or HH:MM:SS"}
+  list: {columns: [number, customer_name, posting_date, rounded_total, status], sort: created_at desc}
+
+- name: PosCashMovement
+  label: POS Cash Movement
+  kind: document
+  module: pos
+  submittable: true
+  company_scoped: true
+  numbering: {template: "POS-CASH-{FY}-{seq:5}", date_field: posting_date}
+  owner_fields: [cashier]
+  description: Cash put into or taken out of a drawer during a session (float top-up, petty cash payout).
+  fields:
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, required: true, label: Session, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_opening_entry.company, read_only: true, in_filter: true}
+    - {name: cashier, type: data, fetch_from: pos_opening_entry.user, read_only: true, in_list: true}
+    - {name: movement_type, type: select, options: [Cash In, Cash Out], required: true, default: Cash In, in_list: true, in_filter: true}
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, description: Empty = the register's cash mode}
+    - {name: amount, type: currency, required: true, min: "0.000000001", in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, label: Counter Account, description: "Cash In: where the money came from (safe, bank); Cash Out: what it paid for (an expense)"}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: reason, type: text, required: true}
+  list: {columns: [number, movement_type, amount, posting_date], sort: created_at desc}
+
+- name: PosClosingPayment
+  label: POS Closing Payment
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+    - {name: opening_amount, type: currency, read_only: true, in_list: true}
+    - {name: expected_amount, type: currency, read_only: true, in_list: true}
+    - {name: closing_amount, type: currency, label: Counted, in_list: true, description: What is in the drawer or on the terminal report (empty = as expected)}
+    - {name: difference, type: currency, read_only: true, in_list: true}
+
+- name: PosClosingDenomination
+  label: Cash Denomination
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, description: Empty = the register's cash mode}
+    - {name: denomination, type: currency, required: true, min: "0.000000001", in_list: true}
+    - {name: count, type: int, required: true, min: 0, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+
+- name: PosClosingEntry
+  label: POS Closing Entry
+  label_plural: POS Closing Entries
+  kind: document
+  module: pos
+  submittable: true
+  company_scoped: true
+  title_field: user
+  owner_fields: [user]
+  numbering: {template: "POS-CLOSE-{FY}-{seq:5}", date_field: posting_date}
+  description: Ends a session; submitting it consolidates the session's POS invoices into sales invoices, credit notes and payment settlements.
+  fields:
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, required: true, label: Session, in_list: true, in_filter: true}
+    - {name: pos_profile, type: link, to: PosProfile, fetch_from: pos_opening_entry.pos_profile, read_only: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_opening_entry.company, read_only: true, in_filter: true}
+    - {name: user, type: email, fetch_from: pos_opening_entry.user, read_only: true, label: Cashier, in_list: true, in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: period_start, type: datetime, fetch_from: pos_opening_entry.period_start, read_only: true}
+    - {name: period_end, type: datetime, read_only: true, no_copy: true}
+    - {name: payments, type: table, of: PosClosingPayment, label: Payment Reconciliation}
+    - {name: denominations, type: table, of: PosClosingDenomination, label: Cash Count}
+    - {name: invoice_count, type: int, read_only: true}
+    - {name: return_count, type: int, read_only: true}
+    - {name: net_total, type: currency, read_only: true}
+    - {name: total_taxes, type: currency, read_only: true}
+    - {name: grand_total, type: currency, read_only: true, in_list: true}
+    - {name: total_difference, type: currency, read_only: true}
+    - {name: status, type: select, options: [Draft, Submitted, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: remarks, type: text}
+  list: {columns: [number, pos_opening_entry, user, posting_date, grand_total, status], sort: created_at desc}
+
+- name: LoyaltyTier
+  label: Loyalty Tier
+  kind: child
+  fields:
+    - {name: tier_name, type: data, required: true, in_list: true}
+    - {name: min_spent, type: currency, default: 0, min: "0", in_list: true, description: Lifetime spend in the program needed to reach this tier}
+    - {name: collection_factor, type: currency, required: true, min: "0.000000001", in_list: true, description: Amount spent per point earned}
+
+- name: LoyaltyProgram
+  label: Loyalty Program
+  kind: master
+  module: pos
+  title_field: program_name
+  company_scoped: true
+  fields:
+    - {name: program_name, type: data, required: true, unique: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: tiers, type: table, of: LoyaltyTier, required: true, label: Collection Tiers}
+    - {name: conversion_factor, type: currency, required: true, min: "0.000000001", description: Value of one point when redeemed}
+    - {name: expiry_days, type: int, default: 0, min: 0, description: Points expire this many days after they are earned (0 = never)}
+    - {name: expense_account, type: link, to: Account, required: true, link_filters: {is_group: false}, description: Debited with the value of redeemed points}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: customer_groups, type: table, of: PosCustomerGroup, label: Applicable Customer Groups, description: Empty = every customer except the walk-in default}
+    - {name: from_date, type: date}
+    - {name: to_date, type: date}
+    - {name: disabled, type: check, in_filter: true}
+  rules:
+    - {name: dates, check: "doc.to_date == null || doc.from_date == null || doc.to_date >= doc.from_date", message: "To date is before from date"}
+  list: {columns: [program_name, company, conversion_factor], sort: program_name asc}
+
+- name: LoyaltyPointEntry
+  label: Loyalty Point Entry
+  label_plural: Loyalty Point Entries
+  kind: master
+  module: pos
+  company_scoped: true
+  description: Points ledger, posted by sales, returns, cancellations and expiry; read-only.
+  fields:
+    - {name: loyalty_program, type: link, to: LoyaltyProgram, required: true, in_list: true, in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: entry_type, type: select, options: [Earn, Redeem, Return, Expire, Cancel], required: true, in_list: true, in_filter: true}
+    - {name: points, type: int, required: true, in_list: true}
+    - {name: remaining, type: int, default: 0, description: Unused points of an earning; redemptions and expiry take the oldest first}
+    - {name: purchase_amount, type: currency, description: Spend counted towards tiers (negative for returns)}
+    - {name: posting_date, type: date, required: true, in_list: true}
+    - {name: expiry_date, type: date, in_list: true}
+    - {name: pos_invoice, type: link, to: PosInvoice, in_filter: true}
+  indexes: [[loyalty_program, customer]]
+  list: {columns: [customer, entry_type, points, posting_date, expiry_date], sort: created_at desc}

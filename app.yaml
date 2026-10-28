@@ -1,0 +1,14 @@
+id: pos
+name: Point of Sale
+version: 0.1.0
+publisher: cbferrum
+summary: Registers, sessions, offline-safe sales with split payments, returns, loyalty and closing into the books
+description: README.md
+categories: [pos, sales]
+license: AGPL-3.0-only
+homepage: https://github.com/CBFerrum/ferrum-app-pos
+support: https://github.com/CBFerrum/ferrum-app-pos/issues
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [pos]
+uninstall: ask
