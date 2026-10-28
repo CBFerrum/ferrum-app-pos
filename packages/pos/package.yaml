@@ -1,0 +1,84 @@
+package: pos
+version: 0.1.0
+label: Point of Sale
+description: Registers and cashier sessions, fast offline-tolerant POS invoices with split payments and returns, loyalty points, cash control, and end-of-day consolidation into sales invoices and the books.
+depends: [core, accounting, inventory, selling]
+
+modules:
+  - name: pos
+    label: POS
+    icon: store
+    order: 45
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode,
+            report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
+            report:pos_returns]
+
+roles:
+  - name: Cashier
+    description: Sells at a register - opens own sessions, rings up sales and returns, records cash movements, counts the drawer.
+    permissions:
+      - {entity: PosInvoice, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
+      - {entity: PosOpeningEntry, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
+      - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
+      - {entity: PosProfile, read: true}
+      - {entity: ModeOfPayment, read: true}
+      - {entity: ItemBarcode, read: true}
+      - {entity: LoyaltyProgram, read: true}
+      - {entity: LoyaltyPointEntry, read: true}
+      - {entity: Customer, read: true, write: true, create: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: PricingRule, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+      - {entity: Account, read: true}
+      - {entity: CostCenter, read: true}
+  - name: POS Manager
+    description: Runs the shop - registers, every session and sale, discounts beyond the cashier limit, voids, closings and consolidation.
+    permissions:
+      - {entity: PosInvoice, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosOpeningEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosProfile, read: true, write: true, create: true, delete: true}
+      - {entity: ModeOfPayment, read: true, write: true, create: true, delete: true}
+      - {entity: ItemBarcode, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: LoyaltyProgram, read: true, write: true, create: true, delete: true}
+      - {entity: LoyaltyPointEntry, read: true, export: true}
+      - {entity: SalesInvoice, read: true}
+      - {entity: Customer, read: true, write: true, create: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: PricingRule, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+      - {entity: Account, read: true}
+      - {entity: CostCenter, read: true}
+
+seed:
+  - entity: ModeOfPayment
+    key: [mode_name]
+    records:
+      - {mode_name: Cash, mode_type: Cash}
+      - {mode_name: Card, mode_type: Bank}
+      - {mode_name: UPI, mode_type: Bank}
+      - {mode_name: Wallet, mode_type: Bank}
+      - {mode_name: Credit, mode_type: Credit}
+      - {mode_name: Loyalty Points, mode_type: Loyalty Points}
+  - entity: Customer
+    key: [customer_name]
+    records:
+      - {customer_name: Walk-in Customer, customer_type: Individual, customer_group: "@CustomerGroup:group_name=Individual"}
