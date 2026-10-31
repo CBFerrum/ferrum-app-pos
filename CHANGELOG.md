@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Installable on its own (Ferrum docs/plan/apps-ui.md §12.5): a till's browser offers to install
+  Point of Sale as an app of its own, which opens `/pos/` in its own window with the till's icon,
+  beside the workspace's app.
+
 ## 0.2.1
 
 - The register's records (lists, forms, reports, apps' screens) load when first opened, so the

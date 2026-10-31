@@ -1,6 +1,6 @@
 id: pos
 name: Point of Sale
-version: 0.2.1
+version: 0.2.2
 publisher: cbferrum
 summary: Registers, sessions, offline-safe sales with split payments, returns, loyalty and closing into the books
 description: README.md
@@ -20,7 +20,7 @@ ui:
   dist: ui/dist
 contributes:
   shell.app:
-    - {id: pos, route: pos, title: Point of Sale, description: "The till, online or offline", icon: store, color: "#ea580c", compact: true, roles: [Cashier, POS Manager]}
+    - {id: pos, route: pos, title: Point of Sale, description: "The till, online or offline", icon: store, color: "#ea580c", compact: true, installable: true, roles: [Cashier, POS Manager]}
   # Registers, sessions, sales, closings and loyalty open in the register's records.
   shell.open:
     - {id: pos, package: pos, path: "pos/e/{entity}/{id}", list: "pos/e/{entity}"}
