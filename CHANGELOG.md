@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.3
+
+- Selling offline prices as the server does with the platform's newer engine (Ferrum-Frontend
+  9ecf5bf, built from Ferrum b5b2d3f, localization.md L0): taxes per unit, reverse charges (shown,
+  not charged) and tax rounding per line. The price book carries each item's stock quantity for
+  one, so a tax per unit (a deposit per bottle on a six-pack) counts stock units offline too.
+- Built with Ferrum-Frontend's current packages: the records frame's pages load when opened, and
+  the till's first script stays within the 200 KB budget (192.8 KB).
+
 ## 0.2.2
 
 - Installable on its own (Ferrum docs/plan/apps-ui.md §12.5): a till's browser offers to install

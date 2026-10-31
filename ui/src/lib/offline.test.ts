@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { engineUrl, loadEngine } from "@ferrum/calc";
-import { downloadBook, priceOffline, scanBook, searchBook, unreachable, type PriceBook } from "./offline";
+import { downloadBook, priceOffline, scanBook, searchBook, times, unreachable, type PriceBook } from "./offline";
 
 const book: PriceBook = {
   profile: "p1",
@@ -17,6 +17,19 @@ const book: PriceBook = {
 };
 
 describe("selling offline", () => {
+  it("counts a per-unit tax in stock units, exactly", async () => {
+    await loadEngine(readFileSync(new URL(engineUrl)));
+    // A six-pack of bottles with a deposit of 0.10 a bottle.
+    const deposit: PriceBook = {
+      ...book,
+      engine: { precision: 2, taxes: [{ key: "dep", charge_type: "on_item_quantity", rate: "0.10" }] },
+      items: [{ id: "i-six", code: "SIX", name: "Six-pack", barcode: null, line: { price: "6.00", tax_qty: "6" } }],
+    };
+    const doc = await priceOffline(deposit, [{ key: "a", item: "i-six", item_name: "Six-pack", qty: 2 }]);
+    expect([doc.total, doc.total_taxes, doc.grand_total]).toEqual(["12.00", "1.20", "13.20"]);
+    expect([times("0.1", "3"), times("1.5", "0.5"), times("-2", "0.25"), times("12", "1")]).toEqual(["0.3", "0.75", "-0.50", "12"]);
+  });
+
   it("prices a cart with the server's engine from the price book", async () => {
     await loadEngine(readFileSync(new URL(engineUrl)));
     const doc = await priceOffline(book, [

@@ -54,8 +54,9 @@ export interface BookItem {
   code: string;
   name: string;
   barcode: string | null;
-  /** The engine's line for one of it: price, line discount, item tax rates. */
-  line: { price: string; discount_percent?: string; tax_rates?: Record<string, string> };
+  /** The engine's line for one of it: price, line discount, item tax rates, and the stock
+   *  quantity per-unit taxes count for one (its unit's conversion). */
+  line: { price: string; discount_percent?: string; tax_rates?: Record<string, string>; tax_qty?: string | null };
 }
 
 export interface PriceBook {
@@ -143,12 +144,32 @@ export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
     .slice(0, limit);
 }
 
+/** `a × b` for decimal strings, exactly (no binary floating point): "0.1" × "3" is "0.3". */
+export function times(a: string, b: string): string {
+  const parse = (x: string) => {
+    const [whole, frac = ""] = x.trim().split(".");
+    return { digits: BigInt(`${whole}${frac}` || "0"), scale: frac.length };
+  };
+  const [x, y] = [parse(a), parse(b)];
+  const scale = x.scale + y.scale;
+  const product = x.digits * y.digits;
+  const sign = product < 0n ? "-" : "";
+  const text = (product < 0n ? -product : product).toString().padStart(scale + 1, "0");
+  return scale ? `${sign}${text.slice(0, -scale)}.${text.slice(-scale)}` : `${sign}${text}`;
+}
+
 /** A cart priced from the book with the server's engine, in the fields the till shows (`_calc`'s). */
 export async function priceOffline(book: PriceBook, lines: { key: string; item: string; item_name: string; qty: number }[]): Promise<Doc> {
   const items = new Map(book.items.map((i) => [i.id, i]));
   const missing = lines.find((l) => !items.has(l.item));
   if (missing) throw new Error(`${missing.item_name} has no price on this device yet: sell it when the connection is back`);
-  const out = await calculate({ ...book.engine, lines: lines.map((l) => ({ key: l.key, qty: String(l.qty), ...items.get(l.item)!.line })) });
+  const out = await calculate({
+    ...book.engine,
+    lines: lines.map((l) => {
+      const { tax_qty, ...line } = items.get(l.item)!.line;
+      return { key: l.key, qty: String(l.qty), ...line, ...(tax_qty ? { tax_qty: times(tax_qty, String(l.qty)) } : {}) };
+    }),
+  });
   return {
     items: lines.map((l, i) => ({ item: l.item, item_name: l.item_name, qty: String(l.qty), rate: out.lines[i].rate, amount: out.lines[i].amount })),
     total: out.total,
