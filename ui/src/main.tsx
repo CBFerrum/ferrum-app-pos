@@ -10,8 +10,7 @@ import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from
 import { engineUrl } from "@ferrum/calc";
 import { routeBase, shell } from "@ferrum/client";
 import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
-import { FormView, ListView, ReportView } from "@ferrum/records";
-import { AppSettingsPage, RequireAuth, ScreenPage, setFrameMode } from "@ferrum/records/frame";
+import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import { RegisterPage } from "./Register";
 import "./styles.css";
 
@@ -73,12 +72,14 @@ const router = createBrowserRouter(
         { index: true, element: <TillPage /> },
         {
           element: <RequireAuth />,
+          // The register's records load when opened (online pages; the till above works
+          // offline), keeping the first script within its budget (apps-ui.md §12.9).
           children: [
-            { path: "e/:entity", element: <ListView /> },
-            { path: "e/:entity/:id", element: <FormView /> },
-            { path: "r/:name", element: <ReportView /> },
-            { path: "apps/:app/settings", element: <AppSettingsPage /> },
-            { path: "x/:app/:page", element: <ScreenPage /> },
+            { path: "e/:entity", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.ListView })) },
+            { path: "e/:entity/:id", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.FormView })) },
+            { path: "r/:name", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.ReportView })) },
+            { path: "apps/:app/settings", lazy: () => import("@ferrum/records/frame").then((m) => ({ Component: m.AppSettingsPage })) },
+            { path: "x/:app/:page", lazy: () => import("@ferrum/records/frame").then((m) => ({ Component: m.ScreenPage })) },
           ],
         },
         { path: "*", element: <NotFound /> },
