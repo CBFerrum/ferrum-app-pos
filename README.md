@@ -5,7 +5,7 @@
   <img alt="Ferrum Point of Sale" src="docs/assets/banner-light.svg" width="100%">
 </picture>
 
-[![CI](https://github.com/CBFerrum/ferrum-app-pos/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-pos/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.2.2-ea580c?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.1%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
+[![CI](https://github.com/CBFerrum/ferrum-app-pos/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-pos/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.2.3-ea580c?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.1%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
 
 **A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, AI-first business platform.**
 
@@ -26,7 +26,7 @@ or the cashier's session, is back; at closing they consolidate into invoices and
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.2.2` |
+| 📦 Version | `0.2.3` |
 | 🧱 Platform | Ferrum `>=0.3.1, <0.4` |
 | 🔗 Requires | erp `>=0.1` |
 | 🖥️ Interface | its own, at `/pos/` |
@@ -296,10 +296,10 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.2.3** | Selling offline prices as the server does with the platform's newer engine (Ferrum-Frontend 9ecf5bf, built from Ferrum b5b2d3f, localization.md … |
 | **0.2.2** | Installable on its own: a till's browser offers to install Point of Sale as an app of its own, which opens `/pos/` in its own window with the … |
 | **0.2.1** | The register's records (lists, forms, reports, apps' screens) load when first opened, so the till's first script is 186 KB compressed, within the … |
 | **0.2.0** | Its own interface at `/pos/`: the till, full screen, and the register's records (profiles, sessions, sales, closings, loyalty) in the records … |
-| **0.1.1** | Requires the ERP app: installing it in a workspace without ERP installs ERP whole, with its interface, rather than a few of its packages. |
 
 Every version is in [CHANGELOG.md](CHANGELOG.md).
 
