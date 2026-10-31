@@ -133,7 +133,8 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
             let own = items.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(&item.to_string()))?;
             Some(json!({
                 "id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"),
-                "line": {"price": line.price, "discount_percent": line.discount_percent, "tax_rates": line.tax_rates},
+                // `tax_qty`: one's stock quantity, which per-unit taxes count (the till scales it).
+                "line": {"price": line.price, "discount_percent": line.discount_percent, "tax_rates": line.tax_rates, "tax_qty": line.tax_qty},
             }))
         })
         .collect();

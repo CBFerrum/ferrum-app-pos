@@ -1,6 +1,6 @@
 id: pos
 name: Point of Sale
-version: 0.2.2
+version: 0.2.3
 publisher: cbferrum
 summary: Registers, sessions, offline-safe sales with split payments, returns, loyalty and closing into the books
 description: README.md
