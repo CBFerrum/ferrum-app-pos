@@ -287,10 +287,10 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
-| **0.2.2** | Installable on its own : a till's browser offers to install Point of Sale as an app of its own, which opens `/pos/` in its own window with the … |
+| **0.2.2** | Installable on its own: a till's browser offers to install Point of Sale as an app of its own, which opens `/pos/` in its own window with the … |
 | **0.2.1** | The register's records (lists, forms, reports, apps' screens) load when first opened, so the till's first script is 186 KB compressed, within the … |
-| **0.2.0** | Its own interface at `/pos/` : the till, full screen, and the register's records (profiles, sessions, sales, closings, loyalty) in the records … |
-| **0.1.1** | Requires the ERP app : installing it in a workspace without ERP installs ERP whole, with its interface, rather than a few of its packages. |
+| **0.2.0** | Its own interface at `/pos/`: the till, full screen, and the register's records (profiles, sessions, sales, closings, loyalty) in the records … |
+| **0.1.1** | Requires the ERP app: installing it in a workspace without ERP installs ERP whole, with its interface, rather than a few of its packages. |
 
 Every version is in [CHANGELOG.md](CHANGELOG.md).
 
