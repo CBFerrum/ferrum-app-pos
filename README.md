@@ -3,6 +3,9 @@
 A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, AI-first ERP.
 
 - Register profiles, cashier sessions with opening balances, cash in and out
+- A full-screen till at `/pos/` that keeps selling offline: its own worker opens it without a
+  connection, a price book on the device prices sales with the server's own engine (WebAssembly),
+  and sales it could not send go when the connection, or the cashier's session, is back
 - Offline-safe sales (client-generated ids, idempotent replays), split payments, change, discounts within limits
 - Barcode lookup in one query, returns against the original sale
 - Closing that consolidates sales into invoices and payments per method, with cash differences booked
@@ -41,6 +44,17 @@ cargo test
 
 `FERRUM_POS_TEST_DATABASE_URL` overrides the database URL. The app's metadata lives in `packages/` and is embedded
 at build time; `app.yaml` is its manifest (see Ferrum's `docs/plan/apps.md`).
+
+The interface is `ui/`, built with Ferrum-Frontend's packages from a sibling checkout
+(`../ferrum/web`); its built files, `ui/dist`, are committed and embedded in the crate:
+
+```bash
+cd ui && npm run build && npm test && npm run check
+```
+
+`ui/public/sw.js` is the till's own worker (served at `/pos/sw.js`); the till's offline parts are
+`ui/src/lib/offline.ts` (price book, pricing, what the till last knew) and `ui/src/lib/pos.ts` (the
+cart and the outbox of sales not yet sent).
 
 ## License
 

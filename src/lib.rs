@@ -13,6 +13,7 @@ mod loyalty;
 mod masters;
 mod reports;
 mod session;
+pub mod site;
 
 pub use logic::Kind;
 
@@ -33,7 +34,8 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosCashMovement", Arc::new(session::CashMovementHook))
         .register("PosInvoice", Arc::new(invoice::PosInvoiceHook))
         .register("PosClosingEntry", Arc::new(closing::ClosingHook))
-        .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard));
+        .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard))
+        .add_site("pos", Arc::new(site::PosSite));
 }
 
 /// This package's reports.
@@ -162,6 +164,7 @@ pub(crate) async fn live_session(hc: &mut HookCtx<'_>, session: Uuid, lock: bool
 }
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
+include!(concat!(env!("OUT_DIR"), "/ui.rs"));
 
 /// This app's manifest (`app.yaml`).
 pub const MANIFEST: &str = include_str!("../app.yaml");
