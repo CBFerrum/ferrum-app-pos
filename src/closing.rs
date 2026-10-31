@@ -14,8 +14,8 @@ use crate::logic::{self, Kind, Tender};
 use crate::session::open_key;
 use crate::{Mode, Profile, is_manager, live_session, opt_dec, rows_value};
 use async_trait::async_trait;
-use ferrum_domain::flow::sync_invoice_outstanding;
-use ferrum_domain::ledger::{self, Entry, Line};
+use ferrum_app_erp::flow::sync_invoice_outstanding;
+use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{Company, company, d, date, elevated, get, id, money, rows, s, set, sys};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result, Tx};
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -510,7 +510,7 @@ impl Consolidation<'_> {
             let m = &mut merged[pos];
             m.1 += l.qty.unwrap_or_default();
             m.2 += l.net_amount.unwrap_or_default();
-            m.3.extend(ferrum_domain::stock::parse_serials(l.serial_no.as_deref()));
+            m.3.extend(ferrum_app_erp::stock::parse_serials(l.serial_no.as_deref()));
         }
         let strategy = match co.rounding {
             ferrum_calc::Rounding::HalfEven => RoundingStrategy::MidpointNearestEven,
