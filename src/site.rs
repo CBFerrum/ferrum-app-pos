@@ -3,7 +3,7 @@
 //! same code built for the browser) instead of stopping.
 
 use async_trait::async_trait;
-use ferrum_domain::pricing::calc_input;
+use ferrum_app_erp::pricing::calc_input;
 use ferrum_domain::util::{company, currency, d, id, rows, s};
 use ferrum_kernel::{Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, Site, SiteRequest, SiteResponse};
 use rust_decimal::Decimal;

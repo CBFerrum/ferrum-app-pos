@@ -2,7 +2,7 @@
 
 use crate::{Kind, Mode, Profile, is_manager, open_session};
 use async_trait::async_trait;
-use ferrum_domain::ledger::{self, Entry, Line};
+use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{company, d, date, get, id, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use serde_json::{Value, json};

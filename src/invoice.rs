@@ -1,11 +1,11 @@
 //! POS invoices: the fast path at the register.
 //!
 //! A sale is priced like any sales document (price list, pricing rules, taxes and cash rounding
-//! through `pricing::calculate`, GST template choice where installed), held to the register's
-//! rules (open session, discount and price limits, payment methods), and on submit takes its
-//! stock out of the register's warehouse at once, with the valuation entry a delivery note
-//! makes, so stock and the stock accounts always agree. Revenue, taxes, receivables and
-//! payments reach the books when the session closes (`closing`).
+//! through `pricing::calculate`, with the countries' rules such as India's GST templates), held
+//! to the register's rules (open session, discount and price limits, payment methods), and on
+//! submit takes its stock out of the register's warehouse at once, with the valuation entry a
+//! delivery note makes, so stock and the stock accounts always agree. Revenue, taxes,
+//! receivables and payments reach the books when the session closes (`closing`).
 //!
 //! Returns copy the prices, discounts and taxes of the sale they reverse, cannot bring back
 //! more than each line sold, and refund through what the sale was paid with.
@@ -14,20 +14,15 @@ use crate::logic::{self, Kind, Refundable, Tender};
 use crate::loyalty::{self, Program};
 use crate::{Mode, Profile, is_manager, live_session, open_session, opt_dec, rows_value};
 use async_trait::async_trait;
-use ferrum_domain::india::GstTemplateHook;
-use ferrum_domain::ledger::{self, Entry, Line};
-use ferrum_domain::pricing::{Side, calculate};
-use ferrum_domain::stock::{self, MoveIn, parse_serials};
+use ferrum_app_erp::ledger::{self, Entry, Line};
+use ferrum_app_erp::pricing::{Side, calculate};
+use ferrum_app_erp::stock::{self, MoveIn, parse_serials};
 use ferrum_domain::util::{Company, b, company, d, date, get, id, money, posting_ts, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-
-/// GST template choice and HSN checks, applied exactly as on sales invoices so the consolidated
-/// invoice lands on the same taxes.
-const GST: GstTemplateHook = GstTemplateHook(Side::Selling);
 
 pub struct PosInvoiceHook;
 
@@ -90,7 +85,8 @@ impl DocHook for PosInvoiceHook {
             {
                 set(doc, "tax_template", t.to_string());
             }
-            GST.before_validate(hc, doc).await?;
+            // Taxes as on sales invoices (the countries' rules run inside `calculate`), so the
+            // consolidated invoice lands on the same ones.
             price_sale(hc, doc, &profile).await?;
             let walk_in = id(&profile.doc, "customer");
             let program = match id(doc, "customer").filter(|c| Some(*c) != walk_in) {
@@ -207,7 +203,8 @@ impl DocHook for PosInvoiceHook {
                 return Err(Error::field("payments", format!("the customer has {have} points, not {redeemed}")));
             }
         }
-        GST.before_submit(hc, doc).await
+        // A country's checks, as on sales invoices (India: HSN/SAC codes).
+        ferrum_app_erp::localization::check(hc, doc, Side::Selling).await
     }
 
     async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
