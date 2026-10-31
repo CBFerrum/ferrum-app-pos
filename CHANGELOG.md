@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- The register's records (lists, forms, reports, apps' screens) load when first opened, so the
+  till's first script is 186 KB compressed, within the platform's 200 KB budget (Ferrum
+  docs/plan/apps-ui.md §12.9), which the interface's check now enforces. The till itself, and
+  selling offline, are unchanged.
+
 ## 0.2.0
 
 - Its own interface at `/pos/` (Ferrum docs/plan/apps-ui.md §13): the till, full screen, and the
