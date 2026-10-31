@@ -1,0 +1,12 @@
+{
+  "name": "ferrum-app-pos-ui",
+  "private": true,
+  "type": "module",
+  "description": "The Point of Sale's own interface at /pos/: the till, working offline, and the register's records, built with Ferrum-Frontend's packages from the sibling checkout (../../ferrum/web)",
+  "scripts": {
+    "build": "node ../../ferrum/web/packages/build/cli.mjs build",
+    "check": "node ../../ferrum/web/packages/build/cli.mjs check",
+    "typecheck": "node ../../ferrum/web/packages/build/cli.mjs typecheck",
+    "test": "node ../../ferrum/web/packages/build/cli.mjs test"
+  }
+}

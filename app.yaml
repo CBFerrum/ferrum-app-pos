@@ -1,6 +1,6 @@
 id: pos
 name: Point of Sale
-version: 0.1.1
+version: 0.2.0
 publisher: cbferrum
 summary: Registers, sessions, offline-safe sales with split payments, returns, loyalty and closing into the books
 description: README.md
@@ -14,3 +14,13 @@ platform: ">=0.3.1, <0.4"
 requires: {erp: ">=0.1"}
 packages: [pos]
 uninstall: ask
+# Its own interface at /pos/ (Ferrum docs/plan/apps-ui.md §13): the till, full screen and working
+# offline under its own worker (ui/public/sw.js, served at /pos/sw.js), and its records.
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - {id: pos, route: pos, title: Point of Sale, description: "The till, online or offline", icon: store, color: "#ea580c", compact: true, roles: [Cashier, POS Manager]}
+  # Registers, sessions, sales, closings and loyalty open in the register's records.
+  shell.open:
+    - {id: pos, package: pos, path: "pos/e/{entity}/{id}", list: "pos/e/{entity}"}
