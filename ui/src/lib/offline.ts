@@ -26,8 +26,10 @@ export function unreachable(e: unknown): boolean {
 const DOWN_FOR_MS = 20_000;
 let downUntil = 0;
 
-/** Whether the server is thought out of reach now (it just failed, or the browser says offline). */
-export const serverDown = (now = Date.now()) => now < downUntil || (typeof navigator !== "undefined" && navigator.onLine === false);
+/** Whether the server is thought out of reach now: it failed to answer a moment ago. (The
+ *  browser's own "offline" flag is not asked: it is wrong often enough, and a dead connection
+ *  fails at once anyway.) */
+export const serverDown = (now = Date.now()) => now < downUntil;
 export const markDown = (now = Date.now()) => void (downUntil = now + DOWN_FOR_MS);
 export const markUp = () => void (downUntil = 0);
 if (typeof window !== "undefined") window.addEventListener("online", markUp);
