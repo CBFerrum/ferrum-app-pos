@@ -1,7 +1,48 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
+The till, rebuilt for a cashier with a queue, and the returns and shift screens it was missing.
+
+- **Faster at the till.** The scan box is always ready: a scanner types into it wherever you last
+  tapped, and a code sells at once from the price book kept on the device (the server is asked only
+  for a code the book does not know). `3*8901234` sells three. Tiles show their price. The keyboard
+  does the rest: F2 scan box, F4 pay, F9 hold, F10 sales on hold, F8 returns, F3 change the picked
+  line, arrows to pick a line, + and − for its quantity, Delete to remove it. Buttons are larger on
+  touch screens, and a phone keeps the total and Pay at the bottom. The sale on screen comes back
+  after a reload.
+- **Change a line where it stands.** Quantity, a discount, a price where the register allows it, and a
+  note that prints under the line on the receipt. What a cashier may change follows the register's
+  switches: the most they may give is shown before they type, and what goes past it is not sent. A
+  POS manager has no limit.
+- **A new pay window.** Pick a way of paying, type what was handed over and the change shows in large
+  type. Add a second way for a split payment: what is still due is already filled in. Card and UPI
+  references, selling on account to a named customer, loyalty points with the customer's balance, quick
+  cash amounts for the currency's notes, and the rounding the currency needs shown as "rounded from".
+- **Hold and resume.** Set a sale aside to serve the next customer, and bring it back from "On hold".
+  Held sales are kept on the device, so they work offline.
+- **Returns at the till.** Find a sale by receipt number or customer (any cashier's: the customer comes
+  to whichever till is free), pick the lines and how many come back, say why, and refund the way it was
+  paid: what the customer still owes is cancelled first, points go back as points, and money goes back
+  through the ways it came in. What the server would refuse is shown before it does. A copy of the
+  original receipt can be printed. Returns need a connection.
+- **Opening and closing a shift.** Open with a counted float, note by note if you like. Close on one
+  page: for every way of paying, what the register expects, what you counted and the difference (short,
+  over or right), a cash counter for notes and coins, the reason when the drawer is not as expected,
+  cash put in or taken out during the shift, and the Z report to print. A cashier saves the count and
+  a POS manager closes the shift; a manager can do both at once. Closing waits while sales made offline
+  are still on the device.
+- **Safer when the network drops.** Each sale carries its own id, so one sent twice (the answer was lost
+  on the way back) is recognised, not sold twice or left stuck as refused. If the device cannot keep a
+  sale (its storage is full or blocked) the till says so instead of clearing the screen. The receipt of
+  a sale kept on the device lists its goods (it printed blank lines). After the server fails to answer,
+  the till prices from the price book at once instead of waiting for it on every scan.
+- **Records.** A return carries its reason (Return Reason, shown in the returns report); a sale line
+  carries a note; the Z report names each payment method by its id as well as its name; a sale written
+  off by a few cents can be returned whole.
+- Fixes: opening a register no longer sends floats for pay-later and points methods, which the server
+  refused; the receipt of a sale sent online names its way of paying instead of printing an id.
+- Printing is the browser's, as before: this release was not tried on a receipt printer.
 - Personal data: a person's request now exports the sessions a cashier ran, and says why they are kept: they are cash records.
 
 ## 0.2.3

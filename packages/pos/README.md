@@ -134,6 +134,37 @@ redeemed. What the customer still owes on the sale (Credit) is refunded to Credi
 must be closed already or be in the same session. Goods come back at the cost they left at; earned
 points are taken back pro rata.
 
+A line may carry a `note` (printed under it on the receipt) and a return a `return_reason`, which the
+`pos_returns` report shows. A sale that was written off by a few cents comes back whole: the written-off
+part counts as money taken.
+
+**The returns desk's lookups.** `GET /api/v1/PosInvoice` shows a cashier only their own sales, but a customer
+takes a receipt to whichever till is free, so the till reads two endpoints that look at every sale of the
+register's company (for a person who may make returns at that register):
+
+```
+GET /api/app/pos/returns?profile=<profile>&q=<receipt number or customer>&days=90
+→ {"rows": [{"id", "number", "posting_date", "posting_time", "customer", "cashier", "register", "total",
+             "status", "left_qty", "blocked": null | "it is still in another open session: …"}]}
+```
+
+Without `q` it lists today's sales; with one, those of the last `days` days (90 unless asked) whose number or
+customer matches, newest first, 25 at most. `blocked` says why a sale cannot be returned at this till yet.
+
+```
+GET /api/app/pos/returns/{sale}?profile=<profile>
+→ {"sale": {…}, "blocked": null | "…",
+   "lines": [{"id", "item", "item_name", "sold", "returned", "left", "serials": […], "note"}],
+   "paid_with": [{"mode", "paid", "refunded", "left"}],          // per payment method, cash net of change
+   "methods": [{"mode", "name", "kind", "usable", "why"}],       // the register's, with whether it refunds through them
+   "refundable": {"money", "loyalty", "credit"},                 // what the return's check allows, per class
+   "loyalty": {"factor", "points_left"} | null,                  // points go back as points
+   "receipt": {…}}                                               // to print a copy
+```
+
+These are the figures the return's own check uses (`credit` is cancelled first, `loyalty` goes back as
+points, `money` as cash or to cards), so a client can show what would be refused before it is.
+
 ### 7. Cash in / out
 
 ```
