@@ -27,7 +27,7 @@ describe("counting the drawer", () => {
   it("measures the difference against what is expected", () => {
     expect([difference(774.45, 772.45), difference(100, 100), difference(100, 101.5), difference(50, null)]).toEqual([-2, 0, 1.5, 0]);
     expect([standing(-2), standing(0), standing(0.01)]).toEqual(["short", "right", "over"]);
-    expect([typedAmount(""), typedAmount("  "), typedAmount("1,250.5"), typedAmount("-3"), typedAmount("abc"), typedAmount("0"), typedAmount(undefined)]).toEqual([null, null, 1250.5, null, null, 0, null]);
+    expect([typedAmount(""), typedAmount("  "), typedAmount("1250.5"), typedAmount("1,250.5"), typedAmount("-3"), typedAmount("abc"), typedAmount("0"), typedAmount(undefined)]).toEqual([null, null, 1250.5, null, null, null, 0, null]);
   });
 });
 
