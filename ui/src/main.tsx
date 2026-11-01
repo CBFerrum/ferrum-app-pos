@@ -1,10 +1,11 @@
 // The Point of Sale's own interface (Ferrum docs/plan/apps-ui.md §13) at /pos/: the till, full
 // screen and working offline (its own worker, public/sw.js, keeps the page and its files; the
-// till keeps the price book and the sales it could not send), and the register's records —
-// profiles, sessions, sales, closings, loyalty — as lists and forms in the records frame.
+// till keeps the price book and the sales it could not send), the end of a shift at /shift, and the
+// register's records — profiles, sessions, sales, closings, loyalty — as lists and forms in the
+// records frame. What needs the server (returns, opening and closing a shift) loads when asked for.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect } from "react";
+import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from "react-router";
 import { engineUrl } from "@ferrum/calc";
@@ -36,12 +37,20 @@ function Started() {
   return null;
 }
 
-/** The till: the whole page under the bar. */
-function TillPage() {
+/** A full-screen page of the till: the whole page under the bar. */
+function Page({ children }: { children: ReactNode }) {
   return (
     <main id="main" tabIndex={-1} className="min-h-[calc(100dvh-var(--ferrum-bar-height,48px))] bg-background">
-      <RegisterPage />
+      {children}
     </main>
+  );
+}
+
+function TillPage() {
+  return (
+    <Page>
+      <RegisterPage />
+    </Page>
   );
 }
 
@@ -70,6 +79,8 @@ const router = createBrowserRouter(
       errorElement: <RouteError />,
       children: [
         { index: true, element: <TillPage /> },
+        // Counting the drawer and closing the shift: online, so it loads when asked for.
+        { path: "shift", lazy: () => import("./Shift").then((m) => ({ Component: () => <Page><m.default /></Page> })) },
         {
           element: <RequireAuth />,
           // The register's records load when opened (online pages; the till above works
