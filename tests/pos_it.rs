@@ -597,6 +597,7 @@ async fn scenario() {
     assert!(matches!(void_late, Err(Error::Invalid(ref m)) if m.contains("consolidated")), "{void_late:?}");
     let z = t.report(&manager, "pos_sales_summary", &[("company", cid.to_string()), ("pos_opening_entry", s1.to_string())]).await;
     assert_eq!(z["meta"]["session"]["report"], json!("Z"));
+    assert!(z["meta"]["session"]["reconciliation"].as_array().unwrap().iter().all(|r| r["mode"].is_string()), "a till matches rows to methods by id");
     let rec = t.report(&manager, "pos_payment_reconciliation", &[("company", cid.to_string())]).await;
     assert_eq!(dec(&rec["totals"]["difference"]), n("-2"));
 
@@ -714,4 +715,133 @@ async fn scenario() {
                        "posting_date": chrono::Utc::now().date_naive().to_string()});
     let edit = t.k.insert(&t.admin, "LoyaltyPointEntry", obj(typed)).await;
     assert!(matches!(edit, Err(Error::Forbidden(_))), "points are never typed in, not even by an administrator: {edit:?}");
+
+    // ───────────── the returns desk: another cashier takes goods back ─────────────
+    // `other` opens a session and brings back what `cashier` sold on the first day, which only the
+    // desk's lookups can find: a cashier's rights show only their own sales.
+    let s4 = t.insert(&other, "PosOpeningEntry", json!({"pos_profile": counter1.to_string()})).await;
+    let s4 = uid(&t.submit(&other, "PosOpeningEntry", uid(&s4)).await);
+    let ask = |who: &Ctx, path: &str, query: Value| ferrum_kernel::SiteRequest {
+        tenant,
+        user: Some(who.clone()),
+        method: "GET".into(),
+        path: path.into(),
+        query: query.as_object().cloned().unwrap(),
+        headers: Default::default(),
+        body: vec![],
+        client_ip: "it".into(),
+    };
+    let find = |q: Value| {
+        let (t, other) = (&t, &other);
+        let mut query = json!({"profile": counter1.to_string()});
+        query["q"] = q;
+        async move { ferrum_app_pos::returns::search(&t.k, other, &ask(other, "/returns", query)).await.expect("search")["rows"].clone() }
+    };
+    let own_only =
+        t.k.list(&other, "PosInvoice", &ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"id": small["id"]})).unwrap(), ..Default::default() })
+            .await
+            .unwrap();
+    assert!(own_only.rows.is_empty(), "the generic list shows a cashier only their own sales");
+    let hit = find(small["number"].clone()).await;
+    assert_eq!(hit.as_array().unwrap().len(), 1, "{hit}");
+    assert_eq!(
+        (hit[0]["id"].clone(), dec(&hit[0]["left_qty"]), hit[0]["blocked"].clone(), hit[0]["cashier"].clone()),
+        (small["id"].clone(), n("1"), Value::Null, json!("cashier@shop.test"))
+    );
+    assert_eq!(
+        find(json!("alice")).await.as_array().unwrap().len(),
+        2,
+        "by customer: her two sales still standing (the voided one and the returns do not count)"
+    );
+    assert_eq!(find(json!("no-such-receipt")).await.as_array().unwrap().len(), 0);
+    let no_profile = ferrum_app_pos::returns::search(&t.k, &other, &ask(&other, "/returns", json!({}))).await;
+    assert!(no_profile.is_err(), "a register is required");
+
+    // The sheet: what is left on each line and the room each payment method leaves.
+    let sheet = |who: &Ctx, sale: &Doc| {
+        let req = ask(who, &format!("/returns/{}", sale["id"].as_str().unwrap()), json!({"profile": counter1.to_string()}));
+        let (t, who, sale) = (&t, who.clone(), uid(sale));
+        async move { ferrum_app_pos::returns::sheet(&t.k, &who, &req, sale).await.expect("sheet") }
+    };
+    let on = sheet(&other, &small).await;
+    assert_eq!(
+        (on["blocked"].clone(), on["lines"][0]["left"].clone(), on["sale"]["number"].clone()),
+        (Value::Null, json!("1"), small["number"].clone()),
+        "{on}"
+    );
+    let room = &on["refundable"];
+    assert_eq!(
+        (dec(&room["money"]), dec(&room["credit"]), dec(&room["loyalty"])),
+        (n("11.00"), Decimal::ZERO, Decimal::ZERO),
+        "10.95 taken and 0.05 written off, all of it money"
+    );
+    assert_eq!(on["loyalty"], Value::Null);
+    let cash_row = on["methods"].as_array().unwrap().iter().find(|m| m["name"] == json!("Cash")).unwrap().clone();
+    assert_eq!((cash_row["usable"].clone(), cash_row["kind"].clone()), (json!(true), json!("Cash")));
+    assert_eq!(dec(&on["paid_with"][0]["paid"]), n("10.95"));
+    assert_eq!(on["receipt"]["payments"][0]["_titles"]["mode_of_payment"], json!("Cash"), "a copy of the receipt names its payment methods");
+
+    // The whole bill comes back, written-off part included, with the reason kept.
+    let ret_small = json!({"pos_profile": counter1.to_string(), "is_return": true, "return_against": small["id"], "return_reason": "Wrong colour",
+        "items": [{"item": pen.to_string(), "qty": "-1"}], "payments": [pay(&cash, "-11")]});
+    let back = t.sell(&other, ret_small.clone()).await;
+    assert_eq!((back["status"].clone(), dec(&back["rounded_total"]), back["return_reason"].clone()), (json!("Return"), n("-11.00"), json!("Wrong colour")));
+    assert_eq!(back["cashier"], json!("other@shop.test"));
+    let gone = sheet(&other, &small).await;
+    assert_eq!((dec(&gone["lines"][0]["left"]), dec(&gone["refundable"]["money"])), (Decimal::ZERO, Decimal::ZERO));
+    assert!(gone["blocked"].as_str().unwrap().contains("already been returned"), "{gone}");
+    assert!(find(small["number"].clone()).await[0]["blocked"].is_string());
+    let again = t.refused(&other, ret_small).await;
+    assert!(matches!(again, Error::Validation(ref e) if e.iter().any(|f| f.message.contains("can still come back"))), "{again:?}");
+
+    // A line carries a note; a sale in another cashier's open session cannot be returned here yet.
+    let noted = t
+        .sell(&other, json!({"pos_profile": counter1.to_string(), "items": [{"item": pen.to_string(), "qty": "1", "note": "Gift: wrap it"}], "payments": [pay(&cash, "11")]}))
+        .await;
+    assert_eq!(noted["items"][0]["note"], json!("Gift: wrap it"));
+    let s5 = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter1.to_string()})).await;
+    t.submit(&cashier, "PosOpeningEntry", uid(&s5)).await;
+    let elsewhere = t.sell(&cashier, simple(json!([line(pen, "1")]), json!([pay(&cash, "11")]))).await;
+    let blocked = find(elsewhere["number"].clone()).await;
+    assert!(blocked[0]["blocked"].as_str().unwrap().contains("another open session"), "{blocked}");
+    let too_early = t
+        .refused(
+            &other,
+            json!({"pos_profile": counter1.to_string(), "is_return": true, "return_against": elsewhere["id"], "items": [line(pen, "-1")], "payments": [pay(&cash, "-11")]}),
+        )
+        .await;
+    assert!(matches!(too_early, Error::Validation(ref e) if e.iter().any(|f| f.message.contains("another register's open session"))), "{too_early:?}");
+
+    // Points go back as points: the sheet says how many and what one is worth.
+    let earned = t
+        .sell(
+            &other,
+            json!({"pos_profile": counter1.to_string(), "customer": alice.to_string(), "items": [line(widget, "1")], "payments": [pay(&cash, "110")]}),
+        )
+        .await;
+    assert!(earned["loyalty_points_earned"].as_i64().unwrap() >= 2, "{earned:?}");
+    let with_points = t
+        .sell(
+            &other,
+            json!({"pos_profile": counter1.to_string(), "customer": alice.to_string(), "items": [line(pen, "1")],
+                   "payments": [{"mode_of_payment": points["id"], "loyalty_points": 2}, pay(&cash, "10")]}),
+        )
+        .await;
+    assert_eq!(dec(&with_points["payments"][0]["amount"]), n("1.00"));
+    let paid_in_points = sheet(&other, &with_points).await;
+    assert_eq!((paid_in_points["loyalty"]["points_left"].clone(), dec(&paid_in_points["loyalty"]["factor"])), (json!(2), n("0.5")), "{paid_in_points}");
+    let room = &paid_in_points["refundable"];
+    assert_eq!((dec(&room["money"]), dec(&room["loyalty"])), (n("10"), n("1.00")));
+    let pen_back = |refund: Value| json!({"pos_profile": counter1.to_string(), "is_return": true, "return_against": with_points["id"], "items": [line(pen, "-1")], "payments": refund});
+    let all_cash = t.refused(&other, pen_back(json!([pay(&cash, "-11")]))).await;
+    assert!(matches!(all_cash, Error::Validation(ref e) if e.iter().any(|f| f.message.contains("at most 10"))), "{all_cash:?}");
+    t.sell(&other, pen_back(json!([{"mode_of_payment": points["id"], "loyalty_points": 2}, pay(&cash, "-10")]))).await;
+    assert_eq!(dec(&sheet(&other, &with_points).await["refundable"]["loyalty"]), Decimal::ZERO);
+
+    // The reason shows in the returns report, and the books still balance when the session closes.
+    let rets = t.report(&manager, "pos_returns", &p).await;
+    assert!(rets["rows"].as_array().unwrap().iter().any(|r| r["reason"] == json!("Wrong colour")), "{rets}");
+    let close4 = t.insert(&manager, "PosClosingEntry", json!({"pos_opening_entry": s4.to_string()})).await;
+    t.submit(&manager, "PosClosingEntry", uid(&close4)).await;
+    t.books_balance(cid).await;
 }

@@ -12,6 +12,7 @@ mod logic;
 mod loyalty;
 mod masters;
 mod reports;
+pub mod returns;
 mod session;
 pub mod site;
 
@@ -138,13 +139,18 @@ pub(crate) fn rows_value(rows: Vec<Doc>) -> Value {
 
 /// The id of the user's session, if open, at `profile`.
 pub(crate) async fn open_session(hc: &mut HookCtx<'_>, profile: Uuid, user: &str) -> Result<Option<Uuid>> {
+    open_session_in(hc.tx, hc.ctx.tenant, profile, user).await
+}
+
+/// [`open_session`] outside a hook (the returns desk asks too).
+pub(crate) async fn open_session_in(tx: &mut Tx, tenant: Uuid, profile: Uuid, user: &str) -> Result<Option<Uuid>> {
     let found: Option<Uuid> = sqlx::query_scalar(
         "select id from e_pos_opening_entry where tenant_id = $1 and pos_profile = $2 and lower(\"user\") = lower($3) and docstatus = 1 and status = 'Open' limit 1",
     )
-    .bind(hc.ctx.tenant)
+    .bind(tenant)
     .bind(profile)
     .bind(user)
-    .fetch_optional(&mut **hc.tx)
+    .fetch_optional(&mut **tx)
     .await?;
     Ok(found)
 }

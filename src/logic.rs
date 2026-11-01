@@ -90,6 +90,23 @@ pub struct Refundable {
     pub loyalty: Decimal,
 }
 
+/// What a sale can still pay back, from what it took in and what its returns refunded so far,
+/// per class: `taken` is `(kind, paid net of the change given, refunded so far)` for each payment
+/// method used. A shortfall the register wrote off counts as money taken, since a return refunds
+/// the whole bill; otherwise the last item of a sale paid a little short could never come back.
+pub fn refundable(taken: &[(Kind, Decimal, Decimal)], write_off: Decimal) -> Refundable {
+    let mut left = Refundable { money: write_off.max(Decimal::ZERO), ..Default::default() };
+    for (kind, paid, refunded) in taken {
+        let room = paid - refunded;
+        match kind {
+            Kind::Credit => left.credit += room,
+            Kind::Loyalty => left.loyalty += room,
+            _ => left.money += room,
+        }
+    }
+    left
+}
+
 /// Checks the refunds of a return worth `total` (all positive amounts): they add up to the
 /// total; what the customer still owes on the original is cancelled first (refunded to Credit);
 /// and no class pays back more than it took in, so points or an unpaid balance never come back
@@ -229,6 +246,24 @@ mod tests {
         assert!(check_refunds(n("50"), &[t(Kind::Cash, "50")], &on_credit).unwrap_err().contains("40 of this refund must go to Credit"));
         assert!(check_refunds(n("50"), &[t(Kind::Credit, "40"), t(Kind::Cash, "10")], &on_credit).is_ok());
         assert!(check_refunds(n("30"), &[t(Kind::Credit, "30")], &on_credit).is_ok());
+    }
+
+    #[test]
+    fn what_a_sale_can_still_refund() {
+        // Paid 50 by card and 60 in cash for a 92.50 bill (17.50 change): 92.50 came in.
+        let mut paid = [t(Kind::Bank, "50"), t(Kind::Cash, "60")];
+        net_of_change(n("17.50"), &mut paid);
+        let taken: Vec<_> = paid.iter().map(|p| (p.kind, p.amount, Decimal::ZERO)).collect();
+        assert_eq!(refundable(&taken, Decimal::ZERO), Refundable { money: n("92.50"), ..Default::default() });
+        // An earlier return gave 20 back in cash; points and what is owed stay apart from money.
+        let mixed = [(Kind::Cash, n("9"), n("2")), (Kind::Loyalty, n("2"), Decimal::ZERO), (Kind::Credit, n("40"), n("15"))];
+        assert_eq!(refundable(&mixed, Decimal::ZERO), Refundable { money: n("7"), loyalty: n("2"), credit: n("25") });
+        // Refunding cash for a card sale uses the same room: the card's 100 less the 100 handed back.
+        assert_eq!(refundable(&[(Kind::Bank, n("100"), Decimal::ZERO), (Kind::Cash, Decimal::ZERO, n("100"))], Decimal::ZERO).money, Decimal::ZERO);
+        // A bill written off by 0.05 (10.95 paid of 11.00) comes back whole.
+        let short = refundable(&[(Kind::Cash, n("10.95"), Decimal::ZERO)], n("0.05"));
+        assert!(check_refunds(n("11.00"), &[t(Kind::Cash, "11.00")], &short).is_ok());
+        assert!(check_refunds(n("11.00"), &[t(Kind::Cash, "11.00")], &refundable(&[(Kind::Cash, n("10.95"), Decimal::ZERO)], Decimal::ZERO)).is_err());
     }
 
     #[test]

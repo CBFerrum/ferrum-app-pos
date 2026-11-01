@@ -1,7 +1,9 @@
 //! The register's own endpoints (`/api/app/pos/...`, signed in): its price book, so a till that
 //! loses the connection keeps pricing sales with the platform's own engine (`ferrum-calc`, the
-//! same code built for the browser) instead of stopping.
+//! same code built for the browser) instead of stopping; and the returns desk's lookups
+//! (`returns`).
 
+use crate::returns;
 use async_trait::async_trait;
 use ferrum_app_erp::pricing::calc_input;
 use ferrum_domain::util::{company, currency, d, id, rows, s};
@@ -23,12 +25,17 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["pricebook"]) => Ok(SiteResponse::json(200, &price_book(k, ctx, &req).await?)),
+            ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
+            ("GET", ["returns", sale]) => {
+                let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
+                Ok(SiteResponse::json(200, &returns::sheet(k, ctx, &req, sale).await?))
+            }
             _ => Err(Error::NotFound("page".into())),
         }
     }
 }
 
-fn param<'a>(req: &'a SiteRequest, key: &str) -> Option<&'a str> {
+pub(crate) fn param<'a>(req: &'a SiteRequest, key: &str) -> Option<&'a str> {
     req.query.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
 }
 
