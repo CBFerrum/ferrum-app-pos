@@ -377,7 +377,7 @@ pub(crate) async fn taken(tx: &mut Tx, tenant: Uuid, orig: &Doc, except: Option<
             None => out.push(Taken { mode, kind: t.kind, paid: t.amount, refunded: Decimal::ZERO }),
         }
     }
-    let refunded: Vec<(Uuid, Option<String>, Decimal)> = sqlx::query_as(
+    let refunded: Vec<(Option<Uuid>, Option<String>, Decimal)> = sqlx::query_as(
         "select pm.mode_of_payment, pm.mode_type, coalesce(sum(-pm.amount), 0) from e_pos_invoice__payments pm join e_pos_invoice p on p.tenant_id = pm.tenant_id \
          and p.id = pm.parent_id where p.tenant_id = $1 and p.return_against = $2 and p.docstatus = 1 and p.id is distinct from $3 group by pm.mode_of_payment, pm.mode_type",
     )
@@ -387,6 +387,7 @@ pub(crate) async fn taken(tx: &mut Tx, tenant: Uuid, orig: &Doc, except: Option<
     .fetch_all(&mut **tx)
     .await?;
     for (mode, kind, amount) in refunded {
+        let Some(mode) = mode else { continue };
         match out.iter_mut().find(|x| x.mode == mode) {
             Some(x) => x.refunded += amount,
             None => out.push(Taken { mode, kind: kind.as_deref().and_then(Kind::parse).unwrap_or(Kind::General), paid: Decimal::ZERO, refunded: amount }),

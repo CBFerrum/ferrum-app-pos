@@ -781,6 +781,22 @@ async fn scenario() {
     assert_eq!(dec(&on["paid_with"][0]["paid"]), n("10.95"));
     assert_eq!(on["receipt"]["payments"][0]["_titles"]["mode_of_payment"], json!("Cash"), "a copy of the receipt names its payment methods");
 
+    // Through the register's own endpoint, as the server routes it: JSON, and nothing for the signed out.
+    let kernel = &t.k;
+    let routed = |who: Option<&Ctx>, path: &str, query: Value| {
+        let req = ferrum_kernel::SiteRequest { user: who.cloned(), ..ask(&other, path, query) };
+        async move { ferrum_kernel::Site::handle(&ferrum_app_pos::site::PosSite, kernel, req).await }
+    };
+    let by_route = routed(Some(&other), "/returns", json!({"profile": counter1.to_string(), "q": small["number"]})).await.expect("routed search");
+    assert_eq!(by_route.status, 200);
+    let body: Value = serde_json::from_slice(&by_route.body).unwrap();
+    assert_eq!(body["rows"][0]["id"], small["id"]);
+    let by_route =
+        routed(Some(&other), &format!("/returns/{}", small["id"].as_str().unwrap()), json!({"profile": counter1.to_string()})).await.expect("routed sheet");
+    assert_eq!(serde_json::from_slice::<Value>(&by_route.body).unwrap()["sale"]["number"], small["number"]);
+    assert!(routed(Some(&other), "/returns/not-a-sale", json!({"profile": counter1.to_string()})).await.is_err());
+    assert!(routed(None, "/returns", json!({"profile": counter1.to_string()})).await.is_err(), "the lookups are for people signed in");
+
     // The whole bill comes back, written-off part included, with the reason kept.
     let ret_small = json!({"pos_profile": counter1.to_string(), "is_return": true, "return_against": small["id"], "return_reason": "Wrong colour",
         "items": [{"item": pen.to_string(), "qty": "-1"}], "payments": [pay(&cash, "-11")]});
