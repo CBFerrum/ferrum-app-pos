@@ -66,10 +66,11 @@ export const difference = (expected: number, counted: number | null, precision =
 /** "Short", "Over" or "Right" for a difference: coloured and worded, never colour alone. */
 export const standing = (diff: number): "short" | "over" | "right" => (diff < 0 ? "short" : diff > 0 ? "over" : "right");
 
-/** A typed amount: nothing typed is nothing counted (null), not zero. */
+/** A typed amount: nothing typed is nothing counted (null), not zero. A comma is refused rather
+ *  than guessed at ("12,50" is not twelve hundred and fifty). */
 export function typedAmount(text: string | undefined): number | null {
   if (text === undefined || text.trim() === "") return null;
-  const n = Number(text.replace(/,/g, ""));
+  const n = Number(text);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
