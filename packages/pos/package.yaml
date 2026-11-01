@@ -82,3 +82,6 @@ seed:
     key: [customer_name]
     records:
       - {customer_name: Walk-in Customer, customer_type: Individual, customer_group: "@CustomerGroup:group_name=Individual"}
+personal_data:
+  - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
+  - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}

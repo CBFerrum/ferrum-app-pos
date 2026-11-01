@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Personal data: a person's request now exports the sessions a cashier ran, and says why they are kept: they are cash records.
+
 ## 0.2.3
 
 - Selling offline prices as the server does with the platform's newer engine (Ferrum-Frontend
