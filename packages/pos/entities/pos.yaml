@@ -159,6 +159,7 @@
     - {name: batch_no, type: data}
     - {name: serial_no, type: text, description: One serial number per line}
     - {name: original_line, type: data, label: Returned Line, description: "Returns: id of the sold line (found automatically when the item appears once on the original)"}
+    - {name: note, type: data, max_length: 200, label: Line Note, description: "What the cashier wrote on the line (a gift, a promised repair); printed under it on the receipt"}
     - {name: item_tax_rates, type: json, read_only: true}
 
 - name: PosInvoicePayment
@@ -195,6 +196,7 @@
     - {name: posting_time, type: data, description: "HH:MM:SS of the sale on the device (UTC); empty = now"}
     - {name: is_return, type: check, in_filter: true}
     - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return", required_if: "doc.is_return"}
+    - {name: return_reason, type: data, max_length: 140, visible_if: "doc.is_return", description: Why the goods came back (the returns desk asks for it)}
     - {name: currency, type: link, to: Currency, read_only: true}
     - {name: conversion_rate, type: decimal, default: 1, read_only: true}
     - {name: price_list, type: link, to: PriceList, read_only: true}
@@ -226,7 +228,7 @@
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
     - {name: remarks, type: text}
   form:
-    - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, cashier]}
+    - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, return_reason, cashier]}
     - {label: Items, fields: [items, discount_percent]}
     - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
     - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}

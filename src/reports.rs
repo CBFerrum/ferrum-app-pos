@@ -207,7 +207,7 @@ async fn sales_summary(k: &Kernel, ctx: &Ctx, tx: &mut Tx, r: &Range, session: O
         let recon: Vec<Value> = lines
             .iter()
             .map(|l| {
-                json!({"mode_of_payment": names.get(s(l, "mode_of_payment").unwrap_or_default()), "opening": l.get("opening_amount"),
+                json!({"mode": l.get("mode_of_payment"), "mode_of_payment": names.get(s(l, "mode_of_payment").unwrap_or_default()), "opening": l.get("opening_amount"),
                        "expected": l.get("expected_amount"), "counted": l.get("closing_amount"), "difference": l.get("difference")})
             })
             .collect();
@@ -390,37 +390,48 @@ async fn hourly(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
 }
 
 async fn returns(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
-    let data: Vec<(Uuid, Option<String>, NaiveDate, Option<String>, Option<String>, Option<String>, Decimal, Decimal, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "select r.id, r.number, r.posting_date, r.customer_name, o.number, r.cashier, coalesce(-r.rounded_total, 0), \
+    let data: Vec<(
+        Uuid,
+        Option<String>,
+        NaiveDate,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Decimal,
+        Decimal,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "select r.id, r.number, r.posting_date, r.customer_name, o.number, r.cashier, coalesce(-r.rounded_total, 0), \
              (select coalesce(sum(-l.qty), 0) from e_pos_invoice__items l where l.tenant_id = r.tenant_id and l.parent_id = r.id), \
              (select string_agg(distinct m.mode_name, ', ') from e_pos_invoice__payments pm join e_mode_of_payment m on m.tenant_id = pm.tenant_id \
-              and m.id = pm.mode_of_payment where pm.tenant_id = r.tenant_id and pm.parent_id = r.id), r.status \
+              and m.id = pm.mode_of_payment where pm.tenant_id = r.tenant_id and pm.parent_id = r.id), r.status, r.return_reason \
              from e_pos_invoice r left join e_pos_invoice o on o.tenant_id = r.tenant_id and o.id = r.return_against \
              where r.tenant_id = $1 and r.company = $2 and r.docstatus = 1 and r.is_return and r.posting_date between $3 and $4 \
              and ($5::uuid is null or r.pos_profile = $5) and ($6::text is null or lower(r.cashier) = $6) order by r.posting_date, r.number",
-        )
-        .bind(ctx.tenant)
-        .bind(r.company)
-        .bind(r.from)
-        .bind(r.to)
-        .bind(r.profile)
-        .bind(&r.cashier)
-        .fetch_all(&mut **tx)
-        .await?;
+    )
+    .bind(ctx.tenant)
+    .bind(r.company)
+    .bind(r.from)
+    .bind(r.to)
+    .bind(r.profile)
+    .bind(&r.cashier)
+    .fetch_all(&mut **tx)
+    .await?;
     let total: Decimal = data.iter().map(|d| d.6).sum();
     let count = data.len();
     let out: Vec<Value> = data
         .into_iter()
-        .map(|(rid, number, day, customer, original, cashier, amount, qty, modes, status)| {
+        .map(|(rid, number, day, customer, original, cashier, amount, qty, modes, status, reason)| {
             json!({"voucher_id": rid, "voucher_no": number, "posting_date": day, "customer": customer, "return_against": original, "cashier": cashier,
-                   "qty": money(qty), "refund": money(amount), "refunded_via": modes, "status": status})
+                   "qty": money(qty), "refund": money(amount), "refunded_via": modes, "reason": reason, "status": status})
         })
         .collect();
     Ok(json!({
         "columns": [col("voucher_no", "Return", "data"), col("posting_date", "Date", "date"), col("return_against", "Original Sale", "data"),
             col("customer", "Customer", "data"), col("cashier", "Cashier", "data"), col("qty", "Quantity", "decimal"), col("refund", "Refund", "currency"),
-            col("refunded_via", "Refunded Via", "data"), col("status", "Status", "data")],
+            col("refunded_via", "Refunded Via", "data"), col("reason", "Reason", "data"), col("status", "Status", "data")],
         "rows": out,
         "totals": {"refund": money(total), "count": count},
     }))

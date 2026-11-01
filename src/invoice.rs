@@ -18,7 +18,7 @@ use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_app_erp::pricing::{Side, calculate};
 use ferrum_app_erp::stock::{self, MoveIn, parse_serials};
 use ferrum_domain::util::{Company, b, company, d, date, get, id, money, posting_ts, rows, s, set, sys};
-use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
+use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -333,18 +333,72 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
     Ok(())
 }
 
-/// Quantity of each original line already returned by other submitted returns.
-async fn returned_so_far(hc: &mut HookCtx<'_>, original: Uuid, this: Option<Uuid>) -> Result<HashMap<String, Decimal>> {
+/// Quantity of each original line already returned by other submitted returns (the returns desk
+/// asks the same question before a return is made).
+pub(crate) async fn returned_so_far(tx: &mut Tx, tenant: Uuid, original: Uuid, this: Option<Uuid>) -> Result<HashMap<String, Decimal>> {
     let rows: Vec<(Option<String>, Decimal)> = sqlx::query_as(
         "select l.original_line, coalesce(sum(-l.qty), 0) from e_pos_invoice__items l join e_pos_invoice p on p.tenant_id = l.tenant_id and p.id = l.parent_id \
          where p.tenant_id = $1 and p.return_against = $2 and p.docstatus = 1 and p.id is distinct from $3 group by l.original_line",
     )
-    .bind(hc.ctx.tenant)
+    .bind(tenant)
     .bind(original)
     .bind(this)
-    .fetch_all(&mut **hc.tx)
+    .fetch_all(&mut **tx)
     .await?;
     Ok(rows.into_iter().filter_map(|(l, q)| Some((l?, q))).collect())
+}
+
+/// What a sale took in through one payment method (cash net of the change it gave) and what its
+/// other returns refunded through it so far.
+pub(crate) struct Taken {
+    pub mode: Uuid,
+    pub kind: Kind,
+    pub paid: Decimal,
+    pub refunded: Decimal,
+}
+
+impl Taken {
+    pub fn room(&self) -> Decimal {
+        self.paid - self.refunded
+    }
+}
+
+/// The room a sale leaves for refunds, per payment method. A return may refund through a method
+/// the sale did not use (cash for a card), so those appear too, with nothing paid.
+pub(crate) async fn taken(tx: &mut Tx, tenant: Uuid, orig: &Doc, except: Option<Uuid>) -> Result<Vec<Taken>> {
+    let pays = rows(orig, "payments");
+    let mut net = tenders(&pays, Decimal::ONE);
+    logic::net_of_change(d(orig, "change_amount"), &mut net);
+    let mut out: Vec<Taken> = Vec::new();
+    for (p, t) in pays.iter().zip(net) {
+        let Some(mode) = id(p, "mode_of_payment") else { continue };
+        match out.iter_mut().find(|x| x.mode == mode) {
+            Some(x) => x.paid += t.amount,
+            None => out.push(Taken { mode, kind: t.kind, paid: t.amount, refunded: Decimal::ZERO }),
+        }
+    }
+    let refunded: Vec<(Uuid, Option<String>, Decimal)> = sqlx::query_as(
+        "select pm.mode_of_payment, pm.mode_type, coalesce(sum(-pm.amount), 0) from e_pos_invoice__payments pm join e_pos_invoice p on p.tenant_id = pm.tenant_id \
+         and p.id = pm.parent_id where p.tenant_id = $1 and p.return_against = $2 and p.docstatus = 1 and p.id is distinct from $3 group by pm.mode_of_payment, pm.mode_type",
+    )
+    .bind(tenant)
+    .bind(id(orig, "id"))
+    .bind(except)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (mode, kind, amount) in refunded {
+        match out.iter_mut().find(|x| x.mode == mode) {
+            Some(x) => x.refunded += amount,
+            None => out.push(Taken { mode, kind: kind.as_deref().and_then(Kind::parse).unwrap_or(Kind::General), paid: Decimal::ZERO, refunded: amount }),
+        }
+    }
+    Ok(out)
+}
+
+/// What the sale can still pay back, per class.
+pub(crate) fn left_to_refund(room: &[Taken], orig: &Doc) -> Refundable {
+    let all: Vec<_> = room.iter().map(|t| (t.kind, t.paid, t.refunded)).collect();
+    logic::refundable(&all, d(orig, "write_off_amount"))
 }
 
 /// A return is priced from its sale: same prices, discounts, taxes and customer.
@@ -372,7 +426,7 @@ async fn prepare_return(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) 
         .collect();
     set(doc, "taxes", Value::Array(taxes));
     let sold = rows(&orig, "items");
-    let done = returned_so_far(hc, oid, id(doc, "id")).await?;
+    let done = returned_so_far(hc.tx, hc.ctx.tenant, oid, id(doc, "id")).await?;
     let mut items = rows(doc, "items");
     let mut errors = Vec::new();
     for (i, r) in items.iter_mut().enumerate() {
@@ -453,7 +507,7 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
         return Err(Error::field("return_against", "the sale is still in another register's open session; return it there, or once that session is closed"));
     }
     let sold = rows(&orig, "items");
-    let done = returned_so_far(hc, oid, id(doc, "id")).await?;
+    let done = returned_so_far(hc.tx, hc.ctx.tenant, oid, id(doc, "id")).await?;
     let mut now: HashMap<String, Decimal> = HashMap::new();
     let mut errors = Vec::new();
     for (i, r) in rows(doc, "items").iter().enumerate() {
@@ -490,32 +544,8 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
         return Err(Error::Validation(errors));
     }
     // What the sale was paid with, less what earlier returns refunded, per class.
-    let mut paid = tenders(&rows(&orig, "payments"), Decimal::ONE);
-    logic::net_of_change(d(&orig, "change_amount"), &mut paid);
-    let refunded: Vec<(Option<String>, Decimal)> = sqlx::query_as(
-        "select pm.mode_type, coalesce(sum(-pm.amount), 0) from e_pos_invoice__payments pm join e_pos_invoice p on p.tenant_id = pm.tenant_id and p.id = pm.parent_id \
-         where p.tenant_id = $1 and p.return_against = $2 and p.docstatus = 1 and p.id <> $3 group by pm.mode_type",
-    )
-    .bind(hc.ctx.tenant)
-    .bind(oid)
-    .bind(id(doc, "id"))
-    .fetch_all(&mut **hc.tx)
-    .await?;
-    let mut left = Refundable::default();
-    for t in &paid {
-        match t.kind {
-            Kind::Credit => left.credit += t.amount,
-            Kind::Loyalty => left.loyalty += t.amount,
-            _ => left.money += t.amount,
-        }
-    }
-    for (kind, amount) in refunded {
-        match kind.as_deref().and_then(Kind::parse) {
-            Some(Kind::Credit) => left.credit -= amount,
-            Some(Kind::Loyalty) => left.loyalty -= amount,
-            _ => left.money -= amount,
-        }
-    }
+    let room = taken(hc.tx, hc.ctx.tenant, &orig, id(doc, "id")).await?;
+    let left = left_to_refund(&room, &orig);
     let refunds = tenders(payments, -Decimal::ONE);
     logic::check_refunds(-d(doc, "rounded_total"), &refunds, &left).map_err(|m| Error::field("payments", m))
 }
