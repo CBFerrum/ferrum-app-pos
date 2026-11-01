@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { engineUrl, loadEngine } from "@ferrum/calc";
-import { downloadBook, priceOffline, scanBook, searchBook, times, unreachable, type PriceBook } from "./offline";
+import { downloadBook, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, times, unreachable, type PriceBook } from "./offline";
 
 const book: PriceBook = {
   profile: "p1",
@@ -41,6 +41,23 @@ describe("selling offline", () => {
     await expect(priceOffline(book, [{ key: "c", item: "i-new", item_name: "Scones", qty: 1 }])).rejects.toThrow(/Scones has no price on this device/);
   });
 
+  it("applies a price or discount the cashier typed, in place of the book's, as the server does", async () => {
+    await loadEngine(readFileSync(new URL(engineUrl)));
+    const doc = await priceOffline(book, [
+      { key: "a", item: "i-tea", item_name: "Masala tea", qty: 2, discount: "10" },
+      { key: "b", item: "i-cake", item_name: "Plum cake", qty: 1, price: "50", discount: "0" },
+      { key: "c", item: "i-cake", item_name: "Plum cake", qty: 1, price: "  ", discount: "" },
+    ]);
+    // 2 × 20 less 10% is 36.00; the cake at 50 with the rule's 10% taken off is 50.00; the third is the book's 40.50.
+    expect((doc.items as { rate: string; amount: string; price_list_rate: string; discount_percent: string }[]).map((i) => [i.amount, i.price_list_rate, i.discount_percent])).toEqual([
+      ["36.00", "20.00", "10"],
+      ["50.00", "50", "0"],
+      ["40.50", "45.00", "10"],
+    ]);
+    // 5% of 36.00 + 12% of 50.00 + 12% of 40.50 = 1.80 + 6.00 + 4.86; 126.50 + 12.66 = 139.16 → 139.00.
+    expect([doc.total, doc.total_taxes, doc.grand_total, doc.rounded_total, doc.rounding_adjustment]).toEqual(["126.50", "12.66", "139.16", "139.00", "-0.16"]);
+  });
+
   it("scans and searches the price book", () => {
     expect(scanBook(book, "CASE6")).toMatchObject({ item: { id: "i-tea" }, qty: 6 });
     expect(scanBook(book, "8901")).toMatchObject({ item: { id: "i-tea" }, qty: 1 });
@@ -57,6 +74,15 @@ describe("selling offline", () => {
     };
     const got = await downloadBook("p1", async (after) => pages[after ?? "start"]);
     expect([got.items.map((i) => i.id), got.barcodes.length, got.engine.round_total_to]).toEqual([["i-tea", "i-cake"], 1, "1"]);
+  });
+
+  it("does not wait again for a server that has just failed to answer", () => {
+    markUp();
+    expect(serverDown(1_000)).toBe(false);
+    markDown(1_000);
+    expect([serverDown(1_000), serverDown(20_999), serverDown(21_000)]).toEqual([true, true, false]);
+    markUp();
+    expect(serverDown(1_500)).toBe(false);
   });
 
   it("tells a lost connection or an ended session from a refusal", () => {

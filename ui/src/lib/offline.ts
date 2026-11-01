@@ -21,6 +21,17 @@ export function unreachable(e: unknown): boolean {
   return status === 0 || status === 401 || status === 408 || status === 429 || (typeof status === "number" && status >= 500);
 }
 
+/** After the server fails to answer, the till does not wait for it again for a little while: it
+ *  prices from the book at once, so a dead connection costs one slow request, not one per scan. */
+const DOWN_FOR_MS = 20_000;
+let downUntil = 0;
+
+/** Whether the server is thought out of reach now (it just failed, or the browser says offline). */
+export const serverDown = (now = Date.now()) => now < downUntil || (typeof navigator !== "undefined" && navigator.onLine === false);
+export const markDown = (now = Date.now()) => void (downUntil = now + DOWN_FOR_MS);
+export const markUp = () => void (downUntil = 0);
+if (typeof window !== "undefined") window.addEventListener("online", markUp);
+
 /** A request of the till: one try within a few seconds, and never a page change on 401 (the
  *  till keeps working; the person signs in when they choose to send). */
 export async function till<T>(
@@ -36,13 +47,22 @@ export async function till<T>(
   for (const [k, v] of Object.entries(o.query ?? {})) if (v !== undefined) q.set(k, String(v));
   const timeout = AbortSignal.timeout(PATIENCE_MS);
   const signal = o.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([o.signal, timeout]) : (o.signal ?? timeout);
-  const res = await fetch(path + (q.size ? `?${q}` : ""), {
-    method: o.method ?? "GET",
-    headers,
-    body: o.body === undefined ? undefined : JSON.stringify(o.body),
-    credentials: "same-origin",
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(path + (q.size ? `?${q}` : ""), {
+      method: o.method ?? "GET",
+      headers,
+      body: o.body === undefined ? undefined : JSON.stringify(o.body),
+      credentials: "same-origin",
+      signal,
+    });
+  } catch (e) {
+    // A request the till itself gave up on (the cart changed) says nothing about the server.
+    if (!o.signal?.aborted) markDown();
+    throw e;
+  }
+  if (unreachable({ status: res.status })) markDown();
+  else markUp();
   if (!res.ok) throw parseApiError(res.status, await res.json().catch(() => null));
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
@@ -158,23 +178,36 @@ export function times(a: string, b: string): string {
   return scale ? `${sign}${text.slice(0, -scale)}.${text.slice(-scale)}` : `${sign}${text}`;
 }
 
-/** A cart priced from the book with the server's engine, in the fields the till shows (`_calc`'s). */
-export async function priceOffline(book: PriceBook, lines: { key: string; item: string; item_name: string; qty: number }[]): Promise<Doc> {
+/** A cart priced from the book with the server's engine, in the fields the till shows (`_calc`'s).
+ *  A price or discount the cashier typed replaces the book's, as it does on the server. */
+export async function priceOffline(
+  book: PriceBook,
+  lines: { key: string; item: string; item_name: string; qty: number; discount?: string; price?: string }[],
+): Promise<Doc> {
   const items = new Map(book.items.map((i) => [i.id, i]));
   const missing = lines.find((l) => !items.has(l.item));
   if (missing) throw new Error(`${missing.item_name} has no price on this device yet: sell it when the connection is back`);
-  const out = await calculate({
-    ...book.engine,
-    lines: lines.map((l) => {
-      const { tax_qty, ...line } = items.get(l.item)!.line;
-      return { key: l.key, qty: String(l.qty), ...line, ...(tax_qty ? { tax_qty: times(tax_qty, String(l.qty)) } : {}) };
-    }),
+  const typed = (v: string | undefined) => (v?.trim() ? v.trim() : undefined);
+  const priced = lines.map((l) => {
+    const { tax_qty, price, discount_percent, ...rest } = items.get(l.item)!.line;
+    const line = { price: typed(l.price) ?? price, discount_percent: typed(l.discount) ?? discount_percent };
+    return { l, line, input: { key: l.key, qty: String(l.qty), ...rest, price: line.price, ...(line.discount_percent !== undefined ? { discount_percent: line.discount_percent } : {}), ...(tax_qty ? { tax_qty: times(tax_qty, String(l.qty)) } : {}) } };
   });
+  const out = await calculate({ ...book.engine, lines: priced.map((p) => p.input) });
   return {
-    items: lines.map((l, i) => ({ item: l.item, item_name: l.item_name, qty: String(l.qty), rate: out.lines[i].rate, amount: out.lines[i].amount })),
+    items: priced.map(({ l, line }, i) => ({
+      item: l.item,
+      item_name: l.item_name,
+      qty: String(l.qty),
+      rate: out.lines[i].rate,
+      amount: out.lines[i].amount,
+      price_list_rate: line.price,
+      discount_percent: line.discount_percent ?? "0",
+    })),
     total: out.total,
     discount_amount: out.discount_amount,
     total_taxes: out.total_taxes,
+    rounding_adjustment: out.rounding_adjustment,
     grand_total: out.grand_total,
     rounded_total: out.rounded_total,
     offline: true,
@@ -189,6 +222,8 @@ export interface TillMemory {
   session: { id: string; number: string } | null;
   /** Ways of paying, with their kinds (cash shows quick amounts). */
   modes: Doc[];
+  /** Whether they are a POS manager, which lifts the cashier's limits at the till. */
+  manager?: boolean;
 }
 
 const MEMORY = "ferrum.pos.till";
