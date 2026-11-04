@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+Rebuilt with Ferrum-Frontend 80ff179: a field's label names its control for assistive technology, and a record whose title is a link shows that record's title, not its id.
+
 ## 0.3.0
 
 The till, rebuilt for a cashier with a queue, and the returns and shift screens it was missing.
