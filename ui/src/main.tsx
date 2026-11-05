@@ -12,6 +12,7 @@ import { engineUrl } from "@ferrum/calc";
 import { routeBase, shell } from "@ferrum/client";
 import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
 import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
+import { keepToTheLease } from "./lib/offline";
 import { RegisterPage } from "./Register";
 import "./styles.css";
 
@@ -99,6 +100,8 @@ const router = createBrowserRouter(
   ],
   { basename: routeBase("pos") },
 );
+
+keepToTheLease();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
