@@ -5,7 +5,7 @@
 // prices them from the same inputs. The server prices every sale again when it arrives.
 
 import { calculate, type CalcInput } from "@ferrum/calc";
-import { bootstrap, parseApiError } from "@ferrum/client";
+import { bootstrap, cacheName, offlineEnv, parseApiError, renewOfflineLease, sweep } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 
 // ── requests the till makes ──
@@ -116,12 +116,19 @@ export async function downloadBook(profile: string, page: (after: string | null)
   return book;
 }
 
-const DB = "ferrum-pos";
 const BOOKS = "pricebooks";
+
+/** Where the book is kept: under the workspace's offline lease (Ferrum docs/offline.md), for this
+ *  person's sign-in; nowhere when the workspace keeps nothing on devices or the lease has ended. */
+function bookDb(): string | null {
+  return cacheName(offlineEnv(), "pos", "pricebooks");
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
+    const db = bookDb();
+    if (!db) return reject(new Error("this device may not keep the price book"));
+    const req = indexedDB.open(db, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(BOOKS, { keyPath: "profile" });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -228,11 +235,13 @@ export interface TillMemory {
   manager?: boolean;
 }
 
-const MEMORY = "ferrum.pos.till";
+/** Where the till's memory is kept: like the book, under the lease. */
+const memoryKey = () => cacheName(offlineEnv(), "pos", "till");
 
 export function recallTill(profile: string, email: string): TillMemory | null {
   try {
-    const all = JSON.parse(localStorage.getItem(MEMORY) ?? "{}") as Record<string, TillMemory>;
+    const key = memoryKey();
+    const all = JSON.parse((key && localStorage.getItem(key)) || "{}") as Record<string, TillMemory>;
     const m = all[profile];
     return m && m.email === email ? m : null;
   } catch {
@@ -242,9 +251,11 @@ export function recallTill(profile: string, email: string): TillMemory | null {
 
 export function rememberTill(m: TillMemory): void {
   try {
-    const all = JSON.parse(localStorage.getItem(MEMORY) ?? "{}") as Record<string, TillMemory>;
+    const key = memoryKey();
+    if (!key) return;
+    const all = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, TillMemory>;
     all[String(m.profile.id)] = m;
-    localStorage.setItem(MEMORY, JSON.stringify(all));
+    localStorage.setItem(key, JSON.stringify(all));
   } catch {
     // a private window: the till starts online only
   }
@@ -253,11 +264,34 @@ export function rememberTill(m: TillMemory): void {
 /** Registers this device worked, for picking one offline. */
 export function knownRegisters(email: string): Doc[] {
   try {
-    const all = JSON.parse(localStorage.getItem(MEMORY) ?? "{}") as Record<string, TillMemory>;
+    const key = memoryKey();
+    const all = JSON.parse((key && localStorage.getItem(key)) || "{}") as Record<string, TillMemory>;
     return Object.values(all)
       .filter((m) => m.email === email)
       .map((m) => m.profile);
   } catch {
     return [];
   }
+}
+
+// ── what the device may keep ──
+
+/** Before the shared policy the book and the till's memory were kept for anyone on the device. */
+const LEGACY = { db: "ferrum-pos", memory: "ferrum.pos.till" };
+
+/** At start: forgets what the lease no longer covers (and what was kept before it), then renews
+ *  the lease every hour while the till is open. Queued and held sales are kept whatever it says. */
+export function keepToTheLease(every = 3_600_000): () => void {
+  const forget = () => {
+    void sweep(offlineEnv(), typeof indexedDB === "undefined" ? undefined : indexedDB);
+  };
+  try {
+    localStorage.removeItem(LEGACY.memory);
+    if (typeof indexedDB !== "undefined") indexedDB.deleteDatabase(LEGACY.db);
+  } catch {
+    // nothing kept, or nothing to keep it in
+  }
+  forget();
+  const timer = setInterval(() => void renewOfflineLease().then(forget), every);
+  return () => clearInterval(timer);
 }
