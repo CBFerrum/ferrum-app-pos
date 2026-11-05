@@ -296,6 +296,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.3.3** | Rebuilt with Ferrum-Frontend 00dea07: a workflow state's kept fields are read-only, its needed ones required. |
 | **0.3.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |
 | **0.3.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
 | **0.3.0** | The till rebuilt for a queue (scan box always ready, keyboard shortcuts, a line editor, a new pay window, hold and resume), a returns desk, and opening and closing a shift with a counted drawer and a Z report … |
