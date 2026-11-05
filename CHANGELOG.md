@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+The till keeps to the workspace's offline policy (Ferrum docs/offline.md): its price book and what it last knew of the register are kept for the person signed in, under their lease, and forgotten when the lease ends, when someone else signs in on the device, or when they are signed out everywhere; a workspace that keeps nothing on devices sells online only. Queued and held sales are kept until they are sent, whatever the lease says. What was kept before the policy, for anyone on the device, is forgotten once.
+
 ## 0.3.3
 
 Rebuilt with Ferrum-Frontend 00dea07: in a workflow state that names what may change, the other fields show read-only, and the fields the state needs show required.

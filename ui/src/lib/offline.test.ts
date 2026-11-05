@@ -95,3 +95,40 @@ describe("selling offline", () => {
     ]);
   });
 });
+
+describe("what the device keeps", () => {
+  const memory = () => {
+    const map = new Map<string, string>();
+    return { map, getItem: (k: string) => map.get(k) ?? null, setItem: (k: string, v: string) => void map.set(k, v), removeItem: (k: string) => void map.delete(k), key: (i: number) => [...map.keys()][i] ?? null, get length() { return map.size; } };
+  };
+  const till = { email: "asha@shop.test", profile: { id: "p1", name: "Front" }, session: null, modes: [] };
+  const lease = (key: string, until: string | null) => ({ allowed: until !== null, until, hours: 72, key, person: "u1" });
+
+  it("keeps the till's memory under the lease, for this sign-in only", async () => {
+    const { resetBootstrap } = await import("@ferrum/client");
+    const { fakeBootstrap } = await import("@ferrum/testing");
+    const { recallTill, rememberTill, keepToTheLease } = await import("./offline");
+    const storage = memory();
+    Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
+    const as = (offline: unknown) => {
+      (globalThis as { __FERRUM_BOOTSTRAP__?: unknown }).__FERRUM_BOOTSTRAP__ = fakeBootstrap({ offline } as never);
+      resetBootstrap();
+    };
+    as(lease("k1", "2999-01-01T00:00:00Z"));
+    storage.setItem("ferrum.pos.till", JSON.stringify({ p1: till }));
+    const stop = keepToTheLease();
+    stop();
+    expect(storage.map.has("ferrum.pos.till")).toBe(false);
+    rememberTill(till);
+    expect(recallTill("p1", "asha@shop.test")?.profile.name).toBe("Front");
+    // Signed out everywhere: a new key, and what the old sign-in kept goes.
+    as(lease("k2", "2999-01-01T00:00:00Z"));
+    keepToTheLease()();
+    expect(recallTill("p1", "asha@shop.test")).toBeNull();
+    expect([...storage.map.keys()].filter((k) => k.includes(".pos.k1."))).toEqual([]);
+    // The workspace keeps nothing on devices: nothing is kept.
+    as(lease("k2", null));
+    rememberTill(till);
+    expect(recallTill("p1", "asha@shop.test")).toBeNull();
+  });
+});
