@@ -296,6 +296,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.3.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |
 | **0.3.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
 | **0.3.0** | The till rebuilt for a queue (scan box always ready, keyboard shortcuts, a line editor, a new pay window, hold and resume), a returns desk, and opening and closing a shift with a counted drawer and a Z report … |
 | **0.2.3** | Selling offline prices as the server does with the platform's newer engine (Ferrum-Frontend 9ecf5bf, built from Ferrum b5b2d3f, localization.md … |
