@@ -296,6 +296,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.4.0** | The price book and the register's memory kept under the workspace's offline lease, for the person signed in; queued sales kept until sent |
 | **0.3.3** | Rebuilt with Ferrum-Frontend 00dea07: a workflow state's kept fields are read-only, its needed ones required. |
 | **0.3.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |
 | **0.3.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
