@@ -13,7 +13,7 @@ import type { Doc } from "@ferrum/records";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { quickCash, receiptHtml, type Tender } from "./lib/pos";
-import { till } from "./lib/offline";
+import { till, tillAll } from "./lib/offline";
 import { printHtml } from "./print";
 
 interface Method {
@@ -67,11 +67,12 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
     queryFn: async ({ signal }) => {
       const [p, e] = await Promise.all([
         till<Doc>(docPath("LoyaltyProgram", program!), { signal }),
-        till<{ rows: Doc[] }>(docPath("LoyaltyPointEntry"), { query: { filters: JSON.stringify({ loyalty_program: program, customer }), fields: "points,remaining,expiry_date", limit: 1000 }, signal }),
+        // Every entry: a balance over one page of them would be wrong for a long-standing customer.
+        tillAll<Doc>(docPath("LoyaltyPointEntry"), { filters: JSON.stringify({ loyalty_program: program, customer }), fields: "points,remaining,expiry_date" }, signal),
       ]);
       return {
         factor: num(p.conversion_factor),
-        available: pointsAvailable(e.rows.map((r) => ({ points: num(r.points), remaining: num(r.remaining), expiry_date: str(r.expiry_date) || null })), localDate(new Date())),
+        available: pointsAvailable(e.map((r) => ({ points: num(r.points), remaining: num(r.remaining), expiry_date: str(r.expiry_date) || null })), localDate(new Date())),
       };
     },
   });

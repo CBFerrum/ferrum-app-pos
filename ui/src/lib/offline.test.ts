@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { engineUrl, loadEngine } from "@ferrum/calc";
-import { downloadBook, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, times, unreachable, type PriceBook } from "./offline";
+import { downloadBook, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, times, unreachable, type PriceBook } from "./offline";
 
 const book: PriceBook = {
   profile: "p1",
@@ -130,5 +130,25 @@ describe("what the device keeps", () => {
     as(lease("k2", null));
     rememberTill(till);
     expect(recallTill("p1", "asha@shop.test")).toBeNull();
+  });
+});
+
+describe("a list read whole", () => {
+  it("reads every page of a customer's points, not the first 500", async () => {
+    const pages: Record<string, { rows: { points: number }[]; next_cursor?: string | null }> = {
+      "": { rows: [{ points: 100 }, { points: -30 }], next_cursor: "c2" },
+      c2: { rows: [{ points: 50 }], next_cursor: null },
+    };
+    const asked: unknown[] = [];
+    const get = async <R,>(_p: string, o: { query?: Record<string, unknown> }) => {
+      asked.push([o.query?.cursor, o.query?.sort, o.query?.limit]);
+      return pages[String(o.query?.cursor ?? "")] as R;
+    };
+    const rows = await tillAll<{ points: number }>("/api/v1/LoyaltyPointEntry", { fields: "points" }, undefined, get);
+    expect(rows.reduce((s, r) => s + r.points, 0)).toBe(120);
+    expect(asked).toEqual([
+      [undefined, "created_at desc", 500],
+      ["c2", "created_at desc", 500],
+    ]);
   });
 });
