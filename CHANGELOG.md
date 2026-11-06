@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+Rebuilt with Ferrum-Frontend bb60115: a record page reads an empty number or check as the server does, so an action whose condition needs one shows, and a workspace's settings open as their one record.
+
 ## 0.4.0
 
 The till keeps to the workspace's offline policy (Ferrum docs/offline.md): its price book and what it last knew of the register are kept for the person signed in, under their lease, and forgotten when the lease ends, when someone else signs in on the device, or when they are signed out everywhere; a workspace that keeps nothing on devices sells online only. Queued and held sales are kept until they are sent, whatever the lease says. What was kept before the policy, for anyone on the device, is forgotten once.
