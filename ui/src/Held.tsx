@@ -2,6 +2,7 @@
 // they work offline and cost the server nothing), per register and cashier; resuming one brings
 // its lines and customer back, and re-prices them, so a price that changed meanwhile is the new one.
 
+import { formatMoment } from "@ferrum/client";
 import { Button, Dialog, EmptyState } from "@ferrum/kit";
 import { useMoney } from "./fmt";
 import { heldSummary, type HeldSale } from "./lib/held";
@@ -23,7 +24,7 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
                 <div className="pos-held-main">
                   <strong>{who}</strong>
                   <span className="muted">
-                    {lines} · {new Date(s.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    {lines} · {formatMoment(s.at, { hour: "numeric", minute: "2-digit" })}
                     {s.total ? ` · ${money(s.total)}` : ""}
                   </span>
                   <span className="faint pos-held-items">{s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", ")}</span>
