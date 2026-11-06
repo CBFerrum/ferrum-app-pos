@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+A customer's loyalty balance at the till was added up over one page of their point entries: the till asked for 1,000, the server pages at 500, so a long-standing customer's balance left out entries, earned or spent. The till now reads every page.
+
 ## 0.4.3
 
 Rebuilt with Ferrum-Frontend a76295e: its pages show times on a person's own clock when they chose one on their Account page, while today and due dates stay on the workspace's day.
