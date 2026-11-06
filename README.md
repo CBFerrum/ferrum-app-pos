@@ -296,6 +296,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.4.3** | Rebuilt with Ferrum-Frontend a76295e: times on a person's own clock when they chose one. |
 | **0.4.2** | Times on the workspace's clock; rebuilt with Ferrum-Frontend 24c3951. |
 | **0.4.1** | Rebuilt with Ferrum-Frontend bb60115: empty numbers read as the server reads them; settings open as their record. |
 | **0.4.0** | The price book and the register's memory kept under the workspace's offline lease, for the person signed in; queued sales kept until sent |

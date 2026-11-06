@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+Rebuilt with Ferrum-Frontend a76295e: its pages show times on a person's own clock when they chose one on their Account page, while today and due dates stay on the workspace's day.
+
 ## 0.4.2
 
 A till's sales, held sales, the shift's opening and the X and Z reports are on the workspace's clock. Rebuilt with Ferrum-Frontend 24c3951, so its records' pages show times on the workspace's clock too, a draft numbered on submit is headed as a draft, and a record of an app that is not installed says so.
