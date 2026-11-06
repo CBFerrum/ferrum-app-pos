@@ -69,6 +69,24 @@ export async function till<T>(
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
+/** Every row of a list, page after page by cursor: the server pages at 500, and cursors need the
+ *  creation order. */
+export async function tillAll<T>(
+  path: string,
+  query: Record<string, string | number | boolean | undefined>,
+  signal?: AbortSignal,
+  get: <R>(p: string, o: { query?: Record<string, string | number | boolean | undefined>; signal?: AbortSignal }) => Promise<R> = till,
+): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await get<{ rows: T[]; next_cursor?: string | null }>(path, { query: { ...query, limit: 500, sort: "created_at desc", cursor }, signal });
+    out.push(...page.rows);
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return out;
+}
+
 // ── the price book ──
 
 export interface BookItem {
