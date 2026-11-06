@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { docPath, errorMessage, formatDecimal, newKey, shell } from "@ferrum/client";
+import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell } from "@ferrum/client";
 import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CartLines, Totals, type Base } from "./Cart";
@@ -588,7 +588,7 @@ function OutboxBar({
       {refused.map((s) => (
         <div key={s.key} className="pos-outbox-row">
           <span className="pos-outbox-text">
-            Sale of {new Date(s.at).toLocaleTimeString()}
+            Sale of {formatMoment(s.at, { timeStyle: "medium" })}
             {s.total ? ` (${money(s.total)})` : ""} was refused: {s.error}
           </span>
           <Button onClick={() => onRetry(s.key)}>Retry</Button>

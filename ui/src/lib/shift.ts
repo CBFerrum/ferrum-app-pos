@@ -3,7 +3,7 @@
 // out what is expected (`pos_sales_summary` for the session) and books the difference when the
 // closing is submitted; this is the counting and the page that is printed.
 
-import { formatDecimal } from "@ferrum/client";
+import { formatDecimal, formatMoment } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { round } from "./pay";
 import { esc, printPage } from "./pos";
@@ -131,7 +131,7 @@ export function reasonOf(remarks: string | null | undefined): string {
 export function zReportHtml(profile: Doc, report: Report, remarks?: string | null): string {
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const s = report.meta.session;
-  const at = (v: string | null | undefined) => (v ? new Date(v).toLocaleString() : "");
+  const at = (v: string | null | undefined) => formatMoment(v, { dateStyle: "medium", timeStyle: "medium" });
   const takings = report.rows.map((r) => `<tr><td>${esc(r.mode_of_payment)}<br><small>${esc(r.payments)} payments</small></td><td class="r">${esc(money(r.amount))}</td></tr>`).join("");
   const drawer = (s?.reconciliation ?? [])
     .map(

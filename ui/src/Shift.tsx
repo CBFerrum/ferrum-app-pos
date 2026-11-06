@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
-import { api, docPath, errorMessage, formatDecimal, request } from "@ferrum/client";
+import { api, docPath, errorMessage, formatDecimal, formatMoment, request } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
@@ -227,7 +227,7 @@ function Closing({
             <h1>{z ? "Shift closed" : "Close the shift"}</h1>
             <p className="muted">
               {str(profile.profile_name)} · session {meta.session?.number ?? session.number}
-              {meta.session?.opened_at ? ` · opened ${new Date(meta.session.opened_at).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}
+              {meta.session?.opened_at ? ` · opened ${formatMoment(meta.session.opened_at, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}
             </p>
           </div>
           <span className="spacer" />
