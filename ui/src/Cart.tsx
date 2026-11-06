@@ -6,6 +6,7 @@
 
 import { Minus, Plus } from "lucide-react";
 import { useState } from "react";
+import { formatMoment } from "@ferrum/client";
 import { Button } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { num, useMoney } from "./fmt";
@@ -221,7 +222,7 @@ export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; 
       <dt className="pos-total-label">Total</dt>
       <dd className="pos-total" aria-live="polite">{money(due)}</dd>
       {offline && builtAt && (
-        <dd className="pos-totals-note faint">Priced on this device (prices of {new Date(builtAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}); checked again when the sale is sent.</dd>
+        <dd className="pos-totals-note faint">Priced on this device (prices of {formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })}); checked again when the sale is sent.</dd>
       )}
     </dl>
   );
