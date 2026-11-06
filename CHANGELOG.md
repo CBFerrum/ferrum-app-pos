@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.5
+
+Rebuilt with Ferrum-Frontend a64416a: a new record's box whose default is 1 shows ticked, as it is saved. An action's dialog says every refusal, the errors on what the action made (another record's rows) among them, and an action with parameters and a confirmation asks once.
+
 ## 0.4.4
 
 A customer's loyalty balance at the till was added up over one page of their point entries: the till asked for 1,000, the server pages at 500, so a long-standing customer's balance left out entries, earned or spent. The till now reads every page.
