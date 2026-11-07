@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell } from "@ferrum/client";
+import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr } from "@ferrum/client";
 import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CartLines, Totals, type Base } from "./Cart";
@@ -220,10 +220,10 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const hold = () => {
     if (!lines.length) return;
     const next = putAside(held, { lines, customer, key: saleKey.current }, now(), totalOf(calc.doc));
-    if (!saveHeld(owner, next)) return void toast("This device could not keep the sale aside: its storage is full or blocked.", "error");
+    if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
-    toast("Sale put on hold");
+    toast(tr("Sale put on hold"));
     focusScan();
   };
   const resume = async (key: string) => {
@@ -240,7 +240,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
       if (!ok) return;
       next = putAside(rest, { lines, customer, key: saleKey.current }, now(), totalOf(calc.doc));
     }
-    if (!saveHeld(owner, next)) return void toast("This device could not keep the sales on hold: its storage is full or blocked.", "error");
+    if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
     setHeld(next);
     setLines(sale.lines);
     setCustomer(sale.customer);
@@ -294,9 +294,9 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   };
 
   // The end of a shift is read from the server (what the register expects), so it waits for a connection.
-  const shift = (to: string) => (away || serverDown() ? toast("Closing the shift needs a connection: the register's figures are the server's.", "error") : navigate(to));
+  const shift = (to: string) => (away || serverDown() ? toast(tr("Closing the shift needs a connection: the register's figures are the server's."), "error") : navigate(to));
   const openReturns = () => {
-    if (away || serverDown()) return void toast("Returns need a connection: the sale being returned is read from the server.", "error");
+    if (away || serverDown()) return void toast(tr("Returns need a connection: the sale being returned is read from the server."), "error");
     setDialog("returns");
   };
 
@@ -361,29 +361,29 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         <h1>{str(profile.profile_name)}</h1>
         <Badge>{session.number ? `Session ${session.number}` : "Session open"}</Badge>
         {away ? (
-          <Badge tone="amber" title="Selling from this device; sales are sent when the connection is back">
-            <CloudOff className="size-3.5" aria-hidden="true" /> Offline
+          <Badge tone="amber" title={tr("Selling from this device; sales are sent when the connection is back")}>
+            <CloudOff className="size-3.5" aria-hidden="true" /> {tr("Offline")}
           </Badge>
         ) : (
           pending > 0 && (
             <Badge tone="amber">
-              <WifiOff className="size-3.5" aria-hidden="true" /> {pending} to send
+              <WifiOff className="size-3.5" aria-hidden="true" /> {tr("{pending} to send", { pending })}
             </Badge>
           )
         )}
         <span className="spacer" />
         <Button className="pos-btn" onClick={() => setDialog("held")}>
-          On hold
+          {tr("On hold")}
           {held.length > 0 && <Badge tone="blue">{held.length}</Badge>}
         </Button>
         <Button className="pos-btn" onClick={openReturns} title={away ? "Returns need a connection" : undefined}>
-          Return
+          {tr("Return")}
         </Button>
-        <Menu label="Shift" buttonClass="btn btn-default btn-md pos-btn">
+        <Menu label={tr("Shift")} buttonClass="btn btn-default btn-md pos-btn">
           {(close) => (
             <>
-              <MenuItem onSelect={() => (close(), shift("/shift"))}>Count the drawer and close the shift</MenuItem>
-              <MenuItem onSelect={() => (close(), shift("/shift#cash"))}>Cash in or out</MenuItem>
+              <MenuItem onSelect={() => (close(), shift("/shift"))}>{tr("Count the drawer and close the shift")}</MenuItem>
+              <MenuItem onSelect={() => (close(), shift("/shift#cash"))}>{tr("Cash in or out")}</MenuItem>
               {onSwitch && (
                 <MenuItem
                   onSelect={() => {
@@ -391,18 +391,18 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
                     onSwitch();
                   }}
                 >
-                  Switch register
+                  {tr("Switch register")}
                 </MenuItem>
               )}
             </>
           )}
         </Menu>
-        <Button className="pos-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" onClick={() => setDialog("keys")}>
+        <Button className="pos-btn" aria-label={tr("Keyboard shortcuts")} title={tr("Keyboard shortcuts")} onClick={() => setDialog("keys")}>
           ?
         </Button>
       </header>
 
-      <section className="pos-items" aria-label="Items">
+      <section className="pos-items" aria-label={tr("Items")}>
         <form onSubmit={onScan} className="pos-scan">
           <div className="pos-scan-box">
             <ScanBarcode className="pos-scan-icon" aria-hidden="true" />
@@ -415,13 +415,13 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
               spellCheck={false}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Scan a barcode or search items"
-              aria-label="Scan a barcode or search items"
+              placeholder={tr("Scan a barcode or search items")}
+              aria-label={tr("Scan a barcode or search items")}
               aria-keyshortcuts="F2"
             />
           </div>
           <Button type="submit" className="pos-btn">
-            Add
+            {tr("Add")}
           </Button>
         </form>
         {outbox.queued.length > 0 && <OutboxBar queued={outbox.queued} mine={outbox.mine} signedOut={outbox.signedOut} onSend={() => void outbox.flush()} onRetry={outbox.retry} onDiscard={outbox.discard} />}
@@ -446,10 +446,10 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         {items.data && !items.data.rows.length && <p className="muted">{q ? `No items match “${q}”.` : "No items to show."}</p>}
       </section>
 
-      <section className="pos-sale" aria-label="Sale">
-        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label="Customer" placeholder={titleOf(profile, "customer") || "Walk-in customer"} />
+      <section className="pos-sale" aria-label={tr("Sale")}>
+        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={tr("Customer")} placeholder={titleOf(profile, "customer") || "Walk-in customer"} />
         {lines.length === 0 ? (
-          <p className="pos-empty">Scan or tap items to start a sale.</p>
+          <p className="pos-empty">{tr("Scan or tap items to start a sale.")}</p>
         ) : (
           <CartLines
             lines={lines}
@@ -473,16 +473,16 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         )}
         {calc.pending && lines.length > 0 && !calc.doc && (
           <p className="muted">
-            <Spinner small /> Pricing…
+            <Spinner small /> {tr("Pricing…")}
           </p>
         )}
         {calc.doc && lines.length > 0 && <Totals doc={calc.doc} due={due} offline={calc.offline} builtAt={book?.built_at} />}
         <div className="pos-actions">
           <Button className="pos-btn" disabled={!lines.length} onClick={hold} aria-keyshortcuts="F9">
-            Hold
+            {tr("Hold")}
           </Button>
           <Button className="pos-btn" disabled={!lines.length} onClick={clearSale}>
-            Clear
+            {tr("Clear")}
           </Button>
           <Button variant="primary" className="pos-btn pos-pay" disabled={!ready} onClick={() => setDialog("pay")} aria-keyshortcuts="F4">
             {calc.pending && lines.length ? "Pricing…" : ready ? `Pay ${money(due)}` : "Pay"}
@@ -523,7 +523,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
       {dialog === "returns" && (
         <Guard
           onError={() => {
-            toast("Returns could not be loaded. Check the connection and try again.", "error");
+            toast(tr("Returns could not be loaded. Check the connection and try again."), "error");
             setDialog(null);
           }}
         >
@@ -571,29 +571,29 @@ function OutboxBar({
         <div className="pos-outbox-row">
           <WifiOff className="size-4" aria-hidden="true" />
           <span className="pos-outbox-text">
-            {own === 1 ? "1 sale is" : `${own} sales are`} kept on this device until {signedOut ? "you sign in again" : "they can be sent"}.
+            {own === 1 ? "1 sale is" : `${own} sales are`} {tr("kept on this device until")} {signedOut ? "you sign in again" : "they can be sent"}.
           </span>
           {signedOut ? (
-            <Button onClick={() => shell().session.reauthenticate()}>Sign in to send</Button>
+            <Button onClick={() => shell().session.reauthenticate()}>{tr("Sign in to send")}</Button>
           ) : (
-            <Button onClick={onSend}>Send now</Button>
+            <Button onClick={onSend}>{tr("Send now")}</Button>
           )}
         </div>
       )}
       {others.length > 0 && (
         <p className="pos-outbox-row">
-          {others.length === 1 ? "1 sale" : `${others.length} sales`} by {[...new Set(others.map((s) => s.by))].join(", ")} will be sent when they sign in on this device.
+          {others.length === 1 ? "1 sale" : `${others.length} sales`} by {[...new Set(others.map((s) => s.by))].join(", ")} {tr("will be sent when they sign in on this device.")}
         </p>
       )}
       {refused.map((s) => (
         <div key={s.key} className="pos-outbox-row">
           <span className="pos-outbox-text">
-            Sale of {formatMoment(s.at, { timeStyle: "medium" })}
-            {s.total ? ` (${money(s.total)})` : ""} was refused: {s.error}
+            {tr("Sale of")} {formatMoment(s.at, { timeStyle: "medium" })}
+            {s.total ? ` (${money(s.total)})` : ""} {tr("was refused: {error}", { error: s.error ?? "" })}
           </span>
-          <Button onClick={() => onRetry(s.key)}>Retry</Button>
+          <Button onClick={() => onRetry(s.key)}>{tr("Retry")}</Button>
           <Button variant="ghost" onClick={() => onDiscard(s.key)}>
-            Discard
+            {tr("Discard")}
           </Button>
         </div>
       ))}

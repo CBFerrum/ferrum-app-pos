@@ -7,7 +7,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useContext, useMemo, useState, type FormEvent } from "react";
-import { docPath } from "@ferrum/client";
+import { docPath, t as tr } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
@@ -155,49 +155,49 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const status = t.problem ? (
     <p className="pos-status pos-status-bad">{t.problem}</p>
   ) : t.left > 0 ? (
-    <p className="pos-status pos-status-due">Still due <strong>{money(t.left)}</strong></p>
+    <p className="pos-status pos-status-due">{tr("Still due")} <strong>{money(t.left)}</strong></p>
   ) : t.change > 0 ? (
-    <p className="pos-status pos-status-change">Change <strong>{money(t.change)}</strong></p>
+    <p className="pos-status pos-status-change">{tr("Change")} <strong>{money(t.change)}</strong></p>
   ) : t.writeOff > 0 ? (
-    <p className="pos-status">Short by {money(t.writeOff)}, which this register writes off.</p>
+    <p className="pos-status">{tr("Short by")} {money(t.writeOff)}{tr(", which this register writes off.")}</p>
   ) : (
-    <p className="pos-status pos-status-change">Paid exactly</p>
+    <p className="pos-status pos-status-change">{tr("Paid exactly")}</p>
   );
 
   return (
     <Dialog
       open
       onClose={() => void close()}
-      title="Take payment"
+      title={tr("Take payment")}
       footer={
         <>
           <Button onClick={() => void close()} disabled={busy}>
-            Back
+            {tr("Back")}
           </Button>
           {!covered && pending && (
             <Button onClick={add} disabled={busy}>
-              Add payment
+              {tr("Add payment")}
             </Button>
           )}
           <Button variant="primary" className="pos-btn" onClick={() => void complete()} loading={busy} disabled={!covered}>
-            Complete sale
+            {tr("Complete sale")}
           </Button>
         </>
       }
     >
       <form className="pos-paying" onSubmit={submit}>
         <p className="pos-due">
-          <span className="muted">Total due</span>
+          <span className="muted">{tr("Total due")}</span>
           <strong>{money(due)}</strong>
         </p>
         {rounding !== 0 && (
           <p className="faint pos-rounding">
-            Rounded from {money(grand)} ({rounding > 0 ? "+" : "−"}
+            {tr("Rounded from")} {money(grand)} ({rounding > 0 ? "+" : "−"}
             {money(Math.abs(rounding))})
           </p>
         )}
 
-        <div className="pos-methods" role="group" aria-label="Way of paying">
+        <div className="pos-methods" role="group" aria-label={tr("Way of paying")}>
           {methods.map((m) => (
             <button key={m.id} type="button" className="pos-method" aria-pressed={m.id === method} disabled={!usable(m) || busy} onClick={() => choose(m.id)}>
               {m.name}
@@ -225,7 +225,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
               />
             </Field>
             {current.kind === "Cash" && (
-              <div className="pos-quick" role="group" aria-label="Cash handed over">
+              <div className="pos-quick" role="group" aria-label={tr("Cash handed over")}>
                 {quickCash(before, steps).map((v, i) => (
                   <Button key={v} className="pos-btn" onClick={() => setAmount(String(v))}>
                     {i === 0 ? "Exact " : ""}
@@ -235,17 +235,17 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
               </div>
             )}
             {(current.kind === "Bank" || current.kind === "General") && (
-              <Field label="Reference" htmlFor="pay-ref" hint="A card approval code or a UPI id, if you want it on the sale.">
+              <Field label={tr("Reference")} htmlFor="pay-ref" hint={tr("A card approval code or a UPI id, if you want it on the sale.")}>
                 <input id="pay-ref" className="input" autoComplete="off" value={reference} onChange={(e) => setReference(e.target.value)} />
               </Field>
             )}
-            {current.kind === "Credit" && <p className="faint pos-hint">On account: the customer pays later, and this stays open as theirs to pay.</p>}
+            {current.kind === "Credit" && <p className="faint pos-hint">{tr("On account: the customer pays later, and this stays open as theirs to pay.")}</p>}
           </>
         )}
 
         {current && usingPoints && (
           <Field
-            label="Points to use"
+            label={tr("Points to use")}
             htmlFor="pay-points"
             hint={balance.isLoading ? "Looking up the balance…" : balance.error ? "The balance could not be read." : `${available} points available, ${money(pointsValue(available, factor, precision))} to spend.`}
           >
@@ -260,13 +260,13 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
                 onFocus={(e) => e.target.select()}
                 onChange={(e) => setPoints(e.target.value.replace(/\D/g, ""))}
               />
-              <Button onClick={() => setPoints(String(pointsFor(before, available, factor, precision)))}>As many as the bill allows</Button>
+              <Button onClick={() => setPoints(String(pointsFor(before, available, factor, precision)))}>{tr("As many as the bill allows")}</Button>
             </div>
           </Field>
         )}
 
         {added.length > 0 && (
-          <ul className="pos-added" aria-label="Payments added">
+          <ul className="pos-added" aria-label={tr("Payments added")}>
             {added.map((p, i) => (
               <li key={`${p.mode_of_payment}-${i}`}>
                 <span>
@@ -304,7 +304,7 @@ export function ReceiptDialog({ profile, sale, onClose }: { profile: Doc; sale: 
       footer={
         <>
           <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, sale))}>
-            Print receipt
+            {tr("Print receipt")}
           </Button>
           <Button variant="primary" className="pos-btn" data-autofocus onClick={onClose}>
             {sale.is_return ? "Done" : "Next sale"}
@@ -315,13 +315,13 @@ export function ReceiptDialog({ profile, sale, onClose }: { profile: Doc; sale: 
       <div className="pos-done">
         {change > 0 && (
           <p className="pos-status pos-status-change">
-            Change <strong>{money(change)}</strong>
+            {tr("Change")} <strong>{money(change)}</strong>
           </p>
         )}
         <p>
-          {kept ? <Badge tone="amber">Not sent yet</Badge> : <strong>{str(sale.number)}</strong>} · {money(sale.rounded_total ?? sale.grand_total)}
+          {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{str(sale.number)}</strong>} · {money(sale.rounded_total ?? sale.grand_total)}
         </p>
-        {kept && <p className="muted">It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.</p>}
+        {kept && <p className="muted">{tr("It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.")}</p>}
       </div>
     </Dialog>
   );

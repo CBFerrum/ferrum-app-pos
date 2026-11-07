@@ -4,7 +4,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useContext, useRef, useState, type FormEvent } from "react";
-import { docPath, errorMessage, newKey } from "@ferrum/client";
+import { docPath, errorMessage, newKey, t } from "@ferrum/client";
 import { Alert, Button, Field, toast } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
@@ -37,7 +37,7 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
     try {
       const balance_details = rows.map((r) => ({ mode_of_payment: r.mode_of_payment, opening_amount: String(amountOf(str(r.mode_of_payment))) }));
       await till(docPath("PosOpeningEntry"), { method: "POST", body: { pos_profile: profile.id, balance_details }, query: { submit: true }, idempotencyKey: key.current });
-      toast("Register open");
+      toast(t("Register open"));
       void qc.invalidateQueries({ queryKey: ["pos", "session"] });
       onOpened();
     } catch (err) {
@@ -49,8 +49,8 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
   return (
     <form onSubmit={submit} className="pos-open">
       <div>
-        <h2>Open the register</h2>
-        <p className="muted">Count the float in the drawer for each way of paying. You can open it with nothing in it.</p>
+        <h2>{t("Open the register")}</h2>
+        <p className="muted">{t("Count the float in the drawer for each way of paying. You can open it with nothing in it.")}</p>
       </div>
       {rows.map((r) => {
         const mode = str(r.mode_of_payment);
@@ -79,12 +79,12 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
       })}
       {counting && <CashCounter value={count} onChange={setCount} />}
       <p className="pos-counter-total">
-        <span className="muted">Float</span>
+        <span className="muted">{t("Float")}</span>
         <strong>{money(total)}</strong>
       </p>
       {error && <Alert tone="error">{error}</Alert>}
       <Button type="submit" variant="primary" className="pos-btn" loading={busy} disabled={bad}>
-        Open register
+        {t("Open register")}
       </Button>
     </form>
   );
