@@ -2,7 +2,7 @@
 // they work offline and cost the server nothing), per register and cashier; resuming one brings
 // its lines and customer back, and re-prices them, so a price that changed meanwhile is the new one.
 
-import { formatMoment } from "@ferrum/client";
+import { formatMoment, t } from "@ferrum/client";
 import { Button, Dialog, EmptyState } from "@ferrum/kit";
 import { useMoney } from "./fmt";
 import { heldSummary, type HeldSale } from "./lib/held";
@@ -10,10 +10,10 @@ import { heldSummary, type HeldSale } from "./lib/held";
 export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldSale[]; onResume: (key: string) => void; onDiscard: (key: string) => void; onClose: () => void }) {
   const money = useMoney();
   return (
-    <Dialog open onClose={onClose} title="Sales on hold" footer={<Button onClick={onClose}>Close</Button>}>
+    <Dialog open onClose={onClose} title={t("Sales on hold")} footer={<Button onClick={onClose}>{t("Close")}</Button>}>
       {held.length === 0 ? (
-        <EmptyState title="Nothing on hold" icon="list">
-          Press Hold to set a sale aside while you serve someone else.
+        <EmptyState title={t("Nothing on hold")} icon="list">
+          {t("Press Hold to set a sale aside while you serve someone else.")}
         </EmptyState>
       ) : (
         <ul className="pos-held">
@@ -30,10 +30,10 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
                   <span className="faint pos-held-items">{s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", ")}</span>
                 </div>
                 <Button variant="primary" onClick={() => onResume(s.key)}>
-                  Resume
+                  {t("Resume")}
                 </Button>
                 <Button variant="danger" aria-label={`Discard the sale of ${who}`} onClick={() => onDiscard(s.key)}>
-                  Discard
+                  {t("Discard")}
                 </Button>
               </li>
             );
@@ -61,7 +61,7 @@ const KEYS: [string, string][] = [
 
 export function KeysDialog({ onClose }: { onClose: () => void }) {
   return (
-    <Dialog open onClose={onClose} title="Keyboard" footer={<Button onClick={onClose}>Close</Button>}>
+    <Dialog open onClose={onClose} title={t("Keyboard")} footer={<Button onClick={onClose}>{t("Close")}</Button>}>
       <dl className="pos-keys">
         {KEYS.map(([k, what]) => (
           <div key={k}>

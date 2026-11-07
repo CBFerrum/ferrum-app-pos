@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CloudOff, Store } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
-import { docPath } from "@ferrum/client";
+import { docPath, t } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, PageLoading } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, myEmail, remember, remembered, str, titleOf } from "./fmt";
@@ -43,23 +43,23 @@ export function RegisterPage() {
     if (profileId) remember(profileId);
   }, [profileId]);
 
-  if (profiles.isLoading) return <PageLoading label="Loading registers…" />;
+  if (profiles.isLoading) return <PageLoading label={t("Loading registers…")} />;
   if (profiles.error && !offline) return <ErrorState error={profiles.error} onRetry={() => void profiles.refetch()} />;
   if (!rows.length) {
     return offline ? (
-      <EmptyState title="No connection" icon="alert">
-        This device has not opened a register yet: connect once to set it up for working offline.
+      <EmptyState title={t("No connection")} icon="alert">
+        {t("This device has not opened a register yet: connect once to set it up for working offline.")}
       </EmptyState>
     ) : (
-      <EmptyState title="No registers yet" icon="store">
-        <Link to="/e/PosProfile/new">Set up a POS profile</Link> for this shop first.
+      <EmptyState title={t("No registers yet")} icon="store">
+        <Link to="/e/PosProfile/new">{t("Set up a POS profile")}</Link> {t("for this shop first.")}
       </EmptyState>
     );
   }
   if (!profileId) {
     return (
       <div className="pos-picker">
-        <h1>Choose a register</h1>
+        <h1>{t("Choose a register")}</h1>
         {rows.map((r) => (
           <Button
             key={str(r.id)}
@@ -110,7 +110,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   }, [profile.data, session.data, modes.data, manager]); // eslint-disable-line react-hooks/exhaustive-deps
   const book = usePriceBook(profileId, open?.id ?? null);
 
-  if ((profile.isLoading || session.isLoading) && !memory) return <PageLoading label="Opening the register…" />;
+  if ((profile.isLoading || session.isLoading) && !memory) return <PageLoading label={t("Opening the register…")} />;
   if (!email) return <ErrorState error={new Error("Sign in to use the register")} />;
   const error = offline ? null : (profile.error ?? session.error);
   if (error || !profileDoc) {
@@ -124,22 +124,22 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
         <h1>{str(profileDoc.profile_name)}</h1>
         {offline && (
           <Badge tone="amber">
-            <CloudOff className="size-3.5" aria-hidden="true" /> Offline
+            <CloudOff className="size-3.5" aria-hidden="true" /> {t("Offline")}
           </Badge>
         )}
         <span className="spacer" />
-        {onSwitch && <Button onClick={onSwitch}>Switch register</Button>}
+        {onSwitch && <Button onClick={onSwitch}>{t("Switch register")}</Button>}
       </div>
       {offline ? (
-        <EmptyState title="No open session on this device" icon="alert">
-          Open the register while connected; it then keeps selling offline.
+        <EmptyState title={t("No open session on this device")} icon="alert">
+          {t("Open the register while connected; it then keeps selling offline.")}
         </EmptyState>
       ) : (
         <Currency.Provider value={{ precision: book?.engine.precision ?? 2, code: book?.currency || titleOf(profileDoc, "currency") }}>
           {modes.isLoading && !modeRows.length ? (
-            <PageLoading label="Getting the register ready…" />
+            <PageLoading label={t("Getting the register ready…")} />
           ) : (
-            <Suspense fallback={<PageLoading label="Getting the register ready…" />}>
+            <Suspense fallback={<PageLoading label={t("Getting the register ready…")} />}>
               <Open profile={profileDoc} modes={modeRows} onOpened={() => void session.refetch()} />
             </Suspense>
           )}

@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
-import { api, docPath, errorMessage, formatDecimal, formatMoment, request } from "@ferrum/client";
+import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
@@ -26,8 +26,8 @@ export default function ShiftPage() {
   const profileId = remembered();
   if (!profileId) {
     return (
-      <EmptyState title="No register chosen" icon="store">
-        <Link to="/">Go to the till</Link> and choose a register first.
+      <EmptyState title={tr("No register chosen")} icon="store">
+        <Link to="/">{tr("Go to the till")}</Link> {tr("and choose a register first.")}
       </EmptyState>
     );
   }
@@ -52,11 +52,11 @@ function Shift({ profileId }: { profileId: string }) {
   const sid = closed ?? str(open.data?.[0]?.id);
 
   if (profile.error || modes.error || open.error) return <ErrorState error={profile.error ?? modes.error ?? open.error} onRetry={() => void Promise.all([profile.refetch(), modes.refetch(), open.refetch()])} />;
-  if (!profile.data || !modes.data || !open.data) return <PageLoading label="Loading the shift…" />;
+  if (!profile.data || !modes.data || !open.data) return <PageLoading label={tr("Loading the shift…")} />;
   if (!sid) {
     return (
-      <EmptyState title="No shift is open" icon="store">
-        <Link to="/">Go to the till</Link> to open the register.
+      <EmptyState title={tr("No shift is open")} icon="store">
+        <Link to="/">{tr("Go to the till")}</Link> {tr("to open the register.")}
       </EmptyState>
     );
   }
@@ -199,10 +199,10 @@ function Closing({
       let doc = target ? await api.patch<Doc>(docPath("PosClosingEntry", str(target.id)), body, { ifMatch: Number(target.version) }) : await api.post<Doc>(docPath("PosClosingEntry"), body);
       if (submit) {
         doc = await api.post<Doc>(docPath("PosClosingEntry", str(doc.id), "submit"), undefined, { ifMatch: Number(doc.version) });
-        toast("Shift closed");
+        toast(tr("Shift closed"));
         onClosed();
       } else {
-        toast("Count saved");
+        toast(tr("Count saved"));
         setSaved(doc);
       }
       void qc.invalidateQueries({ queryKey: ["pos", "closing", session.id] });
@@ -215,7 +215,7 @@ function Closing({
   };
 
   if (report.error) return <ErrorState error={report.error} onRetry={() => void report.refetch()} />;
-  if (!report.data || draft.isLoading) return <PageLoading label="Working out what the register expects…" />;
+  if (!report.data || draft.isLoading) return <PageLoading label={tr("Working out what the register expects…")} />;
   const meta = report.data.meta;
   const z = closed || meta.session?.report === "Z";
 
@@ -226,44 +226,44 @@ function Closing({
           <div>
             <h1>{z ? "Shift closed" : "Close the shift"}</h1>
             <p className="muted">
-              {str(profile.profile_name)} · session {meta.session?.number ?? session.number}
+              {str(profile.profile_name)} {tr("· session")} {meta.session?.number ?? session.number}
               {meta.session?.opened_at ? ` · opened ${formatMoment(meta.session.opened_at, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}
             </p>
           </div>
           <span className="spacer" />
           <Button icon="printer" onClick={() => printHtml(zReportHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
-            Print the {z ? "Z" : "X"} report
+            {tr("Print the")} {z ? "Z" : "X"} report
           </Button>
           <Link className="btn btn-default btn-md" to="/">
-            Back to the till
+            {tr("Back to the till")}
           </Link>
         </header>
 
         {!z && (
           <>
             {unsent.length > 0 && (
-              <Alert tone="warning" action={<Button onClick={() => void outbox.flush()}>Send now</Button>}>
-                {unsent.length === 1 ? "A sale is" : `${unsent.length} sales are`} still waiting on this device to be sent. Send {unsent.length === 1 ? "it" : "them"} before closing: once the shift is closed the register refuses them.
+              <Alert tone="warning" action={<Button onClick={() => void outbox.flush()}>{tr("Send now")}</Button>}>
+                {unsent.length === 1 ? "A sale is" : `${unsent.length} sales are`} {tr("still waiting on this device to be sent. Send")} {unsent.length === 1 ? "it" : "them"} {tr("before closing: once the shift is closed the register refuses them.")}
               </Alert>
             )}
             {drafts > 0 && (
               <Alert tone="warning">
-                {drafts === 1 ? "A sale is" : `${drafts} sales are`} unfinished in this shift. Finish or delete {drafts === 1 ? "it" : "them"} first, or the shift cannot close.{" "}
-                <Link to="/e/PosInvoice">Open the sales</Link>
+                {drafts === 1 ? "A sale is" : `${drafts} sales are`} {tr("unfinished in this shift. Finish or delete")} {drafts === 1 ? "it" : "them"} {tr("first, or the shift cannot close.")}{" "}
+                <Link to="/e/PosInvoice">{tr("Open the sales")}</Link>
               </Alert>
             )}
-            {heldAside > 0 && <Alert tone="info">{heldAside === 1 ? "A sale is" : `${heldAside} sales are`} on hold at this till. They stay on this device for the next shift.</Alert>}
+            {heldAside > 0 && <Alert tone="info">{heldAside === 1 ? "A sale is" : `${heldAside} sales are`} {tr("on hold at this till. They stay on this device for the next shift.")}</Alert>}
 
-            <section className="pos-card" aria-label="Count the drawer">
-              <h2>Count the drawer</h2>
-              <p className="muted">Count what is in the drawer and on each terminal. Leave a line empty if it is as expected.</p>
-              <div className="pos-recon" role="table" aria-label="Expected against counted">
+            <section className="pos-card" aria-label={tr("Count the drawer")}>
+              <h2>{tr("Count the drawer")}</h2>
+              <p className="muted">{tr("Count what is in the drawer and on each terminal. Leave a line empty if it is as expected.")}</p>
+              <div className="pos-recon" role="table" aria-label={tr("Expected against counted")}>
                 <div className="pos-recon-head" role="row">
-                  <span role="columnheader">Way of paying</span>
-                  <span role="columnheader" className="num">Opening</span>
-                  <span role="columnheader" className="num">Expected</span>
-                  <span role="columnheader">Counted</span>
-                  <span role="columnheader" className="num">Difference</span>
+                  <span role="columnheader">{tr("Way of paying")}</span>
+                  <span role="columnheader" className="num">{tr("Opening")}</span>
+                  <span role="columnheader" className="num">{tr("Expected")}</span>
+                  <span role="columnheader">{tr("Counted")}</span>
+                  <span role="columnheader" className="num">{tr("Difference")}</span>
                 </div>
                 {lines.map((l) => (
                   <div className="pos-recon-row" role="row" key={l.mode}>
@@ -277,7 +277,7 @@ function Closing({
                         <input
                           className="input num"
                           inputMode="decimal"
-                          placeholder="as expected"
+                          placeholder={tr("as expected")}
                           aria-label={`${l.name} counted`}
                           aria-invalid={l.bad || undefined}
                           value={typed[l.mode] ?? ""}
@@ -296,28 +296,28 @@ function Closing({
               </div>
               {counting && drawer && <CashCounter value={counted} onChange={setCounted} />}
               {off.length > 0 && (
-                <Field label="What happened?" htmlFor="shift-reason" required hint="Kept with the closing, so whoever checks the books can read why the drawer was not as expected.">
+                <Field label={tr("What happened?")} htmlFor="shift-reason" required hint={tr("Kept with the closing, so whoever checks the books can read why the drawer was not as expected.")}>
                   <textarea id="shift-reason" className="textarea" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
                 </Field>
               )}
               {error && <Alert tone="error">{error}</Alert>}
               {saved && !manager && (
                 <Alert tone="success">
-                  Your count is saved. A POS manager closes the shift: they find it in <Link to={`/e/PosClosingEntry/${str(saved.id)}`}>POS Closing Entries</Link>.
+                  {tr("Your count is saved. A POS manager closes the shift: they find it in")} <Link to={`/e/PosClosingEntry/${str(saved.id)}`}>{tr("POS Closing Entries")}</Link>.
                 </Alert>
               )}
               <div className="pos-sticky">
                 <span className="spacer" />
                 <Button disabled={busy || invalid} onClick={() => void save(false)}>
-                  Save the count
+                  {tr("Save the count")}
                 </Button>
                 {manager && (
                   <Button variant="primary" className="pos-btn" loading={busy} disabled={invalid || unsent.length > 0 || drafts > 0} onClick={() => void save(true)}>
-                    Close the shift
+                    {tr("Close the shift")}
                   </Button>
                 )}
               </div>
-              {!manager && <p className="faint">Only a POS manager can close the shift. Saving the count lets them do it without counting again.</p>}
+              {!manager && <p className="faint">{tr("Only a POS manager can close the shift. Saving the count lets them do it without counting again.")}</p>}
             </section>
           </>
         )}
@@ -327,20 +327,20 @@ function Closing({
             {z ? "Z report" : "So far"} <Badge tone={z ? "green" : "blue"}>{z ? "Closed" : "Open"}</Badge>
           </h2>
           <dl className="pos-totals">
-            <dt>Sales</dt>
+            <dt>{tr("Sales")}</dt>
             <dd>{meta.sales}</dd>
-            <dt>Returns</dt>
+            <dt>{tr("Returns")}</dt>
             <dd>{meta.returns}</dd>
-            <dt>Net sales</dt>
+            <dt>{tr("Net sales")}</dt>
             <dd>{money(meta.net_total)}</dd>
-            <dt>Taxes</dt>
+            <dt>{tr("Taxes")}</dt>
             <dd>{money(meta.total_taxes)}</dd>
-            <dt className="pos-total-label">Total</dt>
+            <dt className="pos-total-label">{tr("Total")}</dt>
             <dd className="pos-total">{money(meta.grand_total)}</dd>
           </dl>
           {report.data.rows.length > 0 && (
             <>
-              <h3 className="pos-sub">Taken, by way of paying</h3>
+              <h3 className="pos-sub">{tr("Taken, by way of paying")}</h3>
               <ul className="pos-taken">
                 {report.data.rows.map((r) => (
                   <li key={r.mode_of_payment}>
@@ -392,10 +392,10 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
     }
   };
   return (
-    <section className="pos-card" id="cash" aria-label="Cash in and out">
-      <h2>Cash in and out</h2>
+    <section className="pos-card" id="cash" aria-label={tr("Cash in and out")}>
+      <h2>{tr("Cash in and out")}</h2>
       {moves.length === 0 ? (
-        <p className="muted">Nothing has moved in or out of the drawer this shift.</p>
+        <p className="muted">{tr("Nothing has moved in or out of the drawer this shift.")}</p>
       ) : (
         <ul className="pos-taken">
           {moves.map((m, i) => (
@@ -418,21 +418,21 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
           if (ok && !busy) void add();
         }}
       >
-        <div className="segmented" role="group" aria-label="In or out">
+        <div className="segmented" role="group" aria-label={tr("In or out")}>
           {(["Cash Out", "Cash In"] as const).map((k) => (
             <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}>
               {k === "Cash In" ? "Put in" : "Take out"}
             </button>
           ))}
         </div>
-        <Field label="Amount" htmlFor="cash-amount">
+        <Field label={tr("Amount")} htmlFor="cash-amount">
           <input id="cash-amount" className="input" inputMode="decimal" autoComplete="off" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
         <Field label={kind === "Cash In" ? "Where it came from" : "What it was for"} htmlFor="cash-account" required hint={kind === "Cash In" ? "The safe or bank account the cash came from." : "The expense account it is booked to."}>
           <LinkInput to="Account" id="cash-account" value={account.id} title={account.title} onChange={(id, title) => setAccount({ id, title })} linkFilters={{ is_group: false, company }} />
         </Field>
-        <Field label="Reason" htmlFor="cash-reason" required>
-          <input id="cash-reason" className="input" autoComplete="off" value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Milk for the staff room" />
+        <Field label={tr("Reason")} htmlFor="cash-reason" required>
+          <input id="cash-reason" className="input" autoComplete="off" value={why} onChange={(e) => setWhy(e.target.value)} placeholder={tr("Milk for the staff room")} />
         </Field>
         {error && <Alert tone="error">{error}</Alert>}
         <Button type="submit" variant="primary" loading={busy} disabled={!ok}>

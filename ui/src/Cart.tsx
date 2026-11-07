@@ -6,7 +6,7 @@
 
 import { Minus, Plus } from "lucide-react";
 import { useState } from "react";
-import { formatMoment } from "@ferrum/client";
+import { formatMoment, t } from "@ferrum/client";
 import { Button } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { num, useMoney } from "./fmt";
@@ -50,7 +50,7 @@ export function CartLines({
 }) {
   const money = useMoney();
   return (
-    <ul className="pos-lines" aria-label="Sale lines">
+    <ul className="pos-lines" aria-label={t("Sale lines")}>
       {lines.map((l, i) => {
         // Totals worked out for an older cart may not be this line's yet: a price shows only on its own line.
         const p = priced[i]?.item === l.item ? priced[i] : undefined;
@@ -62,7 +62,7 @@ export function CartLines({
               type="button"
               className="pos-line-main"
               aria-expanded={open}
-              title="Change this line"
+              title={t("Change this line")}
               onClick={() => {
                 onSelect(l.key);
                 onEdit(open ? null : l.key);
@@ -72,7 +72,7 @@ export function CartLines({
               <span className="pos-line-sub">
                 {p ? `${money(p.rate)} each` : pending ? "Pricing…" : ""}
                 {off > 0 && <span className="pos-tag">−{plain(off)}%</span>}
-                {l.price && <span className="pos-tag">price changed</span>}
+                {l.price && <span className="pos-tag">{t("price changed")}</span>}
               </span>
               {l.note && <span className="pos-line-note">{l.note}</span>}
             </button>
@@ -134,14 +134,14 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
     <div className="pos-edit">
       {base && (
         <p className="faint pos-edit-info">
-          List price {money(base.list)}
+          {t("List price")} {money(base.list)}
           {base.rule > 0 ? ` · pricing rules take off ${plain(base.rule)}%` : ""}
         </p>
       )}
       <div className="pos-edit-grid">
         {rights.discount ? (
           <label className="field">
-            <span className="field-label">Discount %</span>
+            <span className="field-label">{t("Discount %")}</span>
             <input
               className="input"
               inputMode="decimal"
@@ -156,11 +156,11 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
             <span className="field-hint">{rights.manager ? "No limit for you." : `You can give up to ${plain(limit)}%.`}</span>
           </label>
         ) : (
-          <p className="faint pos-edit-info">This register does not let cashiers give discounts.</p>
+          <p className="faint pos-edit-info">{t("This register does not let cashiers give discounts.")}</p>
         )}
         {rights.price && (
           <label className="field">
-            <span className="field-label">Price</span>
+            <span className="field-label">{t("Price")}</span>
             <input
               className="input"
               inputMode="decimal"
@@ -175,8 +175,8 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
           </label>
         )}
         <label className="field pos-edit-note">
-          <span className="field-label">Note on this line</span>
-          <input className="input" maxLength={200} defaultValue={line.note ?? ""} placeholder="A gift, a promised repair…" onChange={(e) => onChange({ note: e.target.value })} />
+          <span className="field-label">{t("Note on this line")}</span>
+          <input className="input" maxLength={200} defaultValue={line.note ?? ""} placeholder={t("A gift, a promised repair…")} onChange={(e) => onChange({ note: e.target.value })} />
         </label>
       </div>
       {problem && (
@@ -186,11 +186,11 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
       )}
       <div className="pos-edit-actions">
         <Button variant="danger" icon="trash" onClick={onRemove}>
-          Remove line
+          {t("Remove line")}
         </Button>
         <span className="spacer" />
         <Button variant="primary" onClick={onDone}>
-          Done
+          {t("Done")}
         </Button>
       </div>
     </div>
@@ -203,26 +203,26 @@ export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; 
   const rounding = num(doc.rounding_adjustment);
   return (
     <dl className="pos-totals">
-      <dt>Subtotal</dt>
+      <dt>{t("Subtotal")}</dt>
       <dd>{money(doc.total)}</dd>
       {num(doc.discount_amount) !== 0 && (
         <>
-          <dt>Discount</dt>
+          <dt>{t("Discount")}</dt>
           <dd>−{money(doc.discount_amount)}</dd>
         </>
       )}
-      <dt>Taxes</dt>
+      <dt>{t("Taxes")}</dt>
       <dd>{money(doc.total_taxes)}</dd>
       {rounding !== 0 && (
         <>
-          <dt>Rounding</dt>
+          <dt>{t("Rounding")}</dt>
           <dd>{rounding > 0 ? "+" : "−"}{money(Math.abs(rounding))}</dd>
         </>
       )}
-      <dt className="pos-total-label">Total</dt>
+      <dt className="pos-total-label">{t("Total")}</dt>
       <dd className="pos-total" aria-live="polite">{money(due)}</dd>
       {offline && builtAt && (
-        <dd className="pos-totals-note faint">Priced on this device (prices of {formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })}); checked again when the sale is sent.</dd>
+        <dd className="pos-totals-note faint">{t("Priced on this device (prices of")} {formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })}{t("); checked again when the sale is sent.")}</dd>
       )}
     </dl>
   );

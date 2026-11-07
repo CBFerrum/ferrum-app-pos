@@ -7,6 +7,7 @@ import { useContext } from "react";
 import { Button } from "@ferrum/kit";
 import { Currency, useMoney } from "./fmt";
 import { cashCounted, denominations, typedAmount } from "./lib/shift";
+import { t } from "@ferrum/client";
 
 export interface Counted {
   counts: Record<string, number>;
@@ -52,17 +53,17 @@ export function CashCounter({ value, onChange }: { value: Counted; onChange: (ne
   };
   return (
     <div className="pos-counter">
-      <ul className="pos-denoms" aria-label="Notes and coins">
+      <ul className="pos-denoms" aria-label={t("Notes and coins")}>
         {d.notes.map((v) => row(v, "note"))}
         {d.coins.map((v) => row(v, "coin"))}
         <li className="pos-denom">
-          <label htmlFor="count-other">Anything else</label>
+          <label htmlFor="count-other">{t("Anything else")}</label>
           <input id="count-other" className="input pos-other" inputMode="decimal" placeholder="0" value={value.other} onChange={(e) => onChange({ ...value, other: e.target.value })} />
           <span />
         </li>
       </ul>
       <p className="pos-counter-total">
-        <span className="muted">Counted</span>
+        <span className="muted">{t("Counted")}</span>
         <strong>{money(countTotal(value, precision))}</strong>
       </p>
     </div>
