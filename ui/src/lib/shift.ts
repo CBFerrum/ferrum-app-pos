@@ -3,7 +3,7 @@
 // out what is expected (`pos_sales_summary` for the session) and books the difference when the
 // closing is submitted; this is the counting and the page that is printed.
 
-import { formatDecimal, formatMoment } from "@ferrum/client";
+import { formatDecimal, formatMoment, t as tr } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { round } from "./pay";
 import { esc, printPage } from "./pos";
@@ -117,7 +117,7 @@ export function countsOf(rows: Doc[], known: number[]): { counts: Record<string,
 /** What a closing's remarks say: first line which counts were off, then what the person said
  *  about it. The server only keeps the text; the page writes it so a saved count reads back. */
 export function remarksOf(rows: { name: string; difference: number }[], reason: string, precision = 2): string {
-  const off = rows.filter((r) => r.difference !== 0).map((r) => `${r.name} ${r.difference < 0 ? "short" : "over"} by ${formatDecimal(Math.abs(r.difference), precision)}`);
+  const off = rows.filter((r) => r.difference !== 0).map((r) => (r.difference < 0 ? tr("{name} short by {amount}", { name: r.name, amount: formatDecimal(Math.abs(r.difference), precision) }) : tr("{name} over by {amount}", { name: r.name, amount: formatDecimal(Math.abs(r.difference), precision) })));
   return [off.length ? `${off.join("; ")}.` : "", reason.trim()].filter(Boolean).join("\n");
 }
 
@@ -142,7 +142,7 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
     .join("");
   return printPage(
     profile,
-    `${s?.report ?? "X"} report ${s?.number ?? ""}`,
+    tr("{value} report {value2}", { value: s?.report ?? "X", value2: s?.number ?? "" }),
     `
     <h1>${esc(profile.profile_name)}</h1>
     <p><b>${s?.report === "Z" ? "Z REPORT" : "X REPORT"}</b><br>Session ${esc(s?.number)} · ${esc(s?.cashier)}<br>Opened ${esc(at(s?.opened_at))}${s?.closed_at ? `<br>Closed ${esc(at(s.closed_at))}` : ""}</p><hr>

@@ -4,6 +4,7 @@
 // has none.
 
 import type { Doc } from "@ferrum/records";
+import { t } from "@ferrum/client";
 
 export interface Rights {
   manager: boolean;
@@ -48,5 +49,5 @@ export function lineProblem(r: Rights, o: { list: number; rule: number; discount
   const pays = ((price ?? o.list) / o.list) * ((100 - (discount ?? o.rule)) / 100);
   const saving = Math.round((1 - pays) * 100 * 1e4) / 1e4;
   const limit = discountLimit(r, o.rule);
-  return saving > limit ? `That is ${plain(saving)}% off the list price. You can give up to ${plain(limit)}%. Ask a POS manager for more.` : null;
+  return saving > limit ? t("That is {saving}% off the list price. You can give up to {limit}%. Ask a POS manager for more.", { saving: plain(saving), limit: plain(limit) }) : null;
 }
