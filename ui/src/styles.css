@@ -69,14 +69,14 @@
 
 .pos-scan-box .input {
   height: 3rem;
-  padding-left: 2.5rem;
+  padding-inline-start: 2.5rem;
   font-size: 1.125rem;
 }
 
 .pos-scan-icon {
   position: absolute;
   top: 50%;
-  left: 0.75rem;
+  inset-inline-start: 0.75rem;
   width: 1.25rem;
   height: 1.25rem;
   color: var(--muted-foreground);
@@ -107,7 +107,7 @@
   box-shadow: var(--shadow-sm);
   color: var(--text);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -215,7 +215,7 @@ li.pos-tile {
   background: none;
   color: var(--text);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -258,7 +258,7 @@ li.pos-tile {
   min-width: 4.5rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: end;
 }
 
 .pos-qty {
@@ -348,7 +348,7 @@ li.pos-tile {
 .pos-totals dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: end;
 }
 
 .pos-totals .pos-total-label {
@@ -367,7 +367,7 @@ li.pos-tile {
 .pos-totals .pos-totals-note {
   grid-column: 1 / -1;
   font-size: 0.75rem;
-  text-align: left;
+  text-align: start;
 }
 
 .pos-actions {
@@ -694,7 +694,7 @@ li.pos-tile {
 }
 
 .pos-denom-sum {
-  text-align: right;
+  text-align: end;
 }
 
 .input.pos-other {
@@ -954,7 +954,7 @@ li.pos-tile {
 .pos-recon-row .input {
   min-width: 6rem;
   max-width: 10rem;
-  text-align: right;
+  text-align: end;
 }
 
 .pos-recon-name {
@@ -1106,6 +1106,6 @@ li.pos-tile {
   }
 
   .pos-recon-row .num {
-    text-align: left;
+    text-align: start;
   }
 }
