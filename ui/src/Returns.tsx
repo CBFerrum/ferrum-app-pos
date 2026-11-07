@@ -128,7 +128,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
     } else if (num(amounts[m.mode]) > 0) rows.push({ mode: m.mode, amount: num(amounts[m.mode]) });
   }
   const problem = data && total > 0 ? checkRefund(total, rows, data, precision) : null;
-  const why = data?.blocked ? `Cannot be returned yet: ${data.blocked}.` : null;
+  const why = data?.blocked ? t("Cannot be returned yet: {blocked}.", { blocked: data.blocked }) : null;
   const ready = !!data && !data.blocked && settled && total > 0 && !problem && !plan.problem && reason.trim() !== "" && !busy;
 
   const setQty = (id: string, qty: number, left: number) => setPicks((p) => ({ ...p, [id]: { qty: Math.max(0, Math.min(left, qty)), serials: [] } }));

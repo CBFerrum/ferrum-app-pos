@@ -4,7 +4,7 @@
 // a queued sale carries its idempotency key and its own id, so sending it again can never sell
 // twice, and the person who made it, so it is sent in their name.
 
-import { formatDecimal } from "@ferrum/client";
+import { formatDecimal, t as tr } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 
 export interface CartLine {
@@ -243,7 +243,7 @@ export function receiptHtml(profile: Doc, sale: Doc): string {
     str(sale.number),
     `
     <h1>${esc(profile.profile_name)}</h1>${profile.receipt_header ? `<p>${esc(profile.receipt_header)}</p>` : ""}
-    <p>${sale.is_return ? `<b>RETURN</b>${sale.against ? ` of ${esc(sale.against)}` : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
+    <p>${sale.is_return ? `<b>RETURN</b>${sale.against ? tr(" of {value}", { value: esc(sale.against) }) : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
     <table>${rows}</table><hr>
     <table>${line("Subtotal", sale.total)}${num(sale.discount_amount) ? line("Discount", -num(sale.discount_amount)) : ""}${line("Taxes", sale.total_taxes)}${num(sale.rounding_adjustment) ? line("Rounding", sale.rounding_adjustment) : ""}
     <tr><td><b>Total</b></td><td class="r"><b>${esc(money(sale.rounded_total ?? sale.grand_total))}</b></td></tr></table><hr>

@@ -4,7 +4,7 @@
 // was paid", and tells the cashier early what the server would refuse: what the customer still owes
 // is cancelled first, points go back as points, and only what came in as money goes back as money.
 
-import { formatDecimal } from "@ferrum/client";
+import { formatDecimal, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { pointsValue, round } from "./pay";
 
@@ -153,17 +153,17 @@ export function checkRefund(total: number, rows: RefundRow[], s: Pick<Sheet, "me
   const sum = (f: (kind: string) => boolean) => round(rows.filter((r) => f(method(r.mode)?.kind ?? "")).reduce((a, r) => a + r.amount, 0), precision);
   const fmt = (n: number) => formatDecimal(n, precision);
   const unusable = rows.find((r) => r.amount > 0 && !method(r.mode)?.usable);
-  if (unusable) return `${method(unusable.mode)?.name ?? "That method"} cannot refund returns at this register.`;
+  if (unusable) return t("{value} cannot refund returns at this register.", { value: method(unusable.mode)?.name ?? "That method" });
   const all = sum(() => true);
-  if (all !== round(total, precision)) return `The refunds add up to ${fmt(all)} of ${fmt(total)}.`;
+  if (all !== round(total, precision)) return t("The refunds add up to {all} of {total}.", { all: fmt(all), total: fmt(total) });
   const owed = round(Math.max(0, Math.min(total, Number(s.refundable.credit))), precision);
   if (sum((k) => k === "Credit") !== owed) {
-    return owed > 0 ? `${fmt(owed)} of this refund must go to Credit: the customer still owes that much on the sale.` : "The sale was paid in full: refund through cash or another way of paying, not Credit.";
+    return owed > 0 ? t("{owed} of this refund must go to Credit: the customer still owes that much on the sale.", { owed: fmt(owed) }) : "The sale was paid in full: refund through cash or another way of paying, not Credit.";
   }
   const loyalty = Number(s.refundable.loyalty);
-  if (sum((k) => k === "Loyalty Points") > loyalty) return `At most ${fmt(loyalty)} can go back as loyalty points.`;
+  if (sum((k) => k === "Loyalty Points") > loyalty) return t("At most {loyalty} can go back as loyalty points.", { loyalty: fmt(loyalty) });
   const money = Number(s.refundable.money);
-  if (sum((k) => MONEY.includes(k)) > money) return `At most ${fmt(money)} can be refunded in cash or to cards: that is what the sale was paid with.`;
+  if (sum((k) => MONEY.includes(k)) > money) return t("At most {money} can be refunded in cash or to cards: that is what the sale was paid with.", { money: fmt(money) });
   return null;
 }
 

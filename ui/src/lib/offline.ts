@@ -5,7 +5,7 @@
 // prices them from the same inputs. The server prices every sale again when it arrives.
 
 import { calculate, type CalcInput } from "@ferrum/calc";
-import { bootstrap, cacheName, offlineEnv, parseApiError, renewOfflineLease, sweep } from "@ferrum/client";
+import { bootstrap, cacheName, offlineEnv, parseApiError, renewOfflineLease, sweep, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 
 // ── requests the till makes ──
@@ -213,7 +213,7 @@ export async function priceOffline(
 ): Promise<Doc> {
   const items = new Map(book.items.map((i) => [i.id, i]));
   const missing = lines.find((l) => !items.has(l.item));
-  if (missing) throw new Error(`${missing.item_name} has no price on this device yet: sell it when the connection is back`);
+  if (missing) throw new Error(t("{item_name} has no price on this device yet: sell it when the connection is back", { item_name: missing.item_name }));
   const typed = (v: string | undefined) => (v?.trim() ? v.trim() : undefined);
   const priced = lines.map((l) => {
     const { tax_qty, price, discount_percent, ...rest } = items.get(l.item)!.line;
