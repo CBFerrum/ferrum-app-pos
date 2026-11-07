@@ -1,6 +1,6 @@
 id: pos
 name: Point of Sale
-version: 0.4.9
+version: 0.4.10
 publisher: cbferrum
 summary: Registers, sessions, offline-safe sales with split payments, returns, loyalty and closing into the books
 description: README.md
@@ -24,3 +24,16 @@ contributes:
   # Registers, sessions, sales, closings and loyalty open in the register's records.
   shell.open:
     - {id: pos, package: pos, path: "pos/e/{entity}/{id}", list: "pos/e/{entity}"}
+  # What the assistant should know in Point of Sale's pages, and what it suggests asking there.
+  shell.assistant:
+    - id: pos
+      title: "Point of Sale"
+      instructions: >-
+        A register's session opens with a PosOpeningEntry and closes into the books with a PosClosingEntry, which
+        counts the cash by denomination. A PosInvoice is Paid, Unpaid, a Return, or Consolidated once its session is
+        closed into ERP's invoices; its payment may be split across modes. Loyalty points are earned and redeemed
+        under a LoyaltyProgram.
+      suggestions:
+        - "What did each register sell today?"
+        - "Which sessions are still open?"
+        - "How many returns were there this week?"
