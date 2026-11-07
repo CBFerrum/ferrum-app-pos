@@ -6,7 +6,7 @@
 
 import { Minus, Plus } from "lucide-react";
 import { useState } from "react";
-import { formatMoment, t } from "@ferrum/client";
+import { formatMoment, t, isolate } from "@ferrum/client";
 import { Button } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { num, useMoney } from "./fmt";
@@ -68,21 +68,21 @@ export function CartLines({
                 onEdit(open ? null : l.key);
               }}
             >
-              <span className="pos-line-name">{l.item_name}</span>
+              <span className="pos-line-name">{isolate(l.item_name)}</span>
               <span className="pos-line-sub">
-                {p ? `${money(p.rate)} each` : pending ? "Pricing…" : ""}
-                {off > 0 && <span className="pos-tag">−{plain(off)}%</span>}
+                {p ? t("{value} each", { value: money(p.rate) }) : pending ? t("Pricing…") : ""}
+                {off > 0 && <span className="pos-tag">−{isolate(plain(off))}%</span>}
                 {l.price && <span className="pos-tag">{t("price changed")}</span>}
               </span>
-              {l.note && <span className="pos-line-note">{l.note}</span>}
+              {l.note && <span className="pos-line-note">{isolate(l.note)}</span>}
             </button>
             <span className="pos-line-total">{p ? money(p.amount) : ""}</span>
             <span className="pos-qty">
-              <Button className="pos-step" aria-label={`One less ${l.item_name}`} disabled={l.qty <= 1} onClick={() => onQty(l.key, l.qty - 1)}>
+              <Button className="pos-step" aria-label={t("One less {item_name}", { item_name: l.item_name })} disabled={l.qty <= 1} onClick={() => onQty(l.key, l.qty - 1)}>
                 <Minus className="size-4" aria-hidden="true" />
               </Button>
               <QtyBox label={l.item_name} qty={l.qty} onChange={(v) => onQty(l.key, v)} />
-              <Button className="pos-step" aria-label={`One more ${l.item_name}`} onClick={() => onQty(l.key, l.qty + 1)}>
+              <Button className="pos-step" aria-label={t("One more {item_name}", { item_name: l.item_name })} onClick={() => onQty(l.key, l.qty + 1)}>
                 <Plus className="size-4" aria-hidden="true" />
               </Button>
             </span>
@@ -106,7 +106,7 @@ function QtyBox({ label, qty, onChange }: { label: string; qty: number; onChange
     <input
       className="input pos-qty-box"
       inputMode="decimal"
-      aria-label={`Quantity of ${label}`}
+      aria-label={t("Quantity of {label}", { label })}
       value={text}
       onFocus={(e) => e.target.select()}
       onChange={(e) => {
@@ -134,8 +134,8 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
     <div className="pos-edit">
       {base && (
         <p className="faint pos-edit-info">
-          {t("List price")} {money(base.list)}
-          {base.rule > 0 ? ` · pricing rules take off ${plain(base.rule)}%` : ""}
+          {t("List price")} {isolate(money(base.list))}
+          {base.rule > 0 ? t(" · pricing rules take off {value}%", { value: plain(base.rule) }) : ""}
         </p>
       )}
       <div className="pos-edit-grid">
@@ -153,7 +153,7 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
                 typed(e.target.value, price);
               }}
             />
-            <span className="field-hint">{rights.manager ? "No limit for you." : `You can give up to ${plain(limit)}%.`}</span>
+            <span className="field-hint">{rights.manager ? t("No limit for you.") : t("You can give up to {limit}%.", { limit: plain(limit) })}</span>
           </label>
         ) : (
           <p className="faint pos-edit-info">{t("This register does not let cashiers give discounts.")}</p>
@@ -181,7 +181,7 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
       </div>
       {problem && (
         <p className="pos-edit-problem" role="alert">
-          {problem}
+          {isolate(problem)}
         </p>
       )}
       <div className="pos-edit-actions">
@@ -204,25 +204,25 @@ export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; 
   return (
     <dl className="pos-totals">
       <dt>{t("Subtotal")}</dt>
-      <dd>{money(doc.total)}</dd>
+      <dd>{isolate(money(doc.total))}</dd>
       {num(doc.discount_amount) !== 0 && (
         <>
           <dt>{t("Discount")}</dt>
-          <dd>−{money(doc.discount_amount)}</dd>
+          <dd>−{isolate(money(doc.discount_amount))}</dd>
         </>
       )}
       <dt>{t("Taxes")}</dt>
-      <dd>{money(doc.total_taxes)}</dd>
+      <dd>{isolate(money(doc.total_taxes))}</dd>
       {rounding !== 0 && (
         <>
           <dt>{t("Rounding")}</dt>
-          <dd>{rounding > 0 ? "+" : "−"}{money(Math.abs(rounding))}</dd>
+          <dd>{rounding > 0 ? "+" : "−"}{isolate(money(Math.abs(rounding)))}</dd>
         </>
       )}
       <dt className="pos-total-label">{t("Total")}</dt>
-      <dd className="pos-total" aria-live="polite">{money(due)}</dd>
+      <dd className="pos-total" aria-live="polite">{isolate(money(due))}</dd>
       {offline && builtAt && (
-        <dd className="pos-totals-note faint">{t("Priced on this device (prices of")} {formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })}{t("); checked again when the sale is sent.")}</dd>
+        <dd className="pos-totals-note faint">{t("Priced on this device (prices of")} {isolate(formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" }))}{t("); checked again when the sale is sent.")}</dd>
       )}
     </dl>
   );

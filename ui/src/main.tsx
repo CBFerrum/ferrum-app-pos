@@ -9,12 +9,15 @@ import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from "react-router";
 import { engineUrl } from "@ferrum/calc";
-import { routeBase, shell, t } from "@ferrum/client";
+import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
 import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
 import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import { keepToTheLease } from "./lib/offline";
 import { RegisterPage } from "./Register";
 import "./styles.css";
+
+// Its own words in the page's language (src/locales), fetched as the page starts; it is drawn once they are in.
+void addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") });
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 30_000 } },
@@ -103,12 +106,15 @@ const router = createBrowserRouter(
 
 keepToTheLease();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      <Toaster />
-      <ConfirmHost />
-    </QueryClientProvider>
-  </StrictMode>,
+// Drawn once the page's words are in (its language's catalogs, fetched as the page starts).
+void wordsReady().then(() =>
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+        <Toaster />
+        <ConfirmHost />
+      </QueryClientProvider>
+    </StrictMode>,
+  ),
 );

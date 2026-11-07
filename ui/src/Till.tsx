@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr } from "@ferrum/client";
+import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr, isolate } from "@ferrum/client";
 import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CartLines, Totals, type Base } from "./Cart";
@@ -63,7 +63,7 @@ export interface TillProps {
 }
 
 export function Till({ profile, session, modes, book, manager, offline, onSwitch }: TillProps) {
-  useShellTitle("Till");
+  useShellTitle(tr("Till"));
   const qc = useQueryClient();
   const navigate = useNavigate();
   const email = myEmail();
@@ -192,7 +192,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
       return;
     }
     if (serverDown()) {
-      toast(book ? `Nothing on this device matches “${text}”` : "No connection, and no prices on this device yet.", "error");
+      toast(book ? tr("Nothing on this device matches “{text}”", { text }) : tr("No connection, and no prices on this device yet."), "error");
       return;
     }
     try {
@@ -209,9 +209,9 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
       if (one) {
         add({ id: str(one.id), name: str(one.item_name) || str(one.item_code) }, qty);
         setSearch("");
-      } else if (!found.rows.length) toast(`Nothing matches “${text}”`, "error");
+      } else if (!found.rows.length) toast(tr("Nothing matches “{text}”", { text }), "error");
     } catch (err) {
-      toast(unreachable(err) ? "No connection, and nothing on this device matches." : errorMessage(err), "error");
+      toast(unreachable(err) ? tr("No connection, and nothing on this device matches.") : errorMessage(err), "error");
     }
   };
 
@@ -232,10 +232,10 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     let next = rest;
     if (lines.length) {
       const ok = await confirmDialog({
-        title: "Put the sale on screen on hold?",
-        message: `It has ${lines.length} ${lines.length === 1 ? "line" : "lines"}. It will be held, and the one you picked brought back.`,
-        confirmLabel: "Hold it and resume",
-        cancelLabel: "Keep it",
+        title: tr("Put the sale on screen on hold?"),
+        message: tr("It has {length} {value}. It will be held, and the one you picked brought back.", { length: lines.length, value: lines.length === 1 ? "line" : "lines" }),
+        confirmLabel: tr("Hold it and resume"),
+        cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
       next = putAside(rest, { lines, customer, key: saleKey.current }, now(), totalOf(calc.doc));
@@ -251,7 +251,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const discard = async (key: string) => {
     const sale = held.find((s) => s.key === key);
     if (!sale) return;
-    const ok = await confirmDialog({ title: "Discard this held sale?", message: `${sale.lines.length} ${sale.lines.length === 1 ? "line" : "lines"} will be forgotten.`, confirmLabel: "Discard", danger: true });
+    const ok = await confirmDialog({ title: tr("Discard this held sale?"), message: tr("{length} {value} will be forgotten.", { length: sale.lines.length, value: sale.lines.length === 1 ? "line" : "lines" }), confirmLabel: tr("Discard"), danger: true });
     if (!ok) return;
     const { rest } = takeOut(held, key);
     if (saveHeld(owner, rest)) setHeld(rest);
@@ -358,8 +358,8 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     <div className="pos">
       <header className="pos-head">
         <Store className="size-5 text-muted-foreground" aria-hidden="true" />
-        <h1>{str(profile.profile_name)}</h1>
-        <Badge>{session.number ? `Session ${session.number}` : "Session open"}</Badge>
+        <h1>{isolate(str(profile.profile_name))}</h1>
+        <Badge>{session.number ? tr("Session {number}", { number: session.number }) : tr("Session open")}</Badge>
         {away ? (
           <Badge tone="amber" title={tr("Selling from this device; sales are sent when the connection is back")}>
             <CloudOff className="size-3.5" aria-hidden="true" /> {tr("Offline")}
@@ -376,7 +376,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
           {tr("On hold")}
           {held.length > 0 && <Badge tone="blue">{held.length}</Badge>}
         </Button>
-        <Button className="pos-btn" onClick={openReturns} title={away ? "Returns need a connection" : undefined}>
+        <Button className="pos-btn" onClick={openReturns} title={away ? tr("Returns need a connection") : undefined}>
           {tr("Return")}
         </Button>
         <Menu label={tr("Shift")} buttonClass="btn btn-default btn-md pos-btn">
@@ -435,19 +435,19 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
                 <button type="button" className="pos-tile" onClick={() => add({ id: str(r.id), name: str(r.item_name) || str(r.item_code) })}>
                   <span className="pos-tile-name">{str(r.item_name) || str(r.item_code)}</span>
                   <span className="pos-tile-meta">
-                    <span className="faint">{str(r.item_code)}</span>
-                    {priceOf.has(str(r.id)) && <strong>{money(priceOf.get(str(r.id)))}</strong>}
+                    <span className="faint">{isolate(str(r.item_code))}</span>
+                    {priceOf.has(str(r.id)) && <strong>{isolate(money(priceOf.get(str(r.id))))}</strong>}
                   </span>
                 </button>
               </li>
             ))}
           </ul>
         )}
-        {items.data && !items.data.rows.length && <p className="muted">{q ? `No items match “${q}”.` : "No items to show."}</p>}
+        {items.data && !items.data.rows.length && <p className="muted">{q ? tr("No items match “{q}”.", { q }) : tr("No items to show.")}</p>}
       </section>
 
       <section className="pos-sale" aria-label={tr("Sale")}>
-        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={tr("Customer")} placeholder={titleOf(profile, "customer") || "Walk-in customer"} />
+        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={tr("Customer")} placeholder={titleOf(profile, "customer") || tr("Walk-in customer")} />
         {lines.length === 0 ? (
           <p className="pos-empty">{tr("Scan or tap items to start a sale.")}</p>
         ) : (
@@ -468,7 +468,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         )}
         {calc.error && (
           <p role="alert" className="pos-error">
-            {calc.error}
+            {isolate(calc.error)}
           </p>
         )}
         {calc.pending && lines.length > 0 && !calc.doc && (
@@ -485,7 +485,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             {tr("Clear")}
           </Button>
           <Button variant="primary" className="pos-btn pos-pay" disabled={!ready} onClick={() => setDialog("pay")} aria-keyshortcuts="F4">
-            {calc.pending && lines.length ? "Pricing…" : ready ? `Pay ${money(due)}` : "Pay"}
+            {calc.pending && lines.length ? tr("Pricing…") : ready ? tr("Pay {due}", { due: money(due) }) : tr("Pay")}
           </Button>
         </div>
       </section>
@@ -494,11 +494,11 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         // Phones: the sale panel is below the items, so the total and Pay stay in reach.
         <div className="pos-bar">
           <span>
-            {lines.length} {lines.length === 1 ? "line" : "lines"}
-            {ready && <strong>{money(due)}</strong>}
+            {lines.length} {lines.length === 1 ? tr("line") : tr("lines")}
+            {ready && <strong>{isolate(money(due))}</strong>}
           </span>
           <Button variant="primary" className="pos-btn" disabled={!ready} onClick={() => setDialog("pay")}>
-            {calc.pending ? "Pricing…" : "Pay"}
+            {calc.pending ? tr("Pricing…") : tr("Pay")}
           </Button>
         </div>
       )}
@@ -571,7 +571,7 @@ function OutboxBar({
         <div className="pos-outbox-row">
           <WifiOff className="size-4" aria-hidden="true" />
           <span className="pos-outbox-text">
-            {own === 1 ? "1 sale is" : `${own} sales are`} {tr("kept on this device until")} {signedOut ? "you sign in again" : "they can be sent"}.
+            {own === 1 ? tr("1 sale is") : tr("{own} sales are", { own })} {tr("kept on this device until")} {signedOut ? tr("you sign in again") : tr("they can be sent")}.
           </span>
           {signedOut ? (
             <Button onClick={() => shell().session.reauthenticate()}>{tr("Sign in to send")}</Button>
@@ -582,13 +582,13 @@ function OutboxBar({
       )}
       {others.length > 0 && (
         <p className="pos-outbox-row">
-          {others.length === 1 ? "1 sale" : `${others.length} sales`} by {[...new Set(others.map((s) => s.by))].join(", ")} {tr("will be sent when they sign in on this device.")}
+          {others.length === 1 ? tr("1 sale") : tr("{length} sales", { length: others.length })} {tr("by {value}", { value: [...new Set(others.map((s) => s.by))].join(", ") })} {tr("will be sent when they sign in on this device.")}
         </p>
       )}
       {refused.map((s) => (
         <div key={s.key} className="pos-outbox-row">
           <span className="pos-outbox-text">
-            {tr("Sale of")} {formatMoment(s.at, { timeStyle: "medium" })}
+            {tr("Sale of")} {isolate(formatMoment(s.at, { timeStyle: "medium" }))}
             {s.total ? ` (${money(s.total)})` : ""} {tr("was refused: {error}", { error: s.error ?? "" })}
           </span>
           <Button onClick={() => onRetry(s.key)}>{tr("Retry")}</Button>

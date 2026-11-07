@@ -2,7 +2,7 @@
 // they work offline and cost the server nothing), per register and cashier; resuming one brings
 // its lines and customer back, and re-prices them, so a price that changed meanwhile is the new one.
 
-import { formatMoment, t } from "@ferrum/client";
+import { formatMoment, t, isolate } from "@ferrum/client";
 import { Button, Dialog, EmptyState } from "@ferrum/kit";
 import { useMoney } from "./fmt";
 import { heldSummary, type HeldSale } from "./lib/held";
@@ -22,17 +22,17 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
             return (
               <li key={s.key}>
                 <div className="pos-held-main">
-                  <strong>{who}</strong>
+                  <strong>{isolate(who)}</strong>
                   <span className="muted">
-                    {lines} · {formatMoment(s.at, { hour: "numeric", minute: "2-digit" })}
+                    {isolate(lines)} · {isolate(formatMoment(s.at, { hour: "numeric", minute: "2-digit" }))}
                     {s.total ? ` · ${money(s.total)}` : ""}
                   </span>
-                  <span className="faint pos-held-items">{s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", ")}</span>
+                  <span className="faint pos-held-items">{isolate(s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", "))}</span>
                 </div>
                 <Button variant="primary" onClick={() => onResume(s.key)}>
                   {t("Resume")}
                 </Button>
-                <Button variant="danger" aria-label={`Discard the sale of ${who}`} onClick={() => onDiscard(s.key)}>
+                <Button variant="danger" aria-label={t("Discard the sale of {who}", { who })} onClick={() => onDiscard(s.key)}>
                   {t("Discard")}
                 </Button>
               </li>
@@ -66,9 +66,9 @@ export function KeysDialog({ onClose }: { onClose: () => void }) {
         {KEYS.map(([k, what]) => (
           <div key={k}>
             <dt>
-              <kbd>{k}</kbd>
+              <kbd>{isolate(k)}</kbd>
             </dt>
-            <dd>{what}</dd>
+            <dd>{isolate(what)}</dd>
           </div>
         ))}
       </dl>
