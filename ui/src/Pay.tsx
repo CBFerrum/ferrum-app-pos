@@ -7,7 +7,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useContext, useMemo, useState, type FormEvent } from "react";
-import { docPath, t as tr } from "@ferrum/client";
+import { docPath, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
@@ -137,7 +137,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   // A stray tap outside the window must not forget payments already added.
   const close = async () => {
     if (busy) return;
-    if (added.length && !(await confirmDialog({ title: "Cancel this payment?", message: "The payments added so far are forgotten. Nothing has been sold.", confirmLabel: "Cancel the payment", cancelLabel: "Keep going", danger: true }))) return;
+    if (added.length && !(await confirmDialog({ title: tr("Cancel this payment?"), message: tr("The payments added so far are forgotten. Nothing has been sold."), confirmLabel: tr("Cancel the payment"), cancelLabel: tr("Keep going"), danger: true }))) return;
     onClose();
   };
   const complete = async () => {
@@ -153,13 +153,13 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   };
 
   const status = t.problem ? (
-    <p className="pos-status pos-status-bad">{t.problem}</p>
+    <p className="pos-status pos-status-bad">{isolate(t.problem)}</p>
   ) : t.left > 0 ? (
-    <p className="pos-status pos-status-due">{tr("Still due")} <strong>{money(t.left)}</strong></p>
+    <p className="pos-status pos-status-due">{tr("Still due")} <strong>{isolate(money(t.left))}</strong></p>
   ) : t.change > 0 ? (
-    <p className="pos-status pos-status-change">{tr("Change")} <strong>{money(t.change)}</strong></p>
+    <p className="pos-status pos-status-change">{tr("Change")} <strong>{isolate(money(t.change))}</strong></p>
   ) : t.writeOff > 0 ? (
-    <p className="pos-status">{tr("Short by")} {money(t.writeOff)}{tr(", which this register writes off.")}</p>
+    <p className="pos-status">{tr("Short by")} {isolate(money(t.writeOff))}{tr(", which this register writes off.")}</p>
   ) : (
     <p className="pos-status pos-status-change">{tr("Paid exactly")}</p>
   );
@@ -188,31 +188,31 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
       <form className="pos-paying" onSubmit={submit}>
         <p className="pos-due">
           <span className="muted">{tr("Total due")}</span>
-          <strong>{money(due)}</strong>
+          <strong>{isolate(money(due))}</strong>
         </p>
         {rounding !== 0 && (
           <p className="faint pos-rounding">
-            {tr("Rounded from")} {money(grand)} ({rounding > 0 ? "+" : "−"}
-            {money(Math.abs(rounding))})
+            {tr("Rounded from")} {isolate(money(grand))} ({rounding > 0 ? "+" : "−"}
+            {isolate(money(Math.abs(rounding)))})
           </p>
         )}
 
         <div className="pos-methods" role="group" aria-label={tr("Way of paying")}>
           {methods.map((m) => (
             <button key={m.id} type="button" className="pos-method" aria-pressed={m.id === method} disabled={!usable(m) || busy} onClick={() => choose(m.id)}>
-              {m.name}
+              {isolate(m.name)}
             </button>
           ))}
         </div>
         {methods.filter((m) => whyNot(m)).map((m) => (
           <p key={m.id} className="faint pos-hint">
-            {m.name}: {whyNot(m)}
+            {isolate(m.name)}: {isolate(whyNot(m) ?? "")}
           </p>
         ))}
 
         {current && !usingPoints && (
           <>
-            <Field label={`${current.name} amount`} htmlFor="pay-amount">
+            <Field label={tr("{name} amount", { name: current.name })} htmlFor="pay-amount">
               <input
                 id="pay-amount"
                 className="input pos-amount"
@@ -228,8 +228,8 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
               <div className="pos-quick" role="group" aria-label={tr("Cash handed over")}>
                 {quickCash(before, steps).map((v, i) => (
                   <Button key={v} className="pos-btn" onClick={() => setAmount(String(v))}>
-                    {i === 0 ? "Exact " : ""}
-                    {money(v)}
+                    {i === 0 ? tr("Exact ") : ""}
+                    {isolate(money(v))}
                   </Button>
                 ))}
               </div>
@@ -247,7 +247,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           <Field
             label={tr("Points to use")}
             htmlFor="pay-points"
-            hint={balance.isLoading ? "Looking up the balance…" : balance.error ? "The balance could not be read." : `${available} points available, ${money(pointsValue(available, factor, precision))} to spend.`}
+            hint={balance.isLoading ? tr("Looking up the balance…") : balance.error ? tr("The balance could not be read.") : tr("{available} points available, {value} to spend.", { available, value: money(pointsValue(available, factor, precision)) })}
           >
             <div className="pos-points">
               <input
@@ -270,12 +270,12 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
             {added.map((p, i) => (
               <li key={`${p.mode_of_payment}-${i}`}>
                 <span>
-                  {methods.find((m) => m.id === p.mode_of_payment)?.name}
-                  {p.loyalty_points ? ` · ${p.loyalty_points} points` : ""}
+                  {isolate(methods.find((m) => m.id === p.mode_of_payment)?.name ?? "")}
+                  {p.loyalty_points ? tr(" · {loyalty_points} points", { loyalty_points: p.loyalty_points }) : ""}
                   {p.reference_no ? ` · ${p.reference_no}` : ""}
                 </span>
-                <strong>{money(p.amount)}</strong>
-                <button type="button" className="icon-btn" aria-label={`Remove the ${methods.find((m) => m.id === p.mode_of_payment)?.name} payment`} disabled={busy} onClick={() => setAdded(added.filter((_, j) => j !== i))}>
+                <strong>{isolate(money(p.amount))}</strong>
+                <button type="button" className="icon-btn" aria-label={tr("Remove the {name} payment", { name: String(methods.find((m) => m.id === p.mode_of_payment)?.name) })} disabled={busy} onClick={() => setAdded(added.filter((_, j) => j !== i))}>
                   <Icon name="x" size={14} />
                 </button>
               </li>
@@ -284,7 +284,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
         )}
 
         <div aria-live="polite">{status}</div>
-        {error && <Alert tone="error">{error}</Alert>}
+        {error && <Alert tone="error">{isolate(error)}</Alert>}
         <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>
     </Dialog>
@@ -300,14 +300,14 @@ export function ReceiptDialog({ profile, sale, onClose }: { profile: Doc; sale: 
     <Dialog
       open
       onClose={onClose}
-      title={kept ? "Sale kept on this device" : sale.is_return ? "Return done" : "Sale complete"}
+      title={kept ? tr("Sale kept on this device") : sale.is_return ? tr("Return done") : tr("Sale complete")}
       footer={
         <>
           <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, sale))}>
             {tr("Print receipt")}
           </Button>
           <Button variant="primary" className="pos-btn" data-autofocus onClick={onClose}>
-            {sale.is_return ? "Done" : "Next sale"}
+            {sale.is_return ? tr("Done") : tr("Next sale")}
           </Button>
         </>
       }
@@ -315,11 +315,11 @@ export function ReceiptDialog({ profile, sale, onClose }: { profile: Doc; sale: 
       <div className="pos-done">
         {change > 0 && (
           <p className="pos-status pos-status-change">
-            {tr("Change")} <strong>{money(change)}</strong>
+            {tr("Change")} <strong>{isolate(money(change))}</strong>
           </p>
         )}
         <p>
-          {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{str(sale.number)}</strong>} · {money(sale.rounded_total ?? sale.grand_total)}
+          {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{isolate(str(sale.number))}</strong>} · {isolate(money(sale.rounded_total ?? sale.grand_total))}
         </p>
         {kept && <p className="muted">{tr("It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.")}</p>}
       </div>

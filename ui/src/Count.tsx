@@ -7,7 +7,7 @@ import { useContext } from "react";
 import { Button } from "@ferrum/kit";
 import { Currency, useMoney } from "./fmt";
 import { cashCounted, denominations, typedAmount } from "./lib/shift";
-import { t } from "@ferrum/client";
+import { t, isolate } from "@ferrum/client";
 
 export interface Counted {
   counts: Record<string, number>;
@@ -28,22 +28,22 @@ export function CashCounter({ value, onChange }: { value: Counted; onChange: (ne
     return (
       <li key={`${what}-${denomination}`} className="pos-denom">
         <span>
-          {money(denomination)} <span className="faint">{what}</span>
+          {isolate(money(denomination))} <span className="faint">{isolate(what)}</span>
         </span>
         <span className="pos-qty">
-          <Button className="pos-step" aria-label={`One less ${money(denomination)} ${what}`} disabled={n <= 0} onClick={() => set(denomination, n - 1)}>
+          <Button className="pos-step" aria-label={t("One less {denomination} {what}", { denomination: money(denomination), what })} disabled={n <= 0} onClick={() => set(denomination, n - 1)}>
             <Minus className="size-4" aria-hidden="true" />
           </Button>
           <input
             className="input pos-qty-box"
             inputMode="numeric"
-            aria-label={`How many ${money(denomination)} ${what}`}
+            aria-label={t("How many {denomination} {what}", { denomination: money(denomination), what })}
             value={n || ""}
             placeholder="0"
             onFocus={(e) => e.target.select()}
             onChange={(e) => set(denomination, Number(e.target.value.replace(/\D/g, "")))}
           />
-          <Button className="pos-step" aria-label={`One more ${money(denomination)} ${what}`} onClick={() => set(denomination, n + 1)}>
+          <Button className="pos-step" aria-label={t("One more {denomination} {what}", { denomination: money(denomination), what })} onClick={() => set(denomination, n + 1)}>
             <Plus className="size-4" aria-hidden="true" />
           </Button>
         </span>
@@ -64,7 +64,7 @@ export function CashCounter({ value, onChange }: { value: Counted; onChange: (ne
       </ul>
       <p className="pos-counter-total">
         <span className="muted">{t("Counted")}</span>
-        <strong>{money(countTotal(value, precision))}</strong>
+        <strong>{isolate(money(countTotal(value, precision)))}</strong>
       </p>
     </div>
   );

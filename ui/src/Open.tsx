@@ -4,7 +4,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useContext, useRef, useState, type FormEvent } from "react";
-import { docPath, errorMessage, newKey, t } from "@ferrum/client";
+import { docPath, errorMessage, newKey, t, isolate } from "@ferrum/client";
 import { Alert, Button, Field, toast } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
@@ -58,7 +58,7 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
         return (
           <Field key={mode} label={titleOf(r, "mode_of_payment")} htmlFor={`open-${mode}`}>
             {counting && isDrawer ? (
-              <p className="pos-amount-fixed">{money(amountOf(mode))}</p>
+              <p className="pos-amount-fixed">{isolate(money(amountOf(mode)))}</p>
             ) : (
               <input
                 id={`open-${mode}`}
@@ -72,7 +72,7 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
               />
             )}
             {isDrawer && (
-              <Button onClick={() => setCounting((c) => !c)}>{counting ? "Type the total instead" : "Count notes and coins"}</Button>
+              <Button onClick={() => setCounting((c) => !c)}>{counting ? t("Type the total instead") : t("Count notes and coins")}</Button>
             )}
           </Field>
         );
@@ -80,9 +80,9 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
       {counting && <CashCounter value={count} onChange={setCount} />}
       <p className="pos-counter-total">
         <span className="muted">{t("Float")}</span>
-        <strong>{money(total)}</strong>
+        <strong>{isolate(money(total))}</strong>
       </p>
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && <Alert tone="error">{isolate(error)}</Alert>}
       <Button type="submit" variant="primary" className="pos-btn" loading={busy} disabled={bad}>
         {t("Open register")}
       </Button>

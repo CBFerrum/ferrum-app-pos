@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CloudOff, Store } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
-import { docPath, t } from "@ferrum/client";
+import { docPath, t, isolate } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, PageLoading } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, myEmail, remember, remembered, str, titleOf } from "./fmt";
@@ -70,7 +70,7 @@ export function RegisterPage() {
               setChosen(str(r.id));
             }}
           >
-            {str(r.profile_name)}
+            {isolate(str(r.profile_name))}
           </Button>
         ))}
       </div>
@@ -121,7 +121,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
     <div className="pos-away">
       <div className="pos-head">
         <Store className="size-5 text-muted-foreground" aria-hidden="true" />
-        <h1>{str(profileDoc.profile_name)}</h1>
+        <h1>{isolate(str(profileDoc.profile_name))}</h1>
         {offline && (
           <Badge tone="amber">
             <CloudOff className="size-3.5" aria-hidden="true" /> {t("Offline")}

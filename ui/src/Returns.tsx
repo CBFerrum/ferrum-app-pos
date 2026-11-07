@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Minus, Plus } from "lucide-react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import { docPath, errorMessage, newKey, t } from "@ferrum/client";
+import { docPath, errorMessage, newKey, t, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, useDebounced } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, num, str, useMoney } from "./fmt";
@@ -43,7 +43,7 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
   });
   return (
     <div className="pos-returns">
-      <Field label={t("Receipt number or customer")} htmlFor="return-find" hint={q ? "Sales of the last 90 days that match." : "Today's sales. Type to look further back."}>
+      <Field label={t("Receipt number or customer")} htmlFor="return-find" hint={q ? t("Sales of the last 90 days that match.") : t("Today's sales. Type to look further back.")}>
         <input id="return-find" className="input pos-amount" data-autofocus autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} placeholder={t("C1-2026-27-000123, or a name")} />
       </Field>
       {found.error ? (
@@ -51,8 +51,8 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
       ) : !found.data ? (
         <PageLoading label={t("Looking for sales…")} />
       ) : found.data.rows.length === 0 ? (
-        <EmptyState title={q ? "No sale matches" : "No sales yet today"} icon="search">
-          {q ? "Check the number on the receipt, or try the customer's name." : "Type the receipt number or the customer's name to find an older sale."}
+        <EmptyState title={q ? t("No sale matches") : t("No sales yet today")} icon="search">
+          {q ? t("Check the number on the receipt, or try the customer's name.") : t("Type the receipt number or the customer's name to find an older sale.")}
         </EmptyState>
       ) : (
         <ul className="pos-found" aria-label={t("Sales")}>
@@ -60,14 +60,14 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
             <li key={r.id}>
               <button type="button" className="pos-found-row" disabled={!!r.blocked} onClick={() => onPick(r.id)}>
                 <span className="pos-found-main">
-                  <strong>{r.number ?? "Sale"}</strong>
+                  <strong>{r.number ?? t("Sale")}</strong>
                   <span className="muted">
-                    {when(r.posting_date, r.posting_time)} · {r.customer ?? "Walk-in"} {t("· sold by")} {r.cashier ?? "—"}
-                    {r.register ? ` at ${r.register}` : ""}
+                    {isolate(when(r.posting_date, r.posting_time))} · {r.customer ?? t("Walk-in")} {t("· sold by")} {r.cashier ?? "—"}
+                    {r.register ? t(" at {register}", { register: r.register }) : ""}
                   </span>
                   {r.blocked && <span className="pos-found-why">{t("Cannot be returned yet: {blocked}.", { blocked: r.blocked })}</span>}
                 </span>
-                <span className="pos-found-total">{money(r.total)}</span>
+                <span className="pos-found-total">{isolate(money(r.total))}</span>
               </button>
             </li>
           ))}
@@ -167,10 +167,10 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
           {t("Other sales")}
         </Button>
         <div>
-          <strong>{data.sale.number}</strong>
+          <strong>{isolate(data.sale.number ?? "")}</strong>
           <span className="muted">
-            {" "}
-            · {data.sale.posting_date} · {data.sale.customer_name ?? "Walk-in"} {t("· sold by")} {data.sale.cashier ?? "—"}
+            {isolate(" ")}
+            · {isolate(data.sale.posting_date)} · {data.sale.customer_name ?? t("Walk-in")} {t("· sold by")} {data.sale.cashier ?? "—"}
           </span>
         </div>
         <span className="spacer" />
@@ -178,7 +178,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
           {t("Copy of the receipt")}
         </Button>
       </div>
-      {why && <Alert tone="warning">{why}</Alert>}
+      {why && <Alert tone="warning">{isolate(why)}</Alert>}
 
       <h3 className="pos-sub">{t("What comes back")}</h3>
       <ul className="pos-return-lines">
@@ -188,38 +188,38 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
           return (
             <li key={l.id}>
               <div className="pos-return-line">
-                <strong>{l.item_name}</strong>
+                <strong>{isolate(l.item_name)}</strong>
                 <span className="muted">
-                  sold {l.sold}
-                  {num(l.returned) > 0 ? ` · ${l.returned} already returned` : ""}
-                  {l.rate ? ` · ${money(l.rate)} each` : ""}
+                  {t("sold {sold}", { sold: l.sold })}
+                  {num(l.returned) > 0 ? t(" · {returned} already returned", { returned: l.returned }) : ""}
+                  {l.rate ? t(" · {value} each", { value: money(l.rate) }) : ""}
                 </span>
-                {l.note && <span className="faint">{l.note}</span>}
+                {l.note && <span className="faint">{isolate(l.note)}</span>}
               </div>
               {left <= 0 ? (
                 <Badge tone="neutral">{t("All returned")}</Badge>
               ) : l.serials.length > 0 ? (
-                <div className="pos-serials" role="group" aria-label={`Serial numbers of ${l.item_name}`}>
+                <div className="pos-serials" role="group" aria-label={t("Serial numbers of {item_name}", { item_name: l.item_name })}>
                   {l.serials.map((s) => (
                     <button key={s} type="button" className="pos-method" aria-pressed={!!pick?.serials.includes(s)} onClick={() => toggleSerial(l.id, s, l.serials)}>
-                      {s}
+                      {isolate(s)}
                     </button>
                   ))}
                 </div>
               ) : (
                 <span className="pos-qty">
-                  <Button className="pos-step" aria-label={`One less ${l.item_name}`} disabled={!pick?.qty} onClick={() => setQty(l.id, (pick?.qty ?? 0) - 1, left)}>
+                  <Button className="pos-step" aria-label={t("One less {item_name}", { item_name: l.item_name })} disabled={!pick?.qty} onClick={() => setQty(l.id, (pick?.qty ?? 0) - 1, left)}>
                     <Minus className="size-4" aria-hidden="true" />
                   </Button>
                   <input
                     className="input pos-qty-box"
                     inputMode="decimal"
-                    aria-label={`How many ${l.item_name} come back`}
+                    aria-label={t("How many {item_name} come back", { item_name: l.item_name })}
                     value={pick?.qty ?? 0}
                     onFocus={(e) => e.target.select()}
                     onChange={(e) => setQty(l.id, Number(e.target.value) || 0, left)}
                   />
-                  <Button className="pos-step" aria-label={`One more ${l.item_name}`} disabled={(pick?.qty ?? 0) >= left} onClick={() => setQty(l.id, (pick?.qty ?? 0) + 1, left)}>
+                  <Button className="pos-step" aria-label={t("One more {item_name}", { item_name: l.item_name })} disabled={(pick?.qty ?? 0) >= left} onClick={() => setQty(l.id, (pick?.qty ?? 0) + 1, left)}>
                     <Plus className="size-4" aria-hidden="true" />
                   </Button>
                   <Button variant="ghost" onClick={() => setQty(l.id, left, left)}>
@@ -238,7 +238,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
       <div className="pos-quick" role="group" aria-label={t("Common reasons")}>
         {REASONS.map((r) => (
           <Button key={r} onClick={() => setReason(r)}>
-            {r}
+            {isolate(r)}
           </Button>
         ))}
       </div>
@@ -247,27 +247,27 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
       {items.length === 0 ? (
         <p className="muted">{t("Choose what comes back to see the refund.")}</p>
       ) : preview.error ? (
-        <Alert tone="error">{errorMessage(preview.error)}</Alert>
+        <Alert tone="error">{isolate(errorMessage(preview.error))}</Alert>
       ) : !settled ? (
         <p className="muted">{t("Working out the refund…")}</p>
       ) : (
         <>
           <p className="pos-due">
             <span className="muted">{t("To refund")}</span>
-            <strong>{money(total)}</strong>
+            <strong>{isolate(money(total))}</strong>
           </p>
-          {num(data.refundable.credit) > 0 && <p className="faint pos-hint">{t("The customer still owes")} {money(data.refundable.credit)} {t("on this sale: that is cancelled first, before anything is paid out.")}</p>}
+          {num(data.refundable.credit) > 0 && <p className="faint pos-hint">{t("The customer still owes")} {isolate(money(data.refundable.credit))} {t("on this sale: that is cancelled first, before anything is paid out.")}</p>}
           <ul className="pos-refunds">
             {methods.map((m) => {
               const amount = m.kind === "Loyalty Points" ? pointsValue(Math.floor(num(points)), num(data.loyalty?.factor), precision) : num(amounts[m.mode]);
               return (
                 <li key={m.mode} data-off={!m.usable || undefined}>
                   <label htmlFor={`refund-${m.mode}`}>
-                    {m.name}
-                    {!m.usable && <span className="faint"> · {m.why ?? "not at this register"}</span>}
+                    {isolate(m.name)}
+                    {!m.usable && <span className="faint"> · {m.why ?? t("not at this register")}</span>}
                   </label>
                   {!m.usable ? null : m.kind === "Credit" ? (
-                    <span className="pos-refund-fixed">{money(amounts[m.mode] ?? 0)}</span>
+                    <span className="pos-refund-fixed">{isolate(money(amounts[m.mode] ?? 0))}</span>
                   ) : m.kind === "Loyalty Points" ? (
                     data.loyalty ? (
                       <span className="pos-refund-in">
@@ -279,7 +279,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
                           value={points}
                           onChange={(e) => setPoints(e.target.value.replace(/\D/g, ""))}
                         />
-                        <span className="muted">{t("points =")} {money(amount)} {t("(up to {points_left})", { points_left: data.loyalty.points_left })}</span>
+                        <span className="muted">{t("points =")} {isolate(money(amount))} {t("(up to {points_left})", { points_left: data.loyalty.points_left })}</span>
                       </span>
                     ) : (
                       <span className="faint">{t("none were used")}</span>
@@ -288,7 +288,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
                     <span className="pos-refund-in">
                       <input id={`refund-${m.mode}`} className="input" inputMode="decimal" value={amounts[m.mode] ?? ""} placeholder="0" onChange={(e) => setAmounts((a) => ({ ...a, [m.mode]: e.target.value }))} />
                       {(m.kind === "Bank" || m.kind === "General") && num(amounts[m.mode]) > 0 && (
-                        <input className="input" aria-label={`${m.name} reference`} placeholder={t("Reference")} value={refs[m.mode] ?? ""} onChange={(e) => setRefs((r) => ({ ...r, [m.mode]: e.target.value }))} />
+                        <input className="input" aria-label={t("{name} reference", { name: m.name })} placeholder={t("Reference")} value={refs[m.mode] ?? ""} onChange={(e) => setRefs((r) => ({ ...r, [m.mode]: e.target.value }))} />
                       )}
                     </span>
                   )}
@@ -303,14 +303,14 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
           )}
         </>
       )}
-      {error && <Alert tone="error">{error}</Alert>}
+      {error && <Alert tone="error">{isolate(error)}</Alert>}
       <div className="pos-sticky">
         <span className="spacer" />
         <Button onClick={onBack} disabled={busy}>
           {t("Back")}
         </Button>
         <Button variant="primary" className="pos-btn" disabled={!ready} loading={busy} onClick={() => void refund()}>
-          {total > 0 ? `Refund ${money(total)}` : "Refund"}
+          {total > 0 ? t("Refund {total}", { total: money(total) }) : t("Refund")}
         </Button>
       </div>
     </div>

@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
-import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr } from "@ferrum/client";
+import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
@@ -22,7 +22,7 @@ import { printHtml } from "./print";
 const rowsOf = <T,>(entity: string, query: Record<string, string | number | boolean>, signal?: AbortSignal) => api.get<{ rows: T[] }>(docPath(entity), query, signal).then((r) => r.rows);
 
 export default function ShiftPage() {
-  useShellTitle("Close the shift");
+  useShellTitle(tr("Close the shift"));
   const profileId = remembered();
   if (!profileId) {
     return (
@@ -185,7 +185,7 @@ function Closing({
     setBusy(true);
     setError(null);
     try {
-      if (submit && !anyCounted && !(await confirmDialog({ title: "Close without counting?", message: "Nothing was counted, so the shift closes as the register expects it.", confirmLabel: "Close the shift" }))) return;
+      if (submit && !anyCounted && !(await confirmDialog({ title: tr("Close without counting?"), message: tr("Nothing was counted, so the shift closes as the register expects it."), confirmLabel: tr("Close the shift") }))) return;
       const body = closingBody({
         session: session.id,
         drawer: counting ? drawer : null,
@@ -224,15 +224,15 @@ function Closing({
       <div className="pos-shift">
         <header className="pos-shift-head">
           <div>
-            <h1>{z ? "Shift closed" : "Close the shift"}</h1>
+            <h1>{z ? tr("Shift closed") : tr("Close the shift")}</h1>
             <p className="muted">
-              {str(profile.profile_name)} {tr("· session")} {meta.session?.number ?? session.number}
-              {meta.session?.opened_at ? ` · opened ${formatMoment(meta.session.opened_at, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}` : ""}
+              {isolate(str(profile.profile_name))} {tr("· session")} {meta.session?.number ?? session.number}
+              {meta.session?.opened_at ? tr(" · opened {value}", { value: formatMoment(meta.session.opened_at, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) }) : ""}
             </p>
           </div>
           <span className="spacer" />
           <Button icon="printer" onClick={() => printHtml(zReportHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
-            {tr("Print the")} {z ? "Z" : "X"} report
+            {tr("Print the")} {z ? "Z" : "X"} {tr("report")}
           </Button>
           <Link className="btn btn-default btn-md" to="/">
             {tr("Back to the till")}
@@ -243,16 +243,16 @@ function Closing({
           <>
             {unsent.length > 0 && (
               <Alert tone="warning" action={<Button onClick={() => void outbox.flush()}>{tr("Send now")}</Button>}>
-                {unsent.length === 1 ? "A sale is" : `${unsent.length} sales are`} {tr("still waiting on this device to be sent. Send")} {unsent.length === 1 ? "it" : "them"} {tr("before closing: once the shift is closed the register refuses them.")}
+                {unsent.length === 1 ? tr("A sale is") : tr("{length} sales are", { length: unsent.length })} {tr("still waiting on this device to be sent. Send")} {unsent.length === 1 ? tr("it") : tr("them")} {tr("before closing: once the shift is closed the register refuses them.")}
               </Alert>
             )}
             {drafts > 0 && (
               <Alert tone="warning">
-                {drafts === 1 ? "A sale is" : `${drafts} sales are`} {tr("unfinished in this shift. Finish or delete")} {drafts === 1 ? "it" : "them"} {tr("first, or the shift cannot close.")}{" "}
+                {drafts === 1 ? tr("A sale is") : tr("{drafts} sales are", { drafts })} {tr("unfinished in this shift. Finish or delete")} {drafts === 1 ? tr("it") : tr("them")} {tr("first, or the shift cannot close.")}{isolate(" ")}
                 <Link to="/e/PosInvoice">{tr("Open the sales")}</Link>
               </Alert>
             )}
-            {heldAside > 0 && <Alert tone="info">{heldAside === 1 ? "A sale is" : `${heldAside} sales are`} {tr("on hold at this till. They stay on this device for the next shift.")}</Alert>}
+            {heldAside > 0 && <Alert tone="info">{heldAside === 1 ? tr("A sale is") : tr("{heldAside} sales are", { heldAside })} {tr("on hold at this till. They stay on this device for the next shift.")}</Alert>}
 
             <section className="pos-card" aria-label={tr("Count the drawer")}>
               <h2>{tr("Count the drawer")}</h2>
@@ -267,29 +267,29 @@ function Closing({
                 </div>
                 {lines.map((l) => (
                   <div className="pos-recon-row" role="row" key={l.mode}>
-                    <span role="cell" className="pos-recon-name">{l.name}</span>
-                    <span role="cell" data-label="Opening" className="num faint">{money(l.opening)}</span>
-                    <span role="cell" data-label="Expected" className="num">{money(l.expected)}</span>
+                    <span role="cell" className="pos-recon-name">{isolate(l.name)}</span>
+                    <span role="cell" data-label="Opening" className="num faint">{isolate(money(l.opening))}</span>
+                    <span role="cell" data-label="Expected" className="num">{isolate(money(l.expected))}</span>
                     <span role="cell" data-label="Counted">
                       {l.mode === drawer && counting ? (
-                        <strong className="num">{money(countTotal(counted, places))}</strong>
+                        <strong className="num">{isolate(money(countTotal(counted, places)))}</strong>
                       ) : (
                         <input
                           className="input num"
                           inputMode="decimal"
                           placeholder={tr("as expected")}
-                          aria-label={`${l.name} counted`}
+                          aria-label={tr("{name} counted", { name: l.name })}
                           aria-invalid={l.bad || undefined}
                           value={typed[l.mode] ?? ""}
                           onChange={(e) => setTyped((t) => ({ ...t, [l.mode]: e.target.value }))}
                         />
                       )}
                       {l.mode === drawer && (
-                        <Button onClick={() => setCounting((c) => !c)}>{counting ? "Type the total" : "Count notes and coins"}</Button>
+                        <Button onClick={() => setCounting((c) => !c)}>{counting ? tr("Type the total") : tr("Count notes and coins")}</Button>
                       )}
                     </span>
                     <span role="cell" data-label="Difference" className="num" data-standing={l.got === null ? undefined : standing(l.diff)}>
-                      {l.got === null ? "" : l.diff === 0 ? "Right" : `${l.diff < 0 ? "Short" : "Over"} ${money(Math.abs(l.diff))}`}
+                      {l.got === null ? "" : l.diff === 0 ? tr("Right") : `${l.diff < 0 ? "Short" : "Over"} ${money(Math.abs(l.diff))}`}
                     </span>
                   </div>
                 ))}
@@ -300,7 +300,7 @@ function Closing({
                   <textarea id="shift-reason" className="textarea" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
                 </Field>
               )}
-              {error && <Alert tone="error">{error}</Alert>}
+              {error && <Alert tone="error">{isolate(error)}</Alert>}
               {saved && !manager && (
                 <Alert tone="success">
                   {tr("Your count is saved. A POS manager closes the shift: they find it in")} <Link to={`/e/PosClosingEntry/${str(saved.id)}`}>{tr("POS Closing Entries")}</Link>.
@@ -322,9 +322,9 @@ function Closing({
           </>
         )}
 
-        <section className="pos-card" aria-label={`${z ? "Z" : "X"} report`}>
+        <section className="pos-card" aria-label={tr("{value} report", { value: z ? "Z" : "X" })}>
           <h2>
-            {z ? "Z report" : "So far"} <Badge tone={z ? "green" : "blue"}>{z ? "Closed" : "Open"}</Badge>
+            {z ? tr("Z report") : tr("So far")} <Badge tone={z ? "green" : "blue"}>{z ? tr("Closed") : tr("Open")}</Badge>
           </h2>
           <dl className="pos-totals">
             <dt>{tr("Sales")}</dt>
@@ -332,11 +332,11 @@ function Closing({
             <dt>{tr("Returns")}</dt>
             <dd>{meta.returns}</dd>
             <dt>{tr("Net sales")}</dt>
-            <dd>{money(meta.net_total)}</dd>
+            <dd>{isolate(money(meta.net_total))}</dd>
             <dt>{tr("Taxes")}</dt>
-            <dd>{money(meta.total_taxes)}</dd>
+            <dd>{isolate(money(meta.total_taxes))}</dd>
             <dt className="pos-total-label">{tr("Total")}</dt>
-            <dd className="pos-total">{money(meta.grand_total)}</dd>
+            <dd className="pos-total">{isolate(money(meta.grand_total))}</dd>
           </dl>
           {report.data.rows.length > 0 && (
             <>
@@ -345,9 +345,9 @@ function Closing({
                 {report.data.rows.map((r) => (
                   <li key={r.mode_of_payment}>
                     <span>
-                      {r.mode_of_payment} <span className="faint">{r.payments} payments</span>
+                      {isolate(r.mode_of_payment)} <span className="faint">{tr("{payments} payments", { payments: r.payments })}</span>
                     </span>
-                    <strong>{money(r.amount)}</strong>
+                    <strong>{isolate(money(r.amount))}</strong>
                   </li>
                 ))}
               </ul>
@@ -380,7 +380,7 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
         query: { submit: true },
         body: { pos_opening_entry: session, movement_type: kind, amount: String(value), reason: why.trim(), account: account.id, posting_date: localDate(new Date()) },
       });
-      toast(kind === "Cash In" ? "Cash put in" : "Cash taken out");
+      toast(kind === "Cash In" ? tr("Cash put in") : tr("Cash taken out"));
       setAmount("");
       setWhy("");
       setAccount({ id: null });
@@ -401,11 +401,11 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
           {moves.map((m, i) => (
             <li key={str(m.id) || i}>
               <span>
-                {str(m.movement_type)} <span className="faint">{str(m.reason)}</span>
+                {isolate(str(m.movement_type))} <span className="faint">{isolate(str(m.reason))}</span>
               </span>
               <strong>
                 {m.movement_type === "Cash Out" ? "−" : "+"}
-                {money(m.amount)}
+                {isolate(money(m.amount))}
               </strong>
             </li>
           ))}
@@ -421,22 +421,22 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
         <div className="segmented" role="group" aria-label={tr("In or out")}>
           {(["Cash Out", "Cash In"] as const).map((k) => (
             <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}>
-              {k === "Cash In" ? "Put in" : "Take out"}
+              {k === "Cash In" ? tr("Put in") : tr("Take out")}
             </button>
           ))}
         </div>
         <Field label={tr("Amount")} htmlFor="cash-amount">
           <input id="cash-amount" className="input" inputMode="decimal" autoComplete="off" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field label={kind === "Cash In" ? "Where it came from" : "What it was for"} htmlFor="cash-account" required hint={kind === "Cash In" ? "The safe or bank account the cash came from." : "The expense account it is booked to."}>
+        <Field label={kind === "Cash In" ? tr("Where it came from") : tr("What it was for")} htmlFor="cash-account" required hint={kind === "Cash In" ? tr("The safe or bank account the cash came from.") : tr("The expense account it is booked to.")}>
           <LinkInput to="Account" id="cash-account" value={account.id} title={account.title} onChange={(id, title) => setAccount({ id, title })} linkFilters={{ is_group: false, company }} />
         </Field>
         <Field label={tr("Reason")} htmlFor="cash-reason" required>
           <input id="cash-reason" className="input" autoComplete="off" value={why} onChange={(e) => setWhy(e.target.value)} placeholder={tr("Milk for the staff room")} />
         </Field>
-        {error && <Alert tone="error">{error}</Alert>}
+        {error && <Alert tone="error">{isolate(error)}</Alert>}
         <Button type="submit" variant="primary" loading={busy} disabled={!ok}>
-          {kind === "Cash In" ? "Put in" : "Take out"} {value ? money(value) : ""}
+          {kind === "Cash In" ? tr("Put in") : tr("Take out")} {value ? money(value) : ""}
         </Button>
       </form>
     </section>
