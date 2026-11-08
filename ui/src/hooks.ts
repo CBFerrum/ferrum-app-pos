@@ -2,7 +2,7 @@
 // of sales not yet sent, and whether the person is a POS manager.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { docPath, shell } from "@ferrum/client";
+import { docPath, shell, t } from "@ferrum/client";
 import { useDebounced } from "@ferrum/kit";
 import type { Doc, Me } from "@ferrum/records";
 import { errorMessage } from "@ferrum/client";
@@ -87,7 +87,7 @@ export function useCalc(body: Doc | null, lines: CartLine[], book: PriceBook | n
     }
     const ctl = new AbortController();
     const onDevice = async () => {
-      if (!book) return setState({ doc: null, pending: false, error: "No connection, and no prices on this device yet." });
+      if (!book) return setState({ doc: null, pending: false, error: t("No connection, and no prices on this device yet.") });
       try {
         const doc = await priceOffline(book, linesRef.current);
         if (!ctl.signal.aborted) setState({ doc, pending: false, offline: true });

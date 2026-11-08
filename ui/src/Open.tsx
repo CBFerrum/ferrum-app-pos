@@ -41,7 +41,7 @@ export default function Open({ profile, modes, onOpened }: { profile: Doc; modes
       void qc.invalidateQueries({ queryKey: ["pos", "session"] });
       onOpened();
     } catch (err) {
-      setError(unreachable(err) ? "No connection: open the register when it is back." : errorMessage(err));
+      setError(unreachable(err) ? t("No connection: open the register when it is back.") : errorMessage(err));
       setBusy(false);
     }
   };

@@ -4,6 +4,7 @@
 // (they need no server, so they work offline), and every read or write survives storage that is
 // empty, full, corrupt or blocked.
 
+import { t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import type { CartLine } from "./pos";
 
@@ -92,7 +93,7 @@ export function saveCart(owner: string, cart: Cart | null, storage: Store | unde
 }
 
 /** What a held sale shows in a list: its customer or "Walk-in", how many lines. */
-export function heldSummary(s: HeldSale, walkIn = "Walk-in customer"): { who: string; lines: string } {
+export function heldSummary(s: HeldSale, walkIn = t("Walk-in customer")): { who: string; lines: string } {
   const n = s.lines.length;
   return { who: s.customer.title || walkIn, lines: `${n} ${n === 1 ? "line" : "lines"}` };
 }

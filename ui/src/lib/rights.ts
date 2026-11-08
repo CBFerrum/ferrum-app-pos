@@ -40,11 +40,11 @@ const typed = (v: string | undefined) => (v === undefined || v.trim() === "" ? u
 export function lineProblem(r: Rights, o: { list: number; rule: number; discount?: string; price?: string }): string | null {
   const discount = typed(o.discount);
   const price = typed(o.price);
-  if (discount !== undefined && !(discount >= 0 && discount <= 100)) return "A discount is between 0 and 100 percent.";
-  if (price !== undefined && !(price > 0)) return "Type a price above zero.";
+  if (discount !== undefined && !(discount >= 0 && discount <= 100)) return t("A discount is between 0 and 100 percent.");
+  if (price !== undefined && !(price > 0)) return t("Type a price above zero.");
   if (r.manager) return null;
-  if (price !== undefined && price !== o.list && !r.price) return "This register does not let cashiers change prices. Ask a POS manager.";
-  if (discount !== undefined && discount > o.rule && !r.discount) return "This register does not let cashiers give discounts. Ask a POS manager.";
+  if (price !== undefined && price !== o.list && !r.price) return t("This register does not let cashiers change prices. Ask a POS manager.");
+  if (discount !== undefined && discount > o.rule && !r.discount) return t("This register does not let cashiers give discounts. Ask a POS manager.");
   if (!(o.list > 0)) return null;
   const pays = ((price ?? o.list) / o.list) * ((100 - (discount ?? o.rule)) / 100);
   const saving = Math.round((1 - pays) * 100 * 1e4) / 1e4;
