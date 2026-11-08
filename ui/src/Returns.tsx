@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Minus, Plus } from "lucide-react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { docPath, errorMessage, newKey, t, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, useDebounced } from "@ferrum/kit";
+import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, useDebounced, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, num, str, useMoney } from "./fmt";
 import { till } from "./lib/offline";
@@ -190,9 +190,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
               <div className="pos-return-line">
                 <strong>{isolate(l.item_name)}</strong>
                 <span className="muted">
-                  {t("sold {sold}", { sold: l.sold })}
-                  {num(l.returned) > 0 ? t(" · {returned} already returned", { returned: l.returned }) : ""}
-                  {l.rate ? t(" · {value} each", { value: money(l.rate) }) : ""}
+                  {(num(l.returned) > 0 ? (l.rate ? t("sold {sold} · {returned} already returned · {value} each", { sold: l.sold, returned: l.returned, value: money(l.rate) }) : t("sold {sold} · {returned} already returned", { sold: l.sold, returned: l.returned })) : (l.rate ? t("sold {sold} · {value} each", { sold: l.sold, value: money(l.rate) }) : t("sold {sold}", { sold: l.sold })))}
                 </span>
                 {l.note && <span className="faint">{isolate(l.note)}</span>}
               </div>
@@ -256,7 +254,7 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
             <span className="muted">{t("To refund")}</span>
             <strong>{isolate(money(total))}</strong>
           </p>
-          {num(data.refundable.credit) > 0 && <p className="faint pos-hint">{t("The customer still owes")} {isolate(money(data.refundable.credit))} {t("on this sale: that is cancelled first, before anything is paid out.")}</p>}
+          {num(data.refundable.credit) > 0 && <p className="faint pos-hint">{placed(t("The customer still owes {p1} on this sale: that is cancelled first, before anything is paid out."), { p1: isolate(money(data.refundable.credit)) })}</p>}
           <ul className="pos-refunds">
             {methods.map((m) => {
               const amount = m.kind === "Loyalty Points" ? pointsValue(Math.floor(num(points)), num(data.loyalty?.factor), precision) : num(amounts[m.mode]);

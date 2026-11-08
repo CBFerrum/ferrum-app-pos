@@ -201,7 +201,7 @@ export function keptReceipt(profile: Doc, priced: Doc | null, sale: Doc, o: { cu
     ...(o.customer ? { customer_name: o.customer } : {}),
     payments: sale.payments,
     posting_date: sale.posting_date,
-    number: "Not sent yet",
+    number: tr("Not sent yet"),
     rounded_total: String(o.due),
     change_amount: String(o.change),
     pending: true,
@@ -237,17 +237,17 @@ export function receiptHtml(profile: Doc, sale: Doc): string {
   const pays = ((sale.payments as Doc[] | undefined) ?? [])
     .map((p) => `<tr><td>${esc(titleOf(p, "mode_of_payment"))}</td><td class="r">${esc(money(p.amount))}</td></tr>`)
     .join("");
-  const line = (label: string, v: unknown) => `<tr><td>${label}</td><td class="r">${esc(money(v))}</td></tr>`;
+  const line = (label: string, v: unknown) => `<tr><td>${esc(label)}</td><td class="r">${esc(money(v))}</td></tr>`;
   return printPage(
     profile,
     str(sale.number),
     `
     <h1>${esc(profile.profile_name)}</h1>${profile.receipt_header ? `<p>${esc(profile.receipt_header)}</p>` : ""}
-    <p>${sale.is_return ? `<b>RETURN</b>${sale.against ? tr(" of {value}", { value: esc(sale.against) }) : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
+    <p>${sale.is_return ? `<b>${esc(tr("RETURN"))}</b>${sale.against ? tr(" of {value}", { value: esc(sale.against) }) : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
     <table>${rows}</table><hr>
-    <table>${line("Subtotal", sale.total)}${num(sale.discount_amount) ? line("Discount", -num(sale.discount_amount)) : ""}${line("Taxes", sale.total_taxes)}${num(sale.rounding_adjustment) ? line("Rounding", sale.rounding_adjustment) : ""}
-    <tr><td><b>Total</b></td><td class="r"><b>${esc(money(sale.rounded_total ?? sale.grand_total))}</b></td></tr></table><hr>
-    <table>${pays}${num(sale.change_amount) ? line("Change", sale.change_amount) : ""}</table>
+    <table>${line(tr("Subtotal"), sale.total)}${num(sale.discount_amount) ? line(tr("Discount"), -num(sale.discount_amount)) : ""}${line(tr("Taxes"), sale.total_taxes)}${num(sale.rounding_adjustment) ? line(tr("Rounding"), sale.rounding_adjustment) : ""}
+    <tr><td><b>${esc(tr("Total"))}</b></td><td class="r"><b>${esc(money(sale.rounded_total ?? sale.grand_total))}</b></td></tr></table><hr>
+    <table>${pays}${num(sale.change_amount) ? line(tr("Change"), sale.change_amount) : ""}</table>
     ${profile.receipt_footer ? `<hr><p>${esc(profile.receipt_footer)}</p>` : ""}
   `,
   );

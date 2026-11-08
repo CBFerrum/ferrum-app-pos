@@ -111,10 +111,10 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   const book = usePriceBook(profileId, open?.id ?? null);
 
   if ((profile.isLoading || session.isLoading) && !memory) return <PageLoading label={t("Opening the register…")} />;
-  if (!email) return <ErrorState error={new Error("Sign in to use the register")} />;
+  if (!email) return <ErrorState error={new Error(t("Sign in to use the register"))} />;
   const error = offline ? null : (profile.error ?? session.error);
   if (error || !profileDoc) {
-    return <ErrorState error={error ?? new Error("This register is not on this device yet: connect once to set it up.")} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
+    return <ErrorState error={error ?? new Error(t("This register is not on this device yet: connect once to set it up."))} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
   }
   if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} offline={offline} onSwitch={onSwitch} />;
   return (

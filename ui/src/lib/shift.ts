@@ -124,7 +124,11 @@ export function remarksOf(rows: { name: string; difference: number }[], reason: 
 /** What the person said, from remarks written by `remarksOf` (or by hand). */
 export function reasonOf(remarks: string | null | undefined): string {
   const [first = "", ...rest] = (remarks ?? "").split("\n");
-  return /\b(short|over) by [\d.,]+\.?$/.test(first) ? rest.join("\n") : (remarks ?? "");
+  // the line remarksOf writes, in the page's words or in English (remarks written before)
+  const off = [tr("{name} short by {amount}"), tr("{name} over by {amount}"), "{name} short by {amount}", "{name} over by {amount}"].map((s) =>
+    s.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace("{name}", ".+").replace("{amount}", "[\\d.,\u0660-\u0669\u066b\u066c]+"),
+  );
+  return new RegExp(`(?:${off.join("|")})\\.?$`).test(first) ? rest.join("\n") : (remarks ?? "");
 }
 
 /** The X report (a shift still open) or the Z report (once it is closed), ready to print. */
@@ -132,12 +136,12 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const s = report.meta.session;
   const at = (v: string | null | undefined) => formatMoment(v, { dateStyle: "medium", timeStyle: "medium" });
-  const takings = report.rows.map((r) => `<tr><td>${esc(r.mode_of_payment)}<br><small>${esc(r.payments)} payments</small></td><td class="r">${esc(money(r.amount))}</td></tr>`).join("");
+  const takings = report.rows.map((r) => `<tr><td>${esc(r.mode_of_payment)}<br><small>${esc(Number(r.payments) === 1 ? tr("1 payment") : tr("{n} payments", { n: String(r.payments ?? 0) }))}</small></td><td class="r">${esc(money(r.amount))}</td></tr>`).join("");
   const drawer = (s?.reconciliation ?? [])
     .map(
       (r) =>
         `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${esc(money(r.expected))}</td></tr>` +
-        (r.counted == null ? "" : `<tr><td><small>counted</small></td><td class="r">${esc(money(r.counted))}</td></tr><tr><td><small>${Number(r.difference) < 0 ? "short" : Number(r.difference) > 0 ? "over" : "difference"}</small></td><td class="r">${esc(money(r.difference))}</td></tr>`),
+        (r.counted == null ? "" : `<tr><td><small>${esc(tr("counted"))}</small></td><td class="r">${esc(money(r.counted))}</td></tr><tr><td><small>${esc(Number(r.difference) < 0 ? tr("short") : Number(r.difference) > 0 ? tr("over") : tr("difference"))}</small></td><td class="r">${esc(money(r.difference))}</td></tr>`),
     )
     .join("");
   return printPage(
@@ -145,12 +149,12 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
     tr("{value} report {value2}", { value: s?.report ?? "X", value2: s?.number ?? "" }),
     `
     <h1>${esc(profile.profile_name)}</h1>
-    <p><b>${s?.report === "Z" ? "Z REPORT" : "X REPORT"}</b><br>Session ${esc(s?.number)} · ${esc(s?.cashier)}<br>Opened ${esc(at(s?.opened_at))}${s?.closed_at ? `<br>Closed ${esc(at(s.closed_at))}` : ""}</p><hr>
-    <table><tr><td>Sales</td><td class="r">${esc(report.meta.sales)}</td></tr><tr><td>Returns</td><td class="r">${esc(report.meta.returns)}</td></tr>
-    <tr><td>Net sales</td><td class="r">${esc(money(report.meta.net_total))}</td></tr><tr><td>Taxes</td><td class="r">${esc(money(report.meta.total_taxes))}</td></tr>
-    <tr><td><b>Total</b></td><td class="r"><b>${esc(money(report.meta.grand_total))}</b></td></tr></table><hr>
-    <p><b>Taken, by way of paying</b></p><table>${takings}</table><hr>
-    <p><b>In the drawer</b></p><table>${drawer}</table>
+    <p><b>${esc(s?.report === "Z" ? tr("Z REPORT") : tr("X REPORT"))}</b><br>${esc(tr("Session {number} · {cashier}", { number: String(s?.number ?? ""), cashier: String(s?.cashier ?? "") }))}<br>${esc(tr("Opened {at}", { at: at(s?.opened_at) }))}${s?.closed_at ? `<br>${esc(tr("Closed {at}", { at: at(s.closed_at) }))}` : ""}</p><hr>
+    <table><tr><td>${esc(tr("Sales"))}</td><td class="r">${esc(report.meta.sales)}</td></tr><tr><td>${esc(tr("Returns"))}</td><td class="r">${esc(report.meta.returns)}</td></tr>
+    <tr><td>${esc(tr("Net sales"))}</td><td class="r">${esc(money(report.meta.net_total))}</td></tr><tr><td>${esc(tr("Taxes"))}</td><td class="r">${esc(money(report.meta.total_taxes))}</td></tr>
+    <tr><td><b>${esc(tr("Total"))}</b></td><td class="r"><b>${esc(money(report.meta.grand_total))}</b></td></tr></table><hr>
+    <p><b>${esc(tr("Taken, by way of paying"))}</b></p><table>${takings}</table><hr>
+    <p><b>${esc(tr("In the drawer"))}</b></p><table>${drawer}</table>
     ${remarks ? `<hr><p>${esc(remarks)}</p>` : ""}
   `,
   );

@@ -7,7 +7,7 @@
 import { Minus, Plus } from "lucide-react";
 import { useState } from "react";
 import { formatMoment, t, isolate } from "@ferrum/client";
-import { Button } from "@ferrum/kit";
+import { Button, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { num, useMoney } from "./fmt";
 import type { CartLine } from "./lib/pos";
@@ -222,7 +222,7 @@ export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; 
       <dt className="pos-total-label">{t("Total")}</dt>
       <dd className="pos-total" aria-live="polite">{isolate(money(due))}</dd>
       {offline && builtAt && (
-        <dd className="pos-totals-note faint">{t("Priced on this device (prices of")} {isolate(formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" }))}{t("); checked again when the sale is sent.")}</dd>
+        <dd className="pos-totals-note faint">{placed(t("Priced on this device (prices of {p1}); checked again when the sale is sent."), { p1: isolate(formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })) })}</dd>
       )}
     </dl>
   );

@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
 import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
+import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle, placed } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
 import { Currency, localDate, myEmail, num, remembered, str, titleOf } from "./fmt";
@@ -232,7 +232,7 @@ function Closing({
           </div>
           <span className="spacer" />
           <Button icon="printer" onClick={() => printHtml(zReportHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
-            {tr("Print the")} {z ? "Z" : "X"} {tr("report")}
+            {placed(tr("Print the {p1} report"), { p1: z ? "Z" : "X" })}
           </Button>
           <Link className="btn btn-default btn-md" to="/">
             {tr("Back to the till")}
@@ -243,16 +243,15 @@ function Closing({
           <>
             {unsent.length > 0 && (
               <Alert tone="warning" action={<Button onClick={() => void outbox.flush()}>{tr("Send now")}</Button>}>
-                {unsent.length === 1 ? tr("A sale is") : tr("{length} sales are", { length: unsent.length })} {tr("still waiting on this device to be sent. Send")} {unsent.length === 1 ? tr("it") : tr("them")} {tr("before closing: once the shift is closed the register refuses them.")}
+                {placed(tr("{p1} still waiting on this device to be sent. Send {p2} before closing: once the shift is closed the register refuses them."), { p1: unsent.length === 1 ? tr("A sale is") : tr("{length} sales are", { length: unsent.length }), p2: unsent.length === 1 ? tr("it") : tr("them") })}
               </Alert>
             )}
             {drafts > 0 && (
               <Alert tone="warning">
-                {drafts === 1 ? tr("A sale is") : tr("{drafts} sales are", { drafts })} {tr("unfinished in this shift. Finish or delete")} {drafts === 1 ? tr("it") : tr("them")} {tr("first, or the shift cannot close.")}{isolate(" ")}
-                <Link to="/e/PosInvoice">{tr("Open the sales")}</Link>
+                {placed(tr("{p1} unfinished in this shift. Finish or delete {p2} first, or the shift cannot close. {p3}"), { p1: drafts === 1 ? tr("A sale is") : tr("{drafts} sales are", { drafts }), p2: drafts === 1 ? tr("it") : tr("them"), p3: <Link to="/e/PosInvoice">{tr("Open the sales")}</Link> })}
               </Alert>
             )}
-            {heldAside > 0 && <Alert tone="info">{heldAside === 1 ? tr("A sale is") : tr("{heldAside} sales are", { heldAside })} {tr("on hold at this till. They stay on this device for the next shift.")}</Alert>}
+            {heldAside > 0 && <Alert tone="info">{(heldAside === 1 ? tr("A sale is on hold at this till. They stay on this device for the next shift.") : tr("{heldAside} sales are on hold at this till. They stay on this device for the next shift.", { heldAside }))}</Alert>}
 
             <section className="pos-card" aria-label={tr("Count the drawer")}>
               <h2>{tr("Count the drawer")}</h2>

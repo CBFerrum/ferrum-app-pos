@@ -106,7 +106,7 @@ export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: 
   const owed = Math.min(rest, left.credit);
   if (owed > 0) {
     const credit = usable("Credit")[0];
-    if (!credit) return { rows, problem: "This register has no Credit method to cancel what the customer still owes." };
+    if (!credit) return { rows, problem: t("This register has no Credit method to cancel what the customer still owes.") };
     add(credit.mode, owed);
     rest = round(rest - owed, precision);
   }
@@ -141,7 +141,7 @@ export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: 
   }
   if (rest > 0) {
     const via = money.find((m) => m.kind === "Cash") ?? money[0];
-    if (!via) return { rows, problem: "This register has no cash, card or other way to refund money." };
+    if (!via) return { rows, problem: t("This register has no cash, card or other way to refund money.") };
     add(via.mode, rest);
   }
   return { rows, problem: null };
@@ -153,12 +153,12 @@ export function checkRefund(total: number, rows: RefundRow[], s: Pick<Sheet, "me
   const sum = (f: (kind: string) => boolean) => round(rows.filter((r) => f(method(r.mode)?.kind ?? "")).reduce((a, r) => a + r.amount, 0), precision);
   const fmt = (n: number) => formatDecimal(n, precision);
   const unusable = rows.find((r) => r.amount > 0 && !method(r.mode)?.usable);
-  if (unusable) return t("{value} cannot refund returns at this register.", { value: method(unusable.mode)?.name ?? "That method" });
+  if (unusable) return t("{value} cannot refund returns at this register.", { value: method(unusable.mode)?.name ?? t("That method") });
   const all = sum(() => true);
   if (all !== round(total, precision)) return t("The refunds add up to {all} of {total}.", { all: fmt(all), total: fmt(total) });
   const owed = round(Math.max(0, Math.min(total, Number(s.refundable.credit))), precision);
   if (sum((k) => k === "Credit") !== owed) {
-    return owed > 0 ? t("{owed} of this refund must go to Credit: the customer still owes that much on the sale.", { owed: fmt(owed) }) : "The sale was paid in full: refund through cash or another way of paying, not Credit.";
+    return owed > 0 ? t("{owed} of this refund must go to Credit: the customer still owes that much on the sale.", { owed: fmt(owed) }) : t("The sale was paid in full: refund through cash or another way of paying, not Credit.");
   }
   const loyalty = Number(s.refundable.loyalty);
   if (sum((k) => k === "Loyalty Points") > loyalty) return t("At most {loyalty} can go back as loyalty points.", { loyalty: fmt(loyalty) });

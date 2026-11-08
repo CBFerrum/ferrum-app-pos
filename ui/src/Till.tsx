@@ -11,7 +11,7 @@ import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr, isolate } from "@ferrum/client";
-import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
+import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CartLines, Totals, type Base } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
@@ -233,7 +233,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     if (lines.length) {
       const ok = await confirmDialog({
         title: tr("Put the sale on screen on hold?"),
-        message: tr("It has {length} {value}. It will be held, and the one you picked brought back.", { length: lines.length, value: lines.length === 1 ? "line" : "lines" }),
+        message: (lines.length === 1 ? tr("It has {length} line. It will be held, and the one you picked brought back.", { length: lines.length }) : tr("It has {length} lines. It will be held, and the one you picked brought back.", { length: lines.length })),
         confirmLabel: tr("Hold it and resume"),
         cancelLabel: tr("Keep it"),
       });
@@ -251,7 +251,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const discard = async (key: string) => {
     const sale = held.find((s) => s.key === key);
     if (!sale) return;
-    const ok = await confirmDialog({ title: tr("Discard this held sale?"), message: tr("{length} {value} will be forgotten.", { length: sale.lines.length, value: sale.lines.length === 1 ? "line" : "lines" }), confirmLabel: tr("Discard"), danger: true });
+    const ok = await confirmDialog({ title: tr("Discard this held sale?"), message: (sale.lines.length === 1 ? tr("{length} line will be forgotten.", { length: sale.lines.length }) : tr("{length} lines will be forgotten.", { length: sale.lines.length })), confirmLabel: tr("Discard"), danger: true });
     if (!ok) return;
     const { rest } = takeOut(held, key);
     if (saveHeld(owner, rest)) setHeld(rest);
@@ -270,7 +270,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     const keep = (): string | null => {
       const queued: QueuedSale = { key, body: sale, at: at.toISOString(), by: email, total: String(due) };
       // The sale is the device's only copy: if the device would not keep it, it stays on screen.
-      if (!outbox.add(queued)) return "This device could not keep the sale: its storage is full or blocked. Connect to send it now, or free some space and try again.";
+      if (!outbox.add(queued)) return tr("This device could not keep the sale: its storage is full or blocked. Connect to send it now, or free some space and try again.");
       const paid = tenders.map((t) => ({ kind: str(modes.find((m) => m.id === t.mode_of_payment)?.mode_type), amount: num(t.amount) }));
       const change = tally(due, paid, num(profile.write_off_limit), precision).change;
       // A receipt now, marked as not yet sent; the server numbers the sale when it arrives.
@@ -571,7 +571,7 @@ function OutboxBar({
         <div className="pos-outbox-row">
           <WifiOff className="size-4" aria-hidden="true" />
           <span className="pos-outbox-text">
-            {own === 1 ? tr("1 sale is") : tr("{own} sales are", { own })} {tr("kept on this device until")} {signedOut ? tr("you sign in again") : tr("they can be sent")}.
+            {(own === 1 ? (signedOut ? tr("1 sale is kept on this device until you sign in again") : tr("1 sale is kept on this device until they can be sent")) : (signedOut ? tr("{own} sales are kept on this device until you sign in again", { own }) : tr("{own} sales are kept on this device until they can be sent", { own })))}.
           </span>
           {signedOut ? (
             <Button onClick={() => shell().session.reauthenticate()}>{tr("Sign in to send")}</Button>
@@ -582,7 +582,7 @@ function OutboxBar({
       )}
       {others.length > 0 && (
         <p className="pos-outbox-row">
-          {others.length === 1 ? tr("1 sale") : tr("{length} sales", { length: others.length })} {tr("by {value}", { value: [...new Set(others.map((s) => s.by))].join(", ") })} {tr("will be sent when they sign in on this device.")}
+          {placed(tr("{p1} by {value} will be sent when they sign in on this device."), { p1: others.length === 1 ? tr("1 sale") : tr("{length} sales", { length: others.length }), value: [...new Set(others.map((s) => s.by))].join(", ") })}
         </p>
       )}
       {refused.map((s) => (

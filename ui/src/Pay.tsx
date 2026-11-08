@@ -8,7 +8,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useContext, useMemo, useState, type FormEvent } from "react";
 import { docPath, t as tr, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon } from "@ferrum/kit";
+import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
@@ -81,12 +81,12 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
 
   /** Why a way of paying cannot be used for this sale, if it cannot. */
   const whyNot = (m: Method): string | null => {
-    if (m.kind === "Credit" && !named) return "Paying later needs a named customer: pick one on the sale first.";
+    if (m.kind === "Credit" && !named) return tr("Paying later needs a named customer: pick one on the sale first.");
     if (m.kind === "Loyalty Points") {
-      if (!named) return "Points need a named customer: pick one on the sale first.";
-      if (offline) return "Points need a connection to read the customer's balance.";
-      if (!program) return "This customer is not in a loyalty program.";
-      if (balance.data && available <= 0) return "This customer has no points to use.";
+      if (!named) return tr("Points need a named customer: pick one on the sale first.");
+      if (offline) return tr("Points need a connection to read the customer's balance.");
+      if (!program) return tr("This customer is not in a loyalty program.");
+      if (balance.data && available <= 0) return tr("This customer has no points to use.");
     }
     return null;
   };
@@ -159,7 +159,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   ) : t.change > 0 ? (
     <p className="pos-status pos-status-change">{tr("Change")} <strong>{isolate(money(t.change))}</strong></p>
   ) : t.writeOff > 0 ? (
-    <p className="pos-status">{tr("Short by")} {isolate(money(t.writeOff))}{tr(", which this register writes off.")}</p>
+    <p className="pos-status">{placed(tr("Short by {p1}, which this register writes off."), { p1: isolate(money(t.writeOff)) })}</p>
   ) : (
     <p className="pos-status pos-status-change">{tr("Paid exactly")}</p>
   );

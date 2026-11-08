@@ -145,7 +145,7 @@ function bookDb(): string | null {
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const db = bookDb();
-    if (!db) return reject(new Error("this device may not keep the price book"));
+    if (!db) return reject(new Error(t("this device may not keep the price book")));
     const req = indexedDB.open(db, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(BOOKS, { keyPath: "profile" });
     req.onsuccess = () => resolve(req.result);

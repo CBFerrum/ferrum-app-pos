@@ -2,6 +2,7 @@
 // sale (`settle_sale`): tenders must cover it, a small shortfall inside the register's write-off
 // limit is forgiven, and only cash can be more than what is due (the rest goes back as change).
 
+import { t } from "@ferrum/client";
 export interface Paid {
   kind: string;
   amount: number;
@@ -32,7 +33,7 @@ export function tally(due: number, paid: Paid[], writeOffLimit = 0, precision = 
   const short = round(due - tendered, precision);
   if (short > 0) return short <= writeOffLimit ? { tendered, left: 0, change: 0, writeOff: short, problem: null } : { tendered, left: short, change: 0, writeOff: 0, problem: null };
   const other = sum(paid.filter((p) => p.kind !== "Cash"));
-  if (other > due) return { tendered, left: 0, change: 0, writeOff: 0, problem: "Only cash can come to more than the bill. Lower the card or other amounts." };
+  if (other > due) return { tendered, left: 0, change: 0, writeOff: 0, problem: t("Only cash can come to more than the bill. Lower the card or other amounts.") };
   return { tendered, left: 0, change: round(tendered - due, precision), writeOff: 0, problem: null };
 }
 
