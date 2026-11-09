@@ -212,7 +212,16 @@ impl DocHook for PosInvoiceHook {
         let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
         let mut co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
         co.allow_negative_stock |= b(&profile.doc, "allow_negative_stock");
+        // A sale made while the till was offline that takes more than the warehouse holds when it
+        // arrives: the customer paid and took the goods, so it is recorded, and what it oversold waits
+        // as a Stock Shortfall for someone to put right, unless the register refuses such sales (FEO-026).
+        let reconcile = b(doc, "sold_offline") && !co.allow_negative_stock && s(&profile.doc, "offline_shortfall") != Some("Refuse");
+        let before = if reconcile { Some(on_hand(hc, doc, &co).await?) } else { None };
+        co.allow_negative_stock |= reconcile;
         post_stock(hc, doc, &co).await?;
+        if let Some(before) = before {
+            record_shortfalls(hc, doc, &co, &before).await?;
+        }
         let earned = loyalty::on_submit(hc, doc).await?;
         let status = if b(doc, "is_return") {
             "Return"
@@ -582,6 +591,58 @@ async fn check_credit_limit(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
             this.normalize(),
             limit.normalize()
         )));
+    }
+    Ok(())
+}
+
+/// What a sale takes out of each warehouse, by item: its stock lines' quantities, sold (positive).
+async fn stock_taken(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<HashMap<(Uuid, Uuid), Decimal>> {
+    let mut out: HashMap<(Uuid, Uuid), Decimal> = HashMap::new();
+    for r in rows(doc, "items") {
+        let (Some(item), Some(wh)) = (id(&r, "item"), id(&r, "warehouse")) else { continue };
+        if d(&r, "qty") <= Decimal::ZERO || !b(&get(hc.kernel, hc.ctx, hc.tx, "Item", item).await?, "is_stock_item") {
+            continue;
+        }
+        *out.entry((item, wh)).or_default() += d(&r, "qty");
+    }
+    Ok(out)
+}
+
+/// What each warehouse holds of what the sale takes, before it is posted (the balances locked).
+async fn on_hand(hc: &mut HookCtx<'_>, doc: &Doc, co: &Company) -> Result<HashMap<(Uuid, Uuid), Decimal>> {
+    let keys: Vec<(Uuid, Uuid)> = stock_taken(hc, doc).await?.into_keys().collect();
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let held = stock::lock_balances(hc.tx, hc.ctx.tenant, co.id, &keys).await?;
+    Ok(keys.into_iter().map(|k| (k, held.get(&k).map(|b| b.0).unwrap_or_default())).collect())
+}
+
+/// A shortfall for each item the sale took beyond what its warehouse held: the part of it that was
+/// not there.
+async fn record_shortfalls(hc: &mut HookCtx<'_>, doc: &Doc, co: &Company, before: &HashMap<(Uuid, Uuid), Decimal>) -> Result<()> {
+    let iid = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+    let system = ferrum_domain::util::elevated(hc.ctx);
+    let sold_at = format!("{} {}", s(doc, "posting_date").unwrap_or_default(), s(doc, "posting_time").unwrap_or_default()).trim().to_string();
+    for ((item, wh), qty) in stock_taken(hc, doc).await? {
+        let had = before.get(&(item, wh)).copied().unwrap_or_default().max(Decimal::ZERO);
+        let short = qty - had;
+        if short <= Decimal::ZERO {
+            continue;
+        }
+        let mut row = Doc::new();
+        for (k, v) in [
+            ("pos_invoice", json!(iid)),
+            ("pos_profile", json!(id(doc, "pos_profile"))),
+            ("company", json!(co.id)),
+            ("item", json!(item)),
+            ("warehouse", json!(wh)),
+            ("qty_short", json!(short.normalize().to_string())),
+            ("sold_at", json!(sold_at)),
+        ] {
+            row.insert(k.into(), v);
+        }
+        hc.kernel.insert_tx(&system, hc.tx, "PosStockShortfall", row).await?;
     }
     Ok(())
 }

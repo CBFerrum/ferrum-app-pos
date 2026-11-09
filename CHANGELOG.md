@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+Two tills offline that sell the last of something: what happens when the second sale arrives is the register's declared policy, and nothing is lost or unexplained (Ferrum's closure review, FEO-026).
+
+- A sale the till kept while it could not reach the server is sent marked Sold Offline.
+- When it arrives and takes more than the warehouse holds, the register's Sold Offline Beyond Stock decides: Record and reconcile (the default: the customer paid and took the goods, so the sale is recorded, the warehouse shows what left it, and a Stock Shortfall per item says how much was not there, from which sale, until a manager marks it put right and says how), or Refuse, as an online sale is. Before, such a sale was refused, and the till could only retry it or discard a sale that had happened.
+- Sent again after its answer was lost, a sale is recorded once, as before (its key).
+
 ## 0.4.13
 
 The reports it defines in code (their titles and parameters) have names in Arabic and Hindi too, with its models' and manifest's (272 each in ui/src/locales/names). Translated by the model, to be reviewed by native speakers.

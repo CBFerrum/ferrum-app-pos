@@ -477,6 +477,67 @@ async fn scenario() {
     assert_eq!(gum_sale["number"].as_str().unwrap().split('-').next(), Some("C2"));
     assert_eq!(t.stock(gum, stores).await.0, n("-3"));
 
+    // ───────────── two tills offline sell the last one (FEO-026) ─────────────
+    let mints = uid(&t.insert(&a, "Item", item("MINTS", json!({}))).await);
+    t.insert(&a, "ItemPrice", json!({"item": mints.to_string(), "price_list": selling["id"], "rate": "3", "valid_from": "2020-01-01"})).await;
+    let last = t
+        .insert(&a, "StockEntry", json!({"company": cid.to_string(), "purpose": "Opening Stock", "items": [{"item": mints.to_string(), "qty": "1", "basic_rate": "1", "target_warehouse": stores.to_string()}]}))
+        .await;
+    t.submit(&a, "StockEntry", uid(&last)).await;
+    let till_sale = |key: Uuid, offline: bool| json!({"id": key.to_string(), "pos_profile": counter1.to_string(), "items": [line(mints, "1")], "payments": [pay(&cash, "3.30")], "sold_offline": offline});
+    // Online, the register sells only what it has.
+    let online = t.refused(&cashier, json!({"pos_profile": counter1.to_string(), "items": [line(mints, "2")], "payments": [pay(&cash, "6.60")]})).await;
+    assert!(matches!(online, Error::Invalid(ref m) if m.contains("not enough stock")), "{online:?}");
+    // Two tills, both offline, each sold the last packet; they arrive one after the other, each under its key.
+    let send = |key: Uuid| {
+        let (k, cashier, body) = (t.k.clone(), cashier.clone(), obj(till_sale(key, true)));
+        async move { k.insert_idempotent_with(&cashier, "PosInvoice", body, &format!("till.{key}"), &format!("till.{key}"), true).await }
+    };
+    let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
+    send(first).await.expect("the first arrives");
+    let (b, again) = send(second).await.expect("the second arrives too: the goods are gone and paid for");
+    assert!(!again && b["docstatus"] == json!(1), "{b:?}");
+    assert_eq!(t.stock(mints, stores).await.0, n("-1"), "the warehouse shows what left it");
+    let shortfalls = |status: &'static str| {
+        let t = &t;
+        async move {
+            t.k.list(
+                &t.admin,
+                "PosStockShortfall",
+                &ferrum_kernel::ListQuery { filters: vec![ferrum_kernel::query::Filter::eq("status", status)], ..Default::default() },
+            )
+            .await
+            .unwrap()
+            .rows
+        }
+    };
+    let open = shortfalls("Open").await;
+    assert_eq!(open.len(), 1, "one shortfall, the second sale's: {open:?}");
+    assert_eq!((open[0]["pos_invoice"].as_str(), dec(&open[0]["qty_short"])), (Some(second.to_string().as_str()), n("1")));
+    // Sent again (its answer lost), nothing is sold or recorded twice.
+    let (_, again) = send(second).await.expect("the same answer");
+    assert!(again, "a receipt");
+    assert_eq!((shortfalls("Open").await.len(), t.stock(mints, stores).await.0), (1, n("-1")), "no second effect");
+    // Put right by a manager, who says how; not by a cashier.
+    let sid: Uuid = open[0]["id"].as_str().unwrap().parse().unwrap();
+    assert!(t.k.run_action(&cashier, "PosStockShortfall", sid, "resolve", json!({"resolution": "found it"})).await.is_err(), "a cashier does not");
+    assert!(t.k.run_action(&manager, "PosStockShortfall", sid, "resolve", json!({"resolution": " "})).await.is_err(), "it says how");
+    t.k.run_action(&manager, "PosStockShortfall", sid, "resolve", json!({"resolution": "Counted: a box was in the back store, moved in"}))
+        .await
+        .expect("put right");
+    let done = t.get("PosStockShortfall", sid).await;
+    assert_eq!((done["status"].as_str(), done["resolved_by"].as_str()), (Some("Put Right"), Some("manager@shop.test")));
+    // A register that refuses such sales refuses them, as online.
+    t.k.update(&a, "PosProfile", counter1, obj(json!({"offline_shortfall": "Refuse"})), None).await.expect("refuse");
+    let refused_offline = t.refused(&cashier, till_sale(Uuid::now_v7(), true)).await;
+    assert!(matches!(refused_offline, Error::Invalid(ref m) if m.contains("not enough stock")), "{refused_offline:?}");
+    t.k.update(&a, "PosProfile", counter1, obj(json!({"offline_shortfall": "Record and reconcile"})), None).await.expect("back");
+    // Voided, both give their cash and their packet back; what was put right stays on record.
+    for sale in [first, second] {
+        t.k.cancel(&manager, "PosInvoice", sale, None).await.expect("voided");
+    }
+    assert_eq!(t.stock(mints, stores).await.0, n("1"));
+
     // ───────────── a return ─────────────
     let ret = |qty: &str, refund: Value| {
         json!({"pos_profile": counter1.to_string(), "is_return": true, "return_against": sale_id.to_string(),
