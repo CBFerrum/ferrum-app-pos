@@ -21,12 +21,14 @@ Ferrum Point of Sale is the till at `/pos/`: full screen, installable on its own
 sell offline. Its worker keeps the till's page and files, the register's price book stays on the
 device, and the till prices sales with the server's own engine compiled to WebAssembly, so offline
 totals are the server's totals. Sales made offline wait on the device and go when the connection,
-or the cashier's session, is back; at closing they consolidate into invoices and payments.
+or the cashier's session, is back; at closing they consolidate into invoices and payments. A sale
+made offline that takes more than the warehouse holds when it arrives follows the register's policy:
+recorded, with a Stock Shortfall a manager puts right, or refused.
 
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.3.0` |
+| 📦 Version | `0.5.0` |
 | 🧱 Platform | Ferrum `>=0.3.1, <0.4` |
 | 🔗 Requires | erp `>=0.1` |
 | 🖥️ Interface | its own, at `/pos/` |
@@ -43,7 +45,7 @@ or the cashier's session, is back; at closing they consolidate into invoices and
 <td width="50%" valign="top">
 
 ### 📴 Sells offline
-The page, files and price book stay on the device; queued sales go when the connection returns.
+The page, files and price book stay on the device; queued sales go when the connection returns. Sold past the stock, they are kept with a shortfall to put right, or refused, as the register says.
 
 </td>
 <td width="50%" valign="top">
@@ -296,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.5.0** | Offline sales beyond stock follow the register's policy: recorded with a Stock Shortfall to put right, or refused. |
 | **0.4.13** | Its reports' names in Arabic and Hindi. |
 | **0.4.12** | Its names in Arabic and Hindi; the last English sentences translated. |
 | **0.4.11** | Sentences built in code are words too, in Arabic and Hindi. |

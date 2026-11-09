@@ -9,7 +9,7 @@ modules:
     label: POS
     icon: store
     order: 45
-    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode,
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
             report:pos_returns]
 
@@ -47,6 +47,7 @@ roles:
       - {entity: PosOpeningEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosStockShortfall, read: true, write: true, export: true}
       - {entity: PosProfile, read: true, write: true, create: true, delete: true}
       - {entity: ModeOfPayment, read: true, write: true, create: true, delete: true}
       - {entity: ItemBarcode, read: true, write: true, create: true, delete: true, export: true, import: true}

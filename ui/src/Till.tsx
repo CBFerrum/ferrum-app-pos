@@ -268,7 +268,8 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     };
     const key = saleKey.current;
     const keep = (): string | null => {
-      const queued: QueuedSale = { key, body: sale, at: at.toISOString(), by: email, total: String(due) };
+      // Sold without the server: when it arrives, the register's policy says what happens if it took more than the warehouse holds.
+      const queued: QueuedSale = { key, body: { ...sale, sold_offline: true }, at: at.toISOString(), by: email, total: String(due) };
       // The sale is the device's only copy: if the device would not keep it, it stays on screen.
       if (!outbox.add(queued)) return tr("This device could not keep the sale: its storage is full or blocked. Connect to send it now, or free some space and try again.");
       const paid = tenders.map((t) => ({ kind: str(modes.find((m) => m.id === t.mode_of_payment)?.mode_type), amount: num(t.amount) }));
