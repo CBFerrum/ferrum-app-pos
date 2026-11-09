@@ -14,6 +14,7 @@ mod masters;
 mod reports;
 pub mod returns;
 mod session;
+mod shortfall;
 pub mod site;
 
 pub use logic::Kind;
@@ -35,6 +36,7 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosCashMovement", Arc::new(session::CashMovementHook))
         .register("PosInvoice", Arc::new(invoice::PosInvoiceHook))
         .register("PosClosingEntry", Arc::new(closing::ClosingHook))
+        .register("PosStockShortfall", Arc::new(shortfall::ShortfallHook))
         .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard))
         .add_site("pos", Arc::new(site::PosSite));
 }
