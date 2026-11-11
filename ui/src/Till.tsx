@@ -11,7 +11,8 @@ import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr, isolate } from "@ferrum/client";
-import { Badge, Button, confirmDialog, ErrorState, Menu, MenuItem, Spinner, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
+import { Badge, Button, confirmDialog, Dialog, ListSkeleton, Menu, MenuItem, SaveStatus, Spinner, StatePanel, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
+import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CartLines, Totals, type Base } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
@@ -27,6 +28,15 @@ import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
 const ReturnDesk = lazy(() => import("./Returns"));
+
+/** The return desk's dialog, drawn while its code loads: an overlay, so the till behind it does not move. */
+function ReturnsLoading({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog open wide onClose={onClose} title={tr("Return goods")}>
+      <ListSkeleton rows={4} />
+    </Dialog>
+  );
+}
 
 /** A part that failed to load (the connection dropped between asking and getting it) must not take
  *  the sale on screen with it: it is dropped, and the cashier told. */
@@ -427,7 +437,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         </form>
         {outbox.queued.length > 0 && <OutboxBar queued={outbox.queued} mine={outbox.mine} signedOut={outbox.signedOut} onSend={() => void outbox.flush()} onRetry={outbox.retry} onDiscard={outbox.discard} />}
         {items.error ? (
-          <ErrorState error={items.error} onRetry={() => void items.refetch()} />
+          <Problem error={items.error} onRetry={() => void items.refetch()} />
         ) : (
           <ul className="pos-tiles">
             {items.isLoading && Array.from({ length: 8 }, (_, i) => <li key={i} className="pos-tile skeleton" aria-hidden="true" />)}
@@ -444,7 +454,9 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             ))}
           </ul>
         )}
-        {items.data && !items.data.rows.length && <p className="muted">{q ? tr("No items match “{q}”.", { q }) : tr("No items to show.")}</p>}
+        {items.data && !items.data.rows.length && (
+          <StatePanel kind={q ? "no-matches" : "empty"} title={q ? tr("No items match “{q}”.", { q }) : tr("No items to show.")} onClear={q ? () => setSearch("") : undefined} clearLabel={tr("Clear the search")} />
+        )}
       </section>
 
       <section className="pos-sale" aria-label={tr("Sale")}>
@@ -528,7 +540,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             setDialog(null);
           }}
         >
-          <Suspense fallback={null}>
+          <Suspense fallback={<ReturnsLoading onClose={() => setDialog(null)} />}>
             <ReturnDesk
               profile={profile}
               session={session.id}
@@ -570,7 +582,7 @@ function OutboxBar({
     <div role="status" className="pos-outbox">
       {own > 0 && (
         <div className="pos-outbox-row">
-          <WifiOff className="size-4" aria-hidden="true" />
+          <SaveStatus state="local" />
           <span className="pos-outbox-text">
             {(own === 1 ? (signedOut ? tr("1 sale is kept on this device until you sign in again") : tr("1 sale is kept on this device until they can be sent")) : (signedOut ? tr("{own} sales are kept on this device until you sign in again", { own }) : tr("{own} sales are kept on this device until they can be sent", { own })))}.
           </span>

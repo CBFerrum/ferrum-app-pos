@@ -9,7 +9,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Minus, Plus } from "lucide-react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { docPath, errorMessage, newKey, t, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, useDebounced, placed } from "@ferrum/kit";
+import { Alert, Badge, Button, Dialog, Field, useDebounced, placed, FormSkeleton, ListSkeleton, StatePanel } from "@ferrum/kit";
+import { Problem } from "./ui";
 import type { Doc } from "@ferrum/records";
 import { Currency, num, str, useMoney } from "./fmt";
 import { till } from "./lib/offline";
@@ -47,13 +48,13 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
         <input id="return-find" className="input pos-amount" data-autofocus autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} placeholder={t("C1-2026-27-000123, or a name")} />
       </Field>
       {found.error ? (
-        <ErrorState error={found.error} onRetry={() => void found.refetch()} />
+        <Problem error={found.error} onRetry={() => void found.refetch()} />
       ) : !found.data ? (
-        <PageLoading label={t("Looking for sales…")} />
+        <ListSkeleton rows={4} />
       ) : found.data.rows.length === 0 ? (
-        <EmptyState title={q ? t("No sale matches") : t("No sales yet today")} icon="search">
+        <StatePanel kind={q ? "no-matches" : "empty"} title={q ? t("No sale matches") : t("No sales yet today")} onClear={q ? () => setText("") : undefined} clearLabel={t("Clear the search")}>
           {q ? t("Check the number on the receipt, or try the customer's name.") : t("Type the receipt number or the customer's name to find an older sale.")}
-        </EmptyState>
+        </StatePanel>
       ) : (
         <ul className="pos-found" aria-label={t("Sales")}>
           {found.data.rows.map((r) => (
@@ -158,8 +159,8 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
     }
   };
 
-  if (sheet.error) return <ErrorState error={sheet.error} onRetry={() => void sheet.refetch()} />;
-  if (!data) return <PageLoading label={t("Opening the sale…")} />;
+  if (sheet.error) return <Problem error={sheet.error} onRetry={() => void sheet.refetch()} />;
+  if (!data) return <FormSkeleton fields={4} />;
   return (
     <div className="pos-returns">
       <div className="pos-return-head">
