@@ -171,11 +171,11 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
       title={tr("Take payment")}
       footer={
         <>
-          <Button onClick={() => void close()} disabled={busy}>
+          <Button className="pos-btn" onClick={() => void close()} disabled={busy}>
             {tr("Back")}
           </Button>
           {!covered && pending && (
-            <Button onClick={add} disabled={busy}>
+            <Button className="pos-btn" onClick={add} disabled={busy}>
               {tr("Add payment")}
             </Button>
           )}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 0a47157. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. Every key on the till and in the payment dialog is at least 44px (the old touch minimum rendered at 42), and a sale kept on the device is never shown as saved.
+
 ## 0.5.0
 
 Two tills offline that sell the last of something: what happens when the second sale arrives is the register's declared policy, and nothing is lost or unexplained (Ferrum's closure review, FEO-026).
