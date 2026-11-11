@@ -10,7 +10,8 @@ import { CloudOff, Store } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { docPath, t, isolate } from "@ferrum/client";
-import { Badge, Button, EmptyState, ErrorState, PageLoading } from "@ferrum/kit";
+import { Badge, Button, FormSkeleton, ListSkeleton, StatePanel } from "@ferrum/kit";
+import { Problem } from "./ui";
 import type { Doc } from "@ferrum/records";
 import { Currency, myEmail, remember, remembered, str, titleOf } from "./fmt";
 import { useManager, usePriceBook } from "./hooks";
@@ -43,17 +44,17 @@ export function RegisterPage() {
     if (profileId) remember(profileId);
   }, [profileId]);
 
-  if (profiles.isLoading) return <PageLoading label={t("Loading registers…")} />;
-  if (profiles.error && !offline) return <ErrorState error={profiles.error} onRetry={() => void profiles.refetch()} />;
+  if (profiles.isLoading) return <ListSkeleton rows={3} />;
+  if (profiles.error && !offline) return <Problem error={profiles.error} onRetry={() => void profiles.refetch()} />;
   if (!rows.length) {
     return offline ? (
-      <EmptyState title={t("No connection")} icon="alert">
+      <StatePanel kind="offline" title={t("No connection")}>
         {t("This device has not opened a register yet: connect once to set it up for working offline.")}
-      </EmptyState>
+      </StatePanel>
     ) : (
-      <EmptyState title={t("No registers yet")} icon="store">
+      <StatePanel kind="empty" title={t("No registers yet")}>
         <Link to="/e/PosProfile/new">{t("Set up a POS profile")}</Link> {t("for this shop first.")}
-      </EmptyState>
+      </StatePanel>
     );
   }
   if (!profileId) {
@@ -110,11 +111,11 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   }, [profile.data, session.data, modes.data, manager]); // eslint-disable-line react-hooks/exhaustive-deps
   const book = usePriceBook(profileId, open?.id ?? null);
 
-  if ((profile.isLoading || session.isLoading) && !memory) return <PageLoading label={t("Opening the register…")} />;
-  if (!email) return <ErrorState error={new Error(t("Sign in to use the register"))} />;
+  if ((profile.isLoading || session.isLoading) && !memory) return <ListSkeleton rows={6} />;
+  if (!email) return <Problem error={new Error(t("Sign in to use the register"))} />;
   const error = offline ? null : (profile.error ?? session.error);
   if (error || !profileDoc) {
-    return <ErrorState error={error ?? new Error(t("This register is not on this device yet: connect once to set it up."))} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
+    return <Problem error={error ?? new Error(t("This register is not on this device yet: connect once to set it up."))} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
   }
   if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} offline={offline} onSwitch={onSwitch} />;
   return (
@@ -131,15 +132,15 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
         {onSwitch && <Button onClick={onSwitch}>{t("Switch register")}</Button>}
       </div>
       {offline ? (
-        <EmptyState title={t("No open session on this device")} icon="alert">
+        <StatePanel kind="offline" title={t("No open session on this device")}>
           {t("Open the register while connected; it then keeps selling offline.")}
-        </EmptyState>
+        </StatePanel>
       ) : (
         <Currency.Provider value={{ precision: book?.engine.precision ?? 2, code: book?.currency || titleOf(profileDoc, "currency") }}>
           {modes.isLoading && !modeRows.length ? (
-            <PageLoading label={t("Getting the register ready…")} />
+            <FormSkeleton fields={3} />
           ) : (
-            <Suspense fallback={<PageLoading label={t("Getting the register ready…")} />}>
+            <Suspense fallback={<FormSkeleton fields={3} />}>
               <Open profile={profileDoc} modes={modeRows} onOpened={() => void session.refetch()} />
             </Suspense>
           )}

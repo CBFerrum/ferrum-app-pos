@@ -217,9 +217,9 @@ export const esc = (s: unknown) => str(s).replace(/[&<>"']/g, (c) => `&#${c.char
 export function printPage(profile: Doc, title: string, body: string): string {
   const wide = str(profile.print_format) === "A4" ? "190mm" : str(profile.print_format) === "Thermal 58mm" ? "48mm" : "72mm";
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
-    body{font:12px/1.35 ui-monospace,Menlo,monospace;width:${wide};margin:0 auto;padding:4mm 0;color:#000}
+    body{font:12px/1.35 ui-monospace,Menlo,monospace;width:${wide};margin:0 auto;padding:4mm 0;color:#000}${""/* ui-lint-allow raw-color: a printed receipt is its own document, black on paper, not interface */}
     table{width:100%;border-collapse:collapse}td{vertical-align:top;padding:1px 0}.r{text-align:right}
-    hr{border:0;border-top:1px dashed #000;margin:6px 0}h1{font-size:14px;text-align:center;margin:0 0 4px}p{margin:2px 0;text-align:center;white-space:pre-line}
+    hr{border:0;border-top:1px dashed #000;margin:6px 0}h1{font-size:14px;text-align:center;margin:0 0 4px}p{margin:2px 0;text-align:center;white-space:pre-line}${""/* ui-lint-allow raw-color: a printed receipt is its own document, black on paper, not interface */}
   </style></head><body>${body}</body></html>`;
 }
 

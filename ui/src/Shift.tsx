@@ -9,7 +9,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
 import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Alert, Badge, Button, confirmDialog, Field, toast, useShellTitle, placed, FormSkeleton, StatePanel } from "@ferrum/kit";
+import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
 import { Currency, localDate, myEmail, num, remembered, str, titleOf } from "./fmt";
@@ -26,9 +27,9 @@ export default function ShiftPage() {
   const profileId = remembered();
   if (!profileId) {
     return (
-      <EmptyState title={tr("No register chosen")} icon="store">
+      <StatePanel kind="empty" title={tr("No register chosen")}>
         <Link to="/">{tr("Go to the till")}</Link> {tr("and choose a register first.")}
-      </EmptyState>
+      </StatePanel>
     );
   }
   return <Shift profileId={profileId} />;
@@ -51,13 +52,13 @@ function Shift({ profileId }: { profileId: string }) {
   const [closed, setClosed] = useState<string | null>(null);
   const sid = closed ?? str(open.data?.[0]?.id);
 
-  if (profile.error || modes.error || open.error) return <ErrorState error={profile.error ?? modes.error ?? open.error} onRetry={() => void Promise.all([profile.refetch(), modes.refetch(), open.refetch()])} />;
-  if (!profile.data || !modes.data || !open.data) return <PageLoading label={tr("Loading the shift…")} />;
+  if (profile.error || modes.error || open.error) return <Problem error={profile.error ?? modes.error ?? open.error} onRetry={() => void Promise.all([profile.refetch(), modes.refetch(), open.refetch()])} />;
+  if (!profile.data || !modes.data || !open.data) return <FormSkeleton fields={5} />;
   if (!sid) {
     return (
-      <EmptyState title={tr("No shift is open")} icon="store">
+      <StatePanel kind="empty" title={tr("No shift is open")}>
         <Link to="/">{tr("Go to the till")}</Link> {tr("to open the register.")}
-      </EmptyState>
+      </StatePanel>
     );
   }
   return (
@@ -214,8 +215,8 @@ function Closing({
     }
   };
 
-  if (report.error) return <ErrorState error={report.error} onRetry={() => void report.refetch()} />;
-  if (!report.data || draft.isLoading) return <PageLoading label={tr("Working out what the register expects…")} />;
+  if (report.error) return <Problem error={report.error} onRetry={() => void report.refetch()} />;
+  if (!report.data || draft.isLoading) return <FormSkeleton fields={5} />;
   const meta = report.data.meta;
   const z = closed || meta.session?.report === "Z";
 

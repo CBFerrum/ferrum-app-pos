@@ -3,7 +3,7 @@
 // its lines and customer back, and re-prices them, so a price that changed meanwhile is the new one.
 
 import { formatMoment, t, isolate } from "@ferrum/client";
-import { Button, Dialog, EmptyState } from "@ferrum/kit";
+import { Button, Dialog, StatePanel } from "@ferrum/kit";
 import { useMoney } from "./fmt";
 import { heldSummary, type HeldSale } from "./lib/held";
 
@@ -12,9 +12,9 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
   return (
     <Dialog open onClose={onClose} title={t("Sales on hold")} footer={<Button onClick={onClose}>{t("Close")}</Button>}>
       {held.length === 0 ? (
-        <EmptyState title={t("Nothing on hold")} icon="list">
+        <StatePanel kind="empty" title={t("Nothing on hold")}>
           {t("Press Hold to set a sale aside while you serve someone else.")}
-        </EmptyState>
+        </StatePanel>
       ) : (
         <ul className="pos-held">
           {held.map((s) => {
@@ -29,10 +29,10 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
                   </span>
                   <span className="faint pos-held-items">{isolate(s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", "))}</span>
                 </div>
-                <Button variant="primary" onClick={() => onResume(s.key)}>
+                <Button variant="primary" className="pos-btn" onClick={() => onResume(s.key)}>
                   {t("Resume")}
                 </Button>
-                <Button variant="danger" aria-label={t("Discard the sale of {who}", { who })} onClick={() => onDiscard(s.key)}>
+                <Button variant="danger" className="pos-btn" aria-label={t("Discard the sale of {who}", { who })} onClick={() => onDiscard(s.key)}>
                   {t("Discard")}
                 </Button>
               </li>
