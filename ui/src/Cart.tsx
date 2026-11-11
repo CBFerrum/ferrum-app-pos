@@ -185,11 +185,11 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
         </p>
       )}
       <div className="pos-edit-actions">
-        <Button variant="danger" icon="trash" onClick={onRemove}>
+        <Button variant="danger" className="pos-btn" icon="trash" onClick={onRemove}>
           {t("Remove line")}
         </Button>
         <span className="spacer" />
-        <Button variant="primary" onClick={onDone}>
+        <Button variant="primary" className="pos-btn" onClick={onDone}>
           {t("Done")}
         </Button>
       </div>
