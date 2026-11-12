@@ -31,6 +31,11 @@ impl Site for PosSite {
             }
             ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
             ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
+            ("POST", ["exchange"]) => {
+                let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
+                let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
+                Ok(SiteResponse::json(200, &crate::invoice::exchange(k, ctx, half("back")?, half("out")?).await?))
+            }
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("GET", ["returns", sale]) => {

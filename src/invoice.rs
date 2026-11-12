@@ -67,7 +67,9 @@ impl DocHook for PosInvoiceHook {
         if s(doc, "posting_time").is_none() {
             set(doc, "posting_time", now_time());
         }
-        if b(doc, "is_return") {
+        if b(doc, "is_return") && b(doc, "without_receipt") {
+            prepare_unreceipted(hc, doc, &profile).await?;
+        } else if b(doc, "is_return") {
             prepare_return(hc, doc, &profile).await?;
         } else {
             if id(doc, "customer").is_none()
@@ -212,6 +214,9 @@ impl DocHook for PosInvoiceHook {
             set(p, "account", account.map(|a| json!(a.to_string())).unwrap_or(Value::Null));
         }
         set(doc, "payments", rows_value(payments.clone()));
+        if b(doc, "is_return") && b(doc, "without_receipt") {
+            return check_unreceipted(hc, doc, &payments).await;
+        }
         if b(doc, "is_return") {
             return check_return(hc, doc, &payments).await;
         }
@@ -264,7 +269,8 @@ impl DocHook for PosInvoiceHook {
             record_shortfalls(hc, doc, &co, &before).await?;
         }
         // Stored value, or a tax invoice asked for now: the sale's own invoice now, cards paid from or onto.
-        if crate::stored::touches(doc) || b(doc, "invoice_now") {
+        // A return without a receipt too: the closing's credit notes name the sale they reverse.
+        if crate::stored::touches(doc) || b(doc, "invoice_now") || b(doc, "without_receipt") {
             let si = crate::closing::invoice_now(hc, iid).await?;
             crate::stored::settle(hc, doc, si).await?;
         }
@@ -472,10 +478,12 @@ async fn prepare_return(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) 
     set(doc, "taxes", Value::Array(taxes));
     let sold = rows(&orig, "items");
     let done = returned_so_far(hc.tx, hc.ctx.tenant, oid, id(doc, "id")).await?;
+    let fees = fees(policy(hc, profile).await?.as_ref());
     let mut items = rows(doc, "items");
     let mut errors = Vec::new();
     for (i, r) in items.iter_mut().enumerate() {
         let item = id(r, "item");
+        let condition = condition_of(r);
         let want = -d(r, "qty");
         let left = |l: &Doc| d(l, "qty") - done.get(s(l, "id").unwrap_or_default()).copied().unwrap_or_default();
         let line = match s(r, "original_line") {
@@ -491,12 +499,15 @@ async fn prepare_return(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) 
         };
         set(r, "original_line", line.get("id").cloned().unwrap_or(Value::Null));
         set(r, "price_list_rate", line.get("price_list_rate").cloned().unwrap_or(Value::Null));
-        set(r, "discount_percent", line.get("discount_percent").cloned().unwrap_or(json!("0")));
+        set(r, "discount_percent", money(logic::with_fee(d(line, "discount_percent"), logic::restocking_fee(&fees, &condition))));
         r.insert("manual_rate".into(), Value::Null);
         if s(r, "batch_no").is_none() {
             set(r, "batch_no", line.get("batch_no").cloned().unwrap_or(Value::Null));
         }
-        set(r, "warehouse", profile.warehouse.to_string());
+        match return_warehouse(profile, &condition) {
+            Ok(w) => set(r, "warehouse", w.to_string()),
+            Err(m) => errors.push(FieldError::new("condition", m).in_row("items", i)),
+        }
     }
     if !errors.is_empty() {
         return Err(Error::Validation(errors));
@@ -588,14 +599,34 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
     if !errors.is_empty() {
         return Err(Error::Validation(errors));
     }
-    // What the sale was paid with, less what earlier returns refunded, per class.
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
+    let policy = policy(hc, &profile).await?;
+    let window = policy.as_ref().and_then(|p| p.get("window_days")).and_then(Value::as_i64).unwrap_or(0);
+    if window > 0 && date(&orig, "posting_date")? + chrono::Duration::days(window) < date(doc, "posting_date")? {
+        return Err(Error::field("return_against", format!("the sale is older than the {window} days the register's return policy takes returns within")));
+    }
+    // What the sale was paid with, less what earlier returns refunded, per class; in an exchange what
+    // went on to the new sale is not refunded.
+    let (carried, payments) = exchanged(policy.as_ref(), doc, payments);
     let room = taken(hc.tx, hc.ctx.tenant, &orig, id(doc, "id")).await?;
     let left = left_to_refund(&room, &orig);
-    let refunds = tenders(payments, -Decimal::ONE);
-    logic::check_refunds(-d(doc, "rounded_total"), &refunds, &left).map_err(|m| Error::field("payments", m))?;
-    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
+    let refunds = tenders(&payments, -Decimal::ONE);
+    let total = -d(doc, "rounded_total") - carried;
+    logic::check_refunds(total, &refunds, &left).map_err(|m| Error::field("payments", m))?;
     let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
-    let total = -d(doc, "rounded_total");
+    refund_within(hc, doc, &limits, total).await
+}
+
+/// In an exchange, what its return carried on to the new sale through the policy's clearing method,
+/// and the rest of its refunds.
+fn exchanged(policy: Option<&Doc>, doc: &Doc, payments: &[Doc]) -> (Decimal, Vec<Doc>) {
+    let via = policy.and_then(|p| id(p, "exchange_mode")).filter(|_| id(doc, "exchange").is_some());
+    let (carried, rest): (Vec<Doc>, Vec<Doc>) = payments.iter().cloned().partition(|p| via.is_some() && id(p, "mode_of_payment") == via);
+    (carried.iter().map(|p| -d(p, "amount")).sum(), rest)
+}
+
+/// A refund of `total` within the cashier's limit, or approved.
+async fn refund_within(hc: &mut HookCtx<'_>, doc: &Doc, limits: &logic::Limits, total: Decimal) -> Result<()> {
     if !limits.allows(Act::Refund, total) && !approved(hc, doc, Act::Refund, total, false).await? {
         return Err(Error::field(
             "payments",
@@ -607,6 +638,203 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
         ));
     }
     Ok(())
+}
+
+/// The register's return policy, if it has one.
+async fn policy(hc: &mut HookCtx<'_>, profile: &Profile) -> Result<Option<Doc>> {
+    match id(&profile.doc, "return_policy") {
+        Some(p) => Ok(Some(get(hc.kernel, hc.ctx, hc.tx, "PosReturnPolicy", p).await?)),
+        None => Ok(None),
+    }
+}
+
+fn condition_of(row: &Doc) -> String {
+    s(row, "condition").unwrap_or("Resaleable").to_string()
+}
+
+/// Where goods coming back in `condition` go: the register's own warehouse when they can be sold
+/// again, its damaged or scrap warehouse otherwise.
+fn return_warehouse(profile: &Profile, condition: &str) -> std::result::Result<Uuid, String> {
+    let named = |f: &str, what: &str| id(&profile.doc, f).ok_or_else(|| format!("this register takes nothing back {what}: it names no warehouse for it"));
+    match condition {
+        "Damaged" => named("damaged_warehouse", "damaged"),
+        "Scrap" => named("scrap_warehouse", "for scrap"),
+        _ => Ok(profile.warehouse),
+    }
+}
+
+/// A policy's restocking fees: (condition, percent).
+fn fees(policy: Option<&Doc>) -> Vec<(String, Decimal)> {
+    policy.map(|p| rows(p, "fees").iter().filter_map(|f| Some((s(f, "condition")?.to_string(), d(f, "fee_percent")))).collect()).unwrap_or_default()
+}
+
+/// The lowest the register sold `item` for over the last `days` days.
+async fn lowest_sold(hc: &mut HookCtx<'_>, profile: Uuid, item: Option<Uuid>, days: i64) -> Result<Option<Decimal>> {
+    Ok(sqlx::query_scalar(
+        "select min(l.rate) from e_pos_invoice__items l join e_pos_invoice p on p.tenant_id = l.tenant_id and p.id = l.parent_id \
+         where p.tenant_id = $1 and p.pos_profile = $2 and p.docstatus = 1 and not coalesce(p.is_return, false) and l.item = $3 and l.qty > 0 \
+         and p.posting_date >= current_date - $4::int",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(profile)
+    .bind(item)
+    .bind(days as i32)
+    .fetch_one(&mut **hc.tx)
+    .await?)
+}
+
+/// A return without a receipt (PS-34, PS-38): by the customer named or the walk-in customer, each
+/// line at the price the register's return policy states (today's, the lowest it sold for over the
+/// policy's window, or the price typed), less the restocking fee its condition carries, back to the
+/// warehouse its condition says, taxed as a sale is.
+async fn prepare_unreceipted(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> Result<()> {
+    let policy = policy(hc, profile).await?.ok_or_else(|| Error::field("without_receipt", "this register has no return policy: a return needs its receipt"))?;
+    set(doc, "return_against", Value::Null);
+    if id(doc, "customer").is_none()
+        && let Some(c) = id(&profile.doc, "customer")
+    {
+        let cust = get(hc.kernel, hc.ctx, hc.tx, "Customer", c).await?;
+        set(doc, "customer", c.to_string());
+        set(doc, "customer_name", cust.get("customer_name").cloned().unwrap_or(Value::Null));
+    }
+    for f in ["price_list", "tax_template"] {
+        if let Some(v) = id(&profile.doc, f) {
+            set(doc, f, v.to_string());
+        }
+    }
+    let mut items = rows(doc, "items");
+    let entered: Vec<Option<Decimal>> = items.iter().map(|r| opt_dec(r, "manual_rate").filter(|m| *m > Decimal::ZERO)).collect();
+    let mut errors = Vec::new();
+    for (i, r) in items.iter_mut().enumerate() {
+        r.insert("price_list_rate".into(), Value::Null);
+        r.insert("discount_percent".into(), Value::Null);
+        r.insert("original_line".into(), Value::Null);
+        match return_warehouse(profile, &condition_of(r)) {
+            Ok(w) => set(r, "warehouse", w.to_string()),
+            Err(m) => errors.push(FieldError::new("condition", m).in_row("items", i)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(Error::Validation(errors));
+    }
+    set(doc, "items", rows_value(items));
+    calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await?;
+    let basis = logic::ReturnBasis::parse(s(&policy, "price_basis"));
+    let days = policy.get("price_window_days").and_then(Value::as_i64).unwrap_or(30);
+    let fees = fees(Some(&policy));
+    let mut items = rows(doc, "items");
+    for (i, r) in items.iter_mut().enumerate() {
+        let lowest = if basis == logic::ReturnBasis::Lowest { lowest_sold(hc, profile.id, id(r, "item"), days).await? } else { None };
+        match logic::return_price(basis, d(r, "price_list_rate"), lowest, entered.get(i).copied().flatten()) {
+            Ok(price) => {
+                set(r, "price_list_rate", money(price));
+                set(r, "discount_percent", money(logic::restocking_fee(&fees, &condition_of(r))));
+            }
+            Err(m) => errors.push(FieldError::new("manual_rate", format!("{}: {m}", s(r, "item_name").unwrap_or("item"))).in_row("items", i)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(Error::Validation(errors));
+    }
+    set(doc, "items", rows_value(items));
+    calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await?;
+    Ok(())
+}
+
+/// A return without a receipt, before it is kept: online only, with one of the business's reasons,
+/// by someone who may take one (or with an approval), refunded only as the policy says (store
+/// credit, or the methods it lists; an exchange's clearing method), within the cashier's refund
+/// limit or approved.
+async fn check_unreceipted(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Result<()> {
+    if b(doc, "sold_offline") {
+        return Err(Error::field(
+            "without_receipt",
+            "a return without a receipt is taken online only: its price, the approval it may need and the store credit it is refunded onto are the server's",
+        ));
+    }
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
+    let policy = policy(hc, &profile).await?.ok_or_else(|| Error::field("without_receipt", "this register has no return policy"))?;
+    let reason = match id(doc, "reason") {
+        Some(r) => Some(get(hc.kernel, hc.ctx, hc.tx, "PosReason", r).await?),
+        None => None,
+    };
+    if !reason.is_some_and(|r| s(&r, "applies_to") == Some("Return") && !b(&r, "disabled")) {
+        return Err(Error::field("reason", "choose one of the business's reasons for returns"));
+    }
+    let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
+    if !limits.return_without_receipt && !approved(hc, doc, Act::ReturnWithoutReceipt, Decimal::ZERO, false).await? {
+        return Err(Error::field("without_receipt", "you may not take returns without a receipt; ask someone who may to approve it"));
+    }
+    let mut allowed: Vec<Uuid> = rows(&policy, "refund_modes").iter().filter_map(|r| id(r, "mode_of_payment")).collect();
+    allowed.extend(id(&policy, "store_credit"));
+    let (carried, refunds) = exchanged(Some(&policy), doc, payments);
+    let mut refunded = Decimal::ZERO;
+    for (i, p) in refunds.iter().enumerate() {
+        if d(p, "amount") >= Decimal::ZERO {
+            return Err(Error::field("payments", "refunds are entered as negative amounts on a return"));
+        }
+        if !id(p, "mode_of_payment").is_some_and(|m| allowed.contains(&m)) {
+            let name = id(p, "mode_of_payment").and_then(|m| profile.mode(m)).map(|(m, _)| m.name.clone()).unwrap_or_default();
+            let why =
+                FieldError::new("mode_of_payment", format!("{name} is not how the return policy refunds a return without a receipt")).in_row("payments", i);
+            return Err(Error::Validation(vec![why]));
+        }
+        refunded -= d(p, "amount");
+    }
+    let total = -d(doc, "rounded_total");
+    if refunded + carried != total {
+        return Err(Error::field("payments", format!("refunds of {} must equal the return total of {}", (refunded + carried).normalize(), total.normalize())));
+    }
+    refund_within(hc, doc, &limits, refunded).await
+}
+
+/// An exchange (PS-35), as one transaction: what comes back (`back`, a return with its receipt or
+/// without one) and what goes out in its place (`out`, a sale), at one register, for one customer,
+/// each priced, taxed and moving stock as on its own. What came back pays for what goes out through
+/// the return policy's clearing method (so it nets to nothing at closing); the customer pays what is
+/// left with the sale's payments, or is refunded the rest with the return's, as the policy says. Online only.
+pub(crate) async fn exchange(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx, mut back: Doc, mut out: Doc) -> Result<Value> {
+    let pid = id(&back, "pos_profile").ok_or_else(|| Error::field("back.pos_profile", "is required"))?;
+    if id(&out, "pos_profile") != Some(pid) {
+        return Err(Error::field("out.pos_profile", "both halves of an exchange are at one register"));
+    }
+    if b(&back, "sold_offline") || b(&out, "sold_offline") {
+        return Err(Error::invalid("an exchange is taken online only: what comes back must be in the books before it pays for what goes out"));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let profile = Profile::load(k, ctx, &mut tx, pid).await?;
+    let policy = match id(&profile.doc, "return_policy") {
+        Some(p) => get(k, ctx, &mut tx, "PosReturnPolicy", p).await?,
+        None => return Err(Error::invalid("this register has no return policy: exchanges are not taken")),
+    };
+    let via = id(&policy, "exchange_mode")
+        .ok_or_else(|| Error::invalid("the register's return policy names no Exchange Clearing method: exchanges are not taken"))?;
+    let (bid, oid) = (id(&back, "id").unwrap_or_else(Uuid::now_v7), id(&out, "id").unwrap_or_else(Uuid::now_v7));
+    let (back_pays, out_pays) = (rows(&back, "payments"), rows(&out, "payments"));
+    for (doc, me, ret) in [(&mut back, bid, true), (&mut out, oid, false)] {
+        set(doc, "id", me.to_string());
+        set(doc, "is_return", ret);
+        set(doc, "payments", json!([]));
+    }
+    let returned = k.insert_tx(ctx, &mut tx, "PosInvoice", back).await?;
+    set(&mut out, "customer", returned.get("customer").cloned().unwrap_or(Value::Null));
+    let sold = k.insert_tx(ctx, &mut tx, "PosInvoice", out).await?;
+    let x = logic::exchange(-d(&returned, "rounded_total"), d(&sold, "rounded_total"));
+    for (me, mut pays, carried, other) in [(bid, back_pays, -x.carried, oid), (oid, out_pays, x.carried, bid)] {
+        let mut link = Doc::new();
+        link.insert("exchange".into(), json!(other.to_string()));
+        k.set_values_tx(&sys(ctx), &mut tx, "PosInvoice", me, link).await?;
+        if !carried.is_zero() {
+            pays.push(json!({"mode_of_payment": via.to_string(), "amount": money(carried)}).as_object().cloned().unwrap_or_default());
+        }
+        let mut patch = Doc::new();
+        patch.insert("payments".into(), rows_value(pays));
+        k.update_tx(ctx, &mut tx, "PosInvoice", me, patch, None).await?;
+    }
+    let returned = k.submit_tx(ctx, &mut tx, "PosInvoice", bid, None).await?;
+    let sold = k.submit_tx(ctx, &mut tx, "PosInvoice", oid, None).await?;
+    tx.commit().await?;
+    Ok(json!({"return": returned, "sale": sold, "carried": money(x.carried), "due": money(x.due), "refund": money(x.refund)}))
 }
 
 /// A named customer with a credit limit: the consolidated invoice will count the whole sale

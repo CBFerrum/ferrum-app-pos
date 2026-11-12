@@ -96,6 +96,9 @@
     - {name: allow_discount_change, type: check, description: Cashiers may give discounts up to Max Discount %}
     - {name: max_discount, type: percent, min: "0", max: "100", label: Max Discount %}
     - {name: allow_rate_change, type: check, description: Cashiers may type a different price}
+    - {name: return_policy, type: link, to: PosReturnPolicy, description: "How returns are taken here: their window, the price and refund of a return without a receipt, restocking fees, exchanges. Empty: returns need their receipt, with no window"}
+    - {name: damaged_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, description: "Goods returned damaged come back here; empty: they are not taken back damaged"}
+    - {name: scrap_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, description: "Goods returned to be scrapped come back here; empty: they are not taken back for scrap"}
     - {name: approval_minutes, type: int, default: 5, min: "1", label: Approval Lasts (Minutes),
        description: "An approval by another person's PIN is for one sale and act, used once, within this many minutes and while the cashier's session is open"}
     - {name: item_groups, type: table, of: PosItemGroup, label: Item Groups Shown, description: Empty = all}
@@ -108,6 +111,7 @@
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
     - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
     - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
+    - {label: Returns, collapsible: true, fields: [return_policy, damaged_warehouse, scrap_warehouse]}
     - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
@@ -165,6 +169,8 @@
     - {name: warehouse, type: link, to: Warehouse, read_only: true}
     - {name: batch_no, type: data}
     - {name: serial_no, type: text, description: One serial number per line}
+    - {name: condition, type: select, options: [Resaleable, Damaged, Scrap], default: Resaleable, label: Condition,
+       description: "Returns: the state the goods come back in, which says the warehouse they go to and the restocking fee"}
     - {name: original_line, type: data, label: Returned Line, description: "Returns: id of the sold line (found automatically when the item appears once on the original)"}
     - {name: note, type: data, max_length: 200, label: Line Note, description: "What the cashier wrote on the line (a gift, a promised repair); printed under it on the receipt"}
     - {name: item_tax_rates, type: json, read_only: true}
@@ -233,7 +239,12 @@
     - {name: posting_time, type: data, description: "HH:MM:SS of the sale on the device (UTC); empty = now"}
     - {name: sold_offline, type: check, no_copy: true, in_filter: true, label: Sold Offline, description: "Made while the till could not reach the server, and sent when it could"}
     - {name: is_return, type: check, in_filter: true}
-    - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return", required_if: "doc.is_return"}
+    - {name: without_receipt, type: check, no_copy: true, visible_if: "doc.is_return", label: Without a Receipt,
+       description: "A return that names no sale: priced and refunded as the register's return policy says, with a reason"}
+    - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return && !doc.without_receipt", required_if: "doc.is_return && !doc.without_receipt"}
+    - {name: reason, type: link, to: PosReason, link_filters: {applies_to: Return}, visible_if: "doc.is_return", label: Reason Returned,
+       description: "One of the business's reasons; a return without a receipt needs one"}
+    - {name: exchange, type: data, read_only: true, no_copy: true, description: "The other half of an exchange (its id): what came back, or what went out in its place"}
     - {name: return_reason, type: data, max_length: 140, visible_if: "doc.is_return", description: Why the goods came back (the returns desk asks for it)}
     - {name: currency, type: link, to: Currency, read_only: true}
     - {name: conversion_rate, type: decimal, default: 1, read_only: true}
@@ -436,6 +447,39 @@
     - {name: resolve, label: Mark Put Right, permission: write, condition: "doc.status == 'Open'",
        params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]}
   list: {columns: [item_name, warehouse, qty_short, pos_invoice, status], sort: created_at desc}
+
+- name: PosReturnPolicyMode
+  label: Refund Method
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+
+- name: PosReturnFee
+  label: Restocking Fee
+  kind: child
+  fields:
+    - {name: condition, type: select, options: [Resaleable, Damaged, Scrap], required: true, in_list: true}
+    - {name: fee_percent, type: percent, required: true, min: "0", max: "100", in_list: true, label: Fee %}
+
+- name: PosReturnPolicy
+  label: POS Return Policy
+  kind: master
+  module: pos
+  title_field: policy_name
+  description: "How a register takes returns: within how many days of the sale, what a return without a receipt comes back at and is refunded to, the restocking fee by the goods' condition, and how an exchange carries what comes back to what goes out."
+  fields:
+    - {name: policy_name, type: data, required: true, unique: true, in_list: true}
+    - {name: window_days, type: int, default: 30, min: "0", label: Days to Return, in_list: true, description: "A sale is taken back within this many days of it; 0: no limit"}
+    - {name: price_basis, type: select, options: [Current Price, Lowest Price in Window, Entered], default: Current Price, label: "Without a Receipt, Priced At", in_list: true,
+       description: "Current Price: the register's price today. Lowest Price in Window: the lowest the register sold it for in the window below, or today's if lower. Entered: the cashier types it, within their refund limit"}
+    - {name: price_window_days, type: int, default: 30, min: "1", label: Lowest Price Over (Days), visible_if: "doc.price_basis == 'Lowest Price in Window'"}
+    - {name: store_credit, type: link, to: ModeOfPayment, link_filters: {mode_type: Stored Value}, label: Store Credit,
+       description: "The stored value payment method a return without a receipt is refunded onto, unless a method below is used"}
+    - {name: refund_modes, type: table, of: PosReturnPolicyMode, label: Also Refunded To, description: "Other methods a return without a receipt may be refunded to; empty: store credit only"}
+    - {name: fees, type: table, of: PosReturnFee, label: Restocking Fees, description: "Kept back from a return by the condition the goods come back in; none: no fee"}
+    - {name: exchange_mode, type: link, to: ModeOfPayment, link_filters: {mode_type: General}, label: Exchange Clearing,
+       description: "A payment method of type General, on the register, settling into a clearing account: an exchange carries what came back to what goes out through it, so it nets to nothing"}
+  list: {columns: [policy_name, window_days, price_basis], sort: policy_name asc}
 
 - name: PosRoleLimit
   label: POS Role Limit

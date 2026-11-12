@@ -582,7 +582,8 @@ impl Consolidation<'_> {
         let input = json!({
             "company": co.id.to_string(), "customer": customer.to_string(), "posting_date": self.closing.get("posting_date"),
             "currency": co.currency_id.to_string(), "conversion_rate": "1", "update_stock": false,
-            "is_return": against.is_some(), "return_against": against.map(|a| a.to_string()),
+            "is_return": against.is_some() || group.iter().any(|i| i.is_return), "return_against": against.map(|a| a.to_string()),
+            "return_reason": (against.is_none() && group.iter().any(|i| i.is_return)).then_some("Returned at the register without a receipt"),
             "tax_template": group.iter().find_map(|i| i.tax_template).map(|t| t.to_string()),
             "cost_center": self.profile.doc.get("cost_center"),
             "items": lines, "taxes": taxes,

@@ -352,10 +352,92 @@ pub fn beyond(limits: &Limits, lines: &[LineAsk], header: Decimal) -> Vec<(Optio
     out
 }
 
+/// How a return without a receipt is priced (`PosReturnPolicy.price_basis`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnBasis {
+    /// The register's price today.
+    Current,
+    /// The lowest the register sold it for over the policy's window, or today's when lower.
+    Lowest,
+    /// Typed by the cashier, the total held to their refund limit.
+    Entered,
+}
+
+impl ReturnBasis {
+    pub fn parse(s: Option<&str>) -> ReturnBasis {
+        match s {
+            Some("Lowest Price in Window") => ReturnBasis::Lowest,
+            Some("Entered") => ReturnBasis::Entered,
+            _ => ReturnBasis::Current,
+        }
+    }
+}
+
+/// The price one unit of a return without a receipt comes back at: `current` the register's price
+/// today, `lowest` the lowest it sold for in the window (none: not sold then), `entered` the price typed.
+pub fn return_price(basis: ReturnBasis, current: Decimal, lowest: Option<Decimal>, entered: Option<Decimal>) -> Result<Decimal, String> {
+    let found = match basis {
+        ReturnBasis::Current => Some(current),
+        ReturnBasis::Lowest => Some(lowest.map_or(current, |l| if current > Decimal::ZERO { l.min(current) } else { l })),
+        ReturnBasis::Entered => entered,
+    };
+    found.filter(|p| *p > Decimal::ZERO).ok_or_else(|| match basis {
+        ReturnBasis::Entered => "type the price it comes back at".to_string(),
+        _ => "it has no price at this register to come back at; the policy takes returns without a receipt at its price".to_string(),
+    })
+}
+
+/// The restocking fee kept back from goods coming back in `condition`, in percent (`fees`: condition,
+/// percent; none for that condition: no fee).
+pub fn restocking_fee(fees: &[(String, Decimal)], condition: &str) -> Decimal {
+    fees.iter().find(|(c, _)| c == condition).map(|f| f.1).unwrap_or_default()
+}
+
+/// A line's discount with a restocking fee on top, both in percent: what is refunded is the price
+/// after the discount, less the fee on that.
+pub fn with_fee(discount: Decimal, fee: Decimal) -> Decimal {
+    let hundred = Decimal::ONE_HUNDRED;
+    (hundred - (hundred - discount) * (hundred - fee) / hundred).round_dp(6)
+}
+
+/// An exchange: what comes back is worth `back`, what goes out `out` (both positive). What came back
+/// pays for what goes out (`carried`); the customer pays what is left (`due`) or is refunded the rest
+/// (`refund`) as the policy says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exchange {
+    pub carried: Decimal,
+    pub due: Decimal,
+    pub refund: Decimal,
+}
+
+pub fn exchange(back: Decimal, out: Decimal) -> Exchange {
+    let carried = back.min(out).max(Decimal::ZERO);
+    Exchange { carried, due: out - carried, refund: back - carried }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn returns_without_a_receipt_and_exchanges() {
+        let current = n("120");
+        assert_eq!(return_price(ReturnBasis::Current, current, Some(n("90")), None), Ok(n("120")));
+        assert_eq!(return_price(ReturnBasis::Lowest, current, Some(n("90")), None), Ok(n("90")), "the lowest it sold for");
+        assert_eq!(return_price(ReturnBasis::Lowest, current, Some(n("150")), None), Ok(n("120")), "today's when lower");
+        assert_eq!(return_price(ReturnBasis::Lowest, current, None, None), Ok(n("120")), "not sold in the window: today's");
+        assert_eq!(return_price(ReturnBasis::Entered, current, None, Some(n("75"))), Ok(n("75")));
+        assert!(return_price(ReturnBasis::Entered, current, None, None).is_err());
+        assert!(return_price(ReturnBasis::Current, Decimal::ZERO, None, None).is_err());
+        let fees = vec![("Damaged".to_string(), n("15"))];
+        assert_eq!((restocking_fee(&fees, "Damaged"), restocking_fee(&fees, "Resaleable")), (n("15"), Decimal::ZERO));
+        assert_eq!(with_fee(n("10"), n("15")), n("23.5"), "90 after the discount, less 15% of it: 76.50 of 100");
+        assert_eq!(with_fee(Decimal::ZERO, Decimal::ZERO), Decimal::ZERO);
+        assert_eq!(exchange(n("100"), n("130")), Exchange { carried: n("100"), due: n("30"), refund: Decimal::ZERO });
+        assert_eq!(exchange(n("100"), n("60")), Exchange { carried: n("60"), due: Decimal::ZERO, refund: n("40") });
+        assert_eq!(exchange(n("50"), n("50")), Exchange { carried: n("50"), due: Decimal::ZERO, refund: Decimal::ZERO });
+    }
 
     fn cashier() -> Limits {
         Limits {

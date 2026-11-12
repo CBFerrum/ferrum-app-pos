@@ -184,7 +184,8 @@ pub(crate) async fn on_submit(hc: &mut HookCtx<'_>, invoice: &Doc) -> Result<i64
         return Ok(earned);
     }
     // A return takes back its share of what the sale earned and gives back points it refunds.
-    let original = id(invoice, "return_against").ok_or_else(|| Error::field("return_against", "is required"))?;
+    // A return without a receipt took back nothing a sale is known to have earned.
+    let Some(original) = id(invoice, "return_against") else { return Ok(0) };
     let earning: Option<(i64, Option<Decimal>)> =
         sqlx::query_as("select points, purchase_amount from e_loyalty_point_entry where tenant_id = $1 and pos_invoice = $2 and entry_type = 'Earn' limit 1")
             .bind(hc.ctx.tenant)
