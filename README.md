@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.7.1** | The till's screens for 0.7.0: a buyer's registration and promotion codes at payment, the server's receipt printed once with copies, gift receipts and receipts by message, returns found by scanning a receipt with the register's refund plan and exchanges against a receipt, safe drops, a blind close and the shift report through the server's template, the snapshot kept for selling offline with the totals sent for the register to check, and the reviewer's list of Price Differences. |
 | **0.7.0** | A buyer's tax registration gets a tax invoice at the sale; the receipt is a template the workspace edits, with the tax by rate, registrations, tenders and a barcode, and its copies and gift receipts are counted; receipts by message; ERP's promotions on POS sales; one signed snapshot of prices, taxes and promotions for the till offline, with each offline sale priced again against it; a refund plan and a window on returns; safe drops, blind close and a shift report. |
 | **0.6.2** | Needs ERP 0.22.0: modes of payment and their accounts are ERP's, with the till's type, stored-value kind, offline limit and account added to them as the same columns, so nothing moves on upgrade. |
 | **0.6.1** | The till's screens for 0.6.0: limits read from the server, another person's PIN to approve what is beyond them, voids with a reason, gift cards and store credit sold, taken and refunded onto, returns without a receipt and exchanges, and the tax invoice at once. |
