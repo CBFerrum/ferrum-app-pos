@@ -446,6 +446,92 @@ async fn scenario() {
         .await;
     assert_eq!(back["invoiced_at_sale"], json!(true));
     assert_eq!(balance("GIFT-0000-0000-0001").await, n("110"));
+    // ───────────── 5. returns without a receipt and exchanges ─────────────
+    let assets = uid(&t.find_one("Account", json!({"account_name": "Current Assets", "company": cid.to_string()})).await);
+    let clearing = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Exchange Clearing", "company": cid.to_string(), "parent_account": assets.to_string(), "root_type": "Asset"}),
+        )
+        .await;
+    let swap = t
+        .insert(
+            &a,
+            "ModeOfPayment",
+            json!({"mode_name": "Exchange", "mode_type": "General", "accounts": [{"company": cid.to_string(), "account": clearing["id"]}]}),
+        )
+        .await;
+    let damaged = t.insert(&a, "Warehouse", json!({"warehouse_name": "Damaged", "company": cid.to_string()})).await;
+    let policy = t
+        .insert(
+            &a,
+            "PosReturnPolicy",
+            json!({"policy_name": "Shop", "price_basis": "Lowest Price in Window", "store_credit": giftcard["id"],
+                   "fees": [{"condition": "Damaged", "fee_percent": "20"}], "exchange_mode": swap["id"]}),
+        )
+        .await;
+    assert_eq!((policy["window_days"].clone(), policy["refund_modes"].clone()), (json!(30), json!([])), "30 days, store credit only, by default");
+    let unreceipted = |id: &str, pays: Value| {
+        json!({"id": id, "pos_profile": counter.to_string(), "is_return": true, "without_receipt": true, "reason": faulty["id"],
+               "items": [{"item": widget.to_string(), "qty": "-1", "condition": "Damaged"}], "payments": pays})
+    };
+    let mut onto_new = pay(&giftcard, "-74.80");
+    onto_new["stored_value_code"] = json!("GIFT-CRED-0000-0003");
+    let r1 = new_id();
+    assert!(messages(&t.refused(&cashier, unreceipted(&r1, json!([onto_new.clone()]))).await).contains("no return policy"), "none without a policy");
+    t.k.update(
+        &a,
+        "PosProfile",
+        counter,
+        obj(json!({"return_policy": policy["id"], "damaged_warehouse": damaged["id"],
+                   "payments": [{"mode_of_payment": cash["id"], "is_default": true, "allow_in_returns": true}, {"mode_of_payment": card["id"], "allow_in_returns": true},
+                                {"mode_of_payment": giftcard["id"], "allow_in_returns": true}, {"mode_of_payment": swap["id"], "allow_in_returns": true}]})),
+        None,
+    )
+    .await
+    .expect("the register's return policy");
+    // At the lowest price sold over the window (85, a 15% sale), less the 20% fee for damaged goods, taxed: 74.80.
+    let e = t.refused(&cashier, unreceipted(&r1, json!([onto_new.clone()]))).await;
+    assert!(messages(&e).contains("may not take returns without a receipt"), "{e:?}");
+    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("the manager's PIN again");
+    let mut approvals = Vec::new();
+    for (act, amount) in [("Return Without Receipt", None), ("Refund", Some("100"))] {
+        let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", act, amount, &r1)).await.expect("approved");
+        approvals.push(json!({"approval": ok["approval"]}));
+    }
+    let mut by_card = unreceipted(&r1, json!([pay(&card, "-74.80")]));
+    by_card["approvals"] = json!(approvals);
+    assert!(messages(&t.refused(&cashier, by_card.clone()).await).contains("not how the return policy refunds"), "store credit only");
+    by_card["payments"] = json!([onto_new]);
+    let mut offline = by_card.clone();
+    offline["sold_offline"] = json!(true);
+    assert!(messages(&t.refused(&cashier, offline).await).contains("online only"));
+    let back_in = t.sell(&cashier, by_card).await;
+    assert_eq!((dec(&back_in["rounded_total"]), back_in["items"][0]["warehouse"].clone()), (n("-74.80"), damaged["id"].clone()), "{back_in:?}");
+    assert_eq!(back_in["invoiced_at_sale"], json!(true), "its own credit note at once");
+    assert_eq!(balance("GIFT-CRED-0000-0003").await, n("74.80"), "refunded onto new store credit");
+    // An exchange, the customer paying the difference: one widget back (with its receipt), two out.
+    let bought = t.sell(&cashier, sale(json!([line(widget, "1")]), json!([pay(&card, "110")]))).await;
+    let ex = |back: Value, out_qty: &str, pays: Value| {
+        json!({"back": {"pos_profile": counter.to_string(), "return_against": bought["id"], "items": back["items"], "payments": back["payments"]},
+               "out": {"pos_profile": counter.to_string(), "items": [line(widget, out_qty)], "payments": pays}})
+    };
+    let one_back = json!({"items": [line(widget, "-1")], "payments": []});
+    let done = t.site(&cashier, "POST", "/exchange", Value::Null, ex(one_back, "2", json!([pay(&cash, "110")]))).await.expect("exchanged");
+    assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), n("110"), Decimal::ZERO), "{done}");
+    assert_eq!((done["return"]["exchange"].clone(), done["sale"]["exchange"].clone()), (done["sale"]["id"].clone(), done["return"]["id"].clone()));
+    assert_eq!((dec(&done["return"]["rounded_total"]), dec(&done["sale"]["rounded_total"]), dec(&done["sale"]["total_taxes"])), (n("-110"), n("220"), n("20")));
+    // And refunded the difference as the sale was paid: two back, one out.
+    let bought = t.sell(&cashier, sale(json!([line(widget, "2")]), json!([pay(&card, "220")]))).await;
+    let r2 = new_id();
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("110"), &r2)).await.expect("approved");
+    let two_back = json!({"back": {"id": r2, "pos_profile": counter.to_string(), "return_against": bought["id"], "items": [line(widget, "-2")],
+                                   "payments": [pay(&card, "-110")], "approvals": [{"approval": ok["approval"]}]},
+                          "out": {"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []}});
+    let done = t.site(&cashier, "POST", "/exchange", Value::Null, two_back).await.expect("exchanged");
+    assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), Decimal::ZERO, n("110")), "{done}");
+
     // A sale invoiced when the cashier asks (a customer's tax invoice now), not again at closing.
     let mut now = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
     now["invoice_now"] = json!(true);
