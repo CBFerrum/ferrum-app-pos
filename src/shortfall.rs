@@ -34,3 +34,25 @@ impl DocHook for ShortfallHook {
         Ok(Some(json!({"status": "Put Right"})))
     }
 }
+
+/// A price difference of a sale made offline is looked at by a person, who says what was found.
+pub struct DifferenceHook;
+
+#[async_trait]
+impl DocHook for DifferenceHook {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "review" {
+            return Ok(None);
+        }
+        let found =
+            params["resolution"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| Error::field("resolution", "say what was found and done"))?;
+        let by = if hc.ctx.email.is_empty() { hc.ctx.user.to_string() } else { hc.ctx.email.clone() };
+        let mut change = Doc::new();
+        for (k, v) in [("status", json!("Reviewed")), ("resolution", json!(found)), ("resolved_by", json!(by)), ("resolved_at", json!(Utc::now().to_rfc3339()))]
+        {
+            change.insert(k.into(), v);
+        }
+        hc.kernel.set_values_tx(&elevated(hc.ctx), hc.tx, "PosPriceDifference", id(doc, "id").unwrap_or_default(), change).await?;
+        Ok(Some(json!({"status": "Reviewed"})))
+    }
+}
