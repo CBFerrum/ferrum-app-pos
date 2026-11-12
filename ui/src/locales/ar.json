@@ -538,5 +538,12 @@
   "{value} report": "تقرير {value}",
   "{value} report {value2}": "تقرير {value} {value2}",
   "· session": "· الجلسة",
-  "· sold by": "· باعه"
+  "· sold by": "· باعه",
+  "Choose a customer": "Choose a customer",
+  "Choose the customer first: this register has no customer of its own for a sale nobody is named on.": "Choose the customer first: this register has no customer of its own for a sale nobody is named on.",
+  "This register has no walk-in customer, so the sale needs one.": "This register has no walk-in customer, so the sale needs one.",
+  "Choose an existing customer: this register does not make new ones.": "Choose an existing customer: this register does not make new ones.",
+  "Choose a customer, or give the buyer's tax registration below and one is found or made.": "Choose a customer, or give the buyer's tax registration below and one is found or made.",
+  "Offline, customers cannot be searched: the one already on this sale is kept, and another can be chosen once the connection is back.": "Offline, customers cannot be searched: the one already on this sale is kept, and another can be chosen once the connection is back.",
+  "This register has no customer of its own for a sale nobody is named on: choose the customer, or ask an administrator to set the register's customer.": "This register has no customer of its own for a sale nobody is named on: choose the customer, or ask an administrator to set the register's customer."
 }

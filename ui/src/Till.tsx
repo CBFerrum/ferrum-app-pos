@@ -187,7 +187,10 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const ready = lines.length > 0 && !calc.pending && !calc.error && !!calc.doc && !noCard;
   // A buyer the server found for their registration is a named customer, whoever the till had picked.
   const found = buyer && calc.doc && !calc.error && str(calc.doc.customer) && str(calc.doc.customer) !== str(profile.customer) ? str(calc.doc.customer) : null;
-  const walkIn = !found && (!customer.id || customer.id === str(profile.customer));
+  // A register with no customer of its own has no walk-in buyer: someone is chosen (or found by their registration) before a sale is paid, the server refuses it otherwise.
+  const hasWalkIn = !!str(profile.customer);
+  const noBuyer = !hasWalkIn && !found && !customer.id;
+  const walkIn = hasWalkIn && !found && (!customer.id || customer.id === str(profile.customer));
   const away = offline || !!calc.offline;
   // What the snapshot lists the items shown and the lines rung at, and the discount their pricing rule gives (asked of the pricing engine): only where the server's prices are not at hand, so the engine is not loaded for nothing.
   const [listed, setListed] = useState(new Map<string, { list: string; rule: string }>());
@@ -369,6 +372,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
 
   // ── selling ──
   const complete = async (tenders: Tender[], o: { invoiceNow: boolean }): Promise<string | null> => {
+    if (noBuyer) return tr("Choose the customer first: this register has no customer of its own for a sale nobody is named on.");
     const at = new Date();
     // When it was sold, not when it reaches the server. The sale has its own id, made when it began.
     const sale: Doc = {
@@ -567,7 +571,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       </section>
 
       <section className="pos-sale" aria-label={tr("Sale")}>
-        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={tr("Customer")} placeholder={titleOf(profile, "customer") || tr("Walk-in customer")} />
+        <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={tr("Customer")} placeholder={hasWalkIn ? titleOf(profile, "customer") || tr("Walk-in customer") : tr("Choose a customer")} required={!hasWalkIn} />
         {lines.length === 0 ? (
           <p className="pos-empty">{tr("Scan or tap items to start a sale.")}</p>
         ) : (
@@ -642,6 +646,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           due={due}
           grand={grand}
           walkIn={walkIn}
+          noBuyer={noBuyer}
+          customerTitle={customer.title}
+          onCustomer={(id, title) => setCustomer({ id, title })}
           customer={found ?? customer.id}
           program={str(calc.doc?.loyalty_program) || null}
           offline={away || serverDown()}

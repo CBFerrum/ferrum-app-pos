@@ -43,9 +43,9 @@ function Shift({ profileId }: { profileId: string }) {
   const outbox = useOutbox();
 
   const profile = useQuery({ queryKey: ["pos", "profile", profileId], queryFn: ({ signal }) => till<Doc>(docPath("PosProfile", profileId), { query: { titles: true }, signal }) });
-  const modes = useQuery({ queryKey: ["pos", "modes"], queryFn: ({ signal }) => rowsOf<Doc>("ModeOfPayment", { fields: "id,mode_name,mode_type", limit: 200 }, signal), staleTime: 300_000 });
+  const modes = useQuery({ queryKey: ["pos", "modes", "rows"], queryFn: ({ signal }) => rowsOf<Doc>("ModeOfPayment", { fields: "id,mode_name,mode_type", limit: 200 }, signal), staleTime: 300_000 });
   const open = useQuery({
-    queryKey: ["pos", "session", profileId, email],
+    queryKey: ["pos", "session", "rows", profileId, email],
     enabled: !!email,
     queryFn: ({ signal }) => rowsOf<Doc>("PosOpeningEntry", { filters: JSON.stringify({ pos_profile: profileId, status: "Open", user: email }), fields: "id,number,period_start", limit: 1 }, signal),
   });
