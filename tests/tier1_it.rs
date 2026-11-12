@@ -383,10 +383,20 @@ async fn scenario() {
         .await;
     assert_eq!(back["invoiced_at_sale"], json!(true));
     assert_eq!(balance("GIFT-0000-0000-0001").await, n("110"));
+    // A sale invoiced when the cashier asks (a customer's tax invoice now), not again at closing.
+    let mut now = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
+    now["invoice_now"] = json!(true);
+    let now = t.sell(&cashier, now).await;
+    assert_eq!(now["invoiced_at_sale"], json!(true));
+    let si = now["consolidated_invoice"].clone();
     // The day closes: invoiced sales are only settled, and the cards agree with the books.
     let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": open["id"]})).await;
     t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.expect("close the day");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     assert_eq!(ferrum_app_erp::stored_value::check(&a, &mut tx).await.unwrap(), Vec::<String>::new());
     drop(tx);
+    let settled = t.find_one("PosInvoice", json!({"id": now["id"]})).await;
+    assert_eq!((settled["consolidated_invoice"].clone(), settled["status"].clone()), (si.clone(), json!("Consolidated")), "settled, not invoiced twice");
+    let inv = t.find_one("SalesInvoice", json!({"id": si})).await;
+    assert_eq!(dec(&inv["outstanding_amount"]), Decimal::ZERO, "the closing paid it");
 }
