@@ -39,16 +39,16 @@ if (typeof window !== "undefined") window.addEventListener("online", markUp);
  *  till keeps working; the person signs in when they choose to send). */
 export async function till<T>(
   path: string,
-  o: { method?: string; body?: unknown; query?: Record<string, string | number | boolean | undefined>; idempotencyKey?: string; signal?: AbortSignal } = {},
+  o: { method?: string; body?: unknown; query?: Record<string, string | number | boolean | undefined>; idempotencyKey?: string; signal?: AbortSignal; accept?: string; patience?: number } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { accept: "application/json" };
+  const headers: Record<string, string> = { accept: o.accept ?? "application/json" };
   const app = bootstrap()?.app;
   if (app) headers["x-ferrum-ui"] = `${app.id}@${app.version}`;
   if (o.idempotencyKey) headers["idempotency-key"] = o.idempotencyKey;
   if (o.body !== undefined) headers["content-type"] = "application/json";
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(o.query ?? {})) if (v !== undefined) q.set(k, String(v));
-  const timeout = AbortSignal.timeout(PATIENCE_MS);
+  const timeout = AbortSignal.timeout(o.patience ?? PATIENCE_MS);
   const signal = o.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([o.signal, timeout]) : (o.signal ?? timeout);
   let res: Response;
   try {
@@ -67,7 +67,9 @@ export async function till<T>(
   if (unreachable({ status: res.status })) markDown();
   else markUp();
   if (!res.ok) throw parseApiError(res.status, await res.json().catch(() => null));
-  return (res.status === 204 ? undefined : await res.json()) as T;
+  if (res.status === 204) return undefined as T;
+  // A paper (the server's receipt, its shift report) comes back as the page's text.
+  return ((res.headers.get("content-type") ?? "").includes("json") ? await res.json() : await res.text()) as T;
 }
 
 /** Every row of a list, page after page by cursor: the server pages at 500, and cursors need the
@@ -109,31 +111,51 @@ export interface PriceBook {
   items: BookItem[];
   barcodes: { barcode: string; item: string; qty: string }[];
   built_at: string;
+  /** The snapshot's version (a digest of its content): an offline sale names it, and the server prices the sale again with exactly it. */
+  version?: string;
+  /** The server's signature of the version, when it has a key. The till keeps it; only the server can check it. */
+  signature?: string | null;
+  /** The promotions that could apply over the next days, in the promotions engine's form: kept for pricing them on this device (see docs in CHANGELOG: not yet run here). */
+  promotions?: unknown[];
+  /** What the promotions engine's `when` needs besides the basket: the register's warehouse and the walk-in customer's group, the company's time zone and the channel. */
+  warehouse?: string | null;
+  customer_group?: string | null;
+  time_zone?: string | null;
+  channel?: string;
+  /** The buyer rule: a sale above `named_above` to the walk-in customer needs a named buyer. */
+  buyer?: { named_above: string | null; walk_in: string | null };
+  /** Items the register cannot sell as they stand offline (no price in its list). */
+  unpriced?: { id: string; name: string; reason: string }[];
+  /** The snapshot stopped at its page limit: the items past it are sold online only. */
+  truncated?: boolean;
 }
 
-interface BookPage extends Partial<Omit<PriceBook, "items" | "barcodes">> {
-  items: BookItem[];
-  barcodes: { barcode: string; item: string; qty: string }[];
-  next: string | null;
+/** The register's snapshot of prices, taxes, promotions and the buyer rule, in one request: the server pages its own price book and signs the whole. */
+export async function downloadSnapshot(profile: string, get: () => Promise<Partial<PriceBook> & { items: BookItem[]; barcodes: PriceBook["barcodes"] }>): Promise<PriceBook> {
+  const s = await get();
+  return {
+    profile,
+    currency: s.currency ?? "",
+    customer: s.customer ?? null,
+    engine: s.engine ?? { precision: 2 },
+    items: s.items,
+    barcodes: s.barcodes,
+    built_at: s.built_at ?? new Date().toISOString(),
+    version: s.version,
+    signature: s.signature ?? null,
+    promotions: s.promotions ?? [],
+    warehouse: s.warehouse ?? null,
+    customer_group: s.customer_group ?? null,
+    time_zone: s.time_zone ?? null,
+    channel: s.channel,
+    buyer: s.buyer,
+    unpriced: s.unpriced,
+    truncated: s.truncated === true,
+  };
 }
 
-/** Most pages a book may take (250 items each): a register selling more is outside offline. */
-const MAX_PAGES = 200;
-
-/** The register's whole price book, page by page. */
-export async function downloadBook(profile: string, page: (after: string | null) => Promise<BookPage>): Promise<PriceBook> {
-  const book: PriceBook = { profile, currency: "", customer: null, engine: { precision: 2 }, items: [], barcodes: [], built_at: new Date().toISOString() };
-  let after: string | null = null;
-  for (let n = 0; n < MAX_PAGES; n++) {
-    const p: BookPage = await page(after);
-    if (p.engine) Object.assign(book, { engine: p.engine, currency: p.currency ?? "", customer: p.customer ?? null, built_at: p.built_at ?? book.built_at });
-    book.items.push(...p.items);
-    book.barcodes.push(...p.barcodes);
-    if (!p.next) break;
-    after = p.next;
-  }
-  return book;
-}
+/** The most a snapshot may take to come: a large catalogue is paged by the server and signed whole. */
+export const SNAPSHOT_PATIENCE_MS = 90_000;
 
 const BOOKS = "pricebooks";
 
@@ -241,6 +263,11 @@ export async function priceOffline(
     offline: true,
   };
 }
+
+/** What the till says, wherever it prices a sale on this device: promotions are the server's. The snapshot carries them in the promotions engine's
+ *  form, but this build runs no promotions engine (only `@ferrum/calc`), so the till never works one out and never shows a promotional price: they are
+ *  taken when the sale reaches the server. (What a promotions package beside `@ferrum/calc` would need is written up in the 0.7.1 changelog.) */
+export const promotionsLater = () => t("Offline: this till does not work out promotions. Any that apply are taken when the sale reaches the server, so the total it records may be lower than this one.");
 
 // ── what the till last knew ──
 

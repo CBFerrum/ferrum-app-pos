@@ -84,6 +84,8 @@ const router = createBrowserRouter(
         { index: true, element: <TillPage /> },
         // Counting the drawer and closing the shift: online, so it loads when asked for.
         { path: "shift", lazy: () => import("./Shift").then((m) => ({ Component: () => <Page><m.default /></Page> })) },
+        // The reviewer's list of sales made offline that the register priced to another total: online, a manager's.
+        { path: "differences", lazy: () => import("./Differences").then((m) => ({ Component: () => <Page><m.default /></Page> })) },
         {
           element: <RequireAuth />,
           // The register's records load when opened (online pages; the till above works

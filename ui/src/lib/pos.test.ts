@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Doc } from "@ferrum/records";
-import { addItem, adjustLine, balance, carriesCard, flushOutbox, invoiceBody, isTransient, keptReceipt, loadOutbox, parseScan, paymentRows, quickCash, receiptHtml, saveOutbox, setQty, withMethodNames, type QueuedSale } from "./pos";
+import { addItem, adjustLine, balance, carriesCard, flushOutbox, invoiceBody, isTransient, keptReceipt, loadOutbox, parseScan, paymentRows, offlineSale, quickCash, fallbackReceiptHtml, saveOutbox, setQty, withMethodNames, type QueuedSale } from "./pos";
 
 const tea = { id: "i-tea", name: "Tea" };
 const cake = { id: "i-cake", name: "Cake" };
@@ -164,14 +164,14 @@ describe("receipt", () => {
     const sale = { items: [{ item: "i1", qty: "3" }], payments: [{ mode_of_payment: "m1", amount: "100" }], posting_date: "2026-11-01" };
     const doc = keptReceipt(profile, priced, sale, { customer: "Asha Rao", due: 63, change: 37 });
     expect(doc).toMatchObject({ number: "Not sent yet", pending: true, customer_name: "Asha Rao", rounded_total: "63", change_amount: "37", posting_date: "2026-11-01" });
-    const html = receiptHtml(profile, doc);
+    const html = fallbackReceiptHtml(profile, doc);
     for (const text of ["Masala tea", "3 × 20.00", "60.00", "Cash", "100.00", "Change", "37.00", "Not sent yet"]) expect(html).toContain(text);
     // Nothing priced yet: the sale is still kept, without lines to print.
     expect(keptReceipt(profile, null, sale, { due: 0, change: 0 })).toMatchObject({ pending: true });
   });
 
   it("prints a line's note, the rounding, and what a return is of", () => {
-    const html = receiptHtml(
+    const html = fallbackReceiptHtml(
       { profile_name: "Counter" },
       {
         number: "C1-9",
@@ -192,7 +192,7 @@ describe("receipt", () => {
   });
 
   it("prints the sale with every value escaped", () => {
-    const html = receiptHtml(
+    const html = fallbackReceiptHtml(
       { profile_name: "Front <Counter>", print_format: "Thermal 58mm", receipt_footer: "Thanks!" },
       {
         number: "FC-1",
@@ -237,5 +237,26 @@ describe("what a sale carries beyond its lines", () => {
     expect((body.payments as Doc[])[0]).toMatchObject({ stored_value_code: "7KQ2-M9XD", stored_value_pin: "1234" });
     expect(carriesCard(body)).toBe(true);
     expect(carriesCard(invoiceBody({ ...base, tenders: [{ mode_of_payment: "cash", amount: "30" }] }))).toBe(false);
+  });
+});
+
+describe("what a sale carries for the register to settle", () => {
+  const base = { profile: "p1", session: "s1", customer: null, lines: [{ key: "k", item: "i-tea", item_name: "Tea", qty: 1 }], tenders: [] };
+
+  it("names a buyer's registration and name, and the promotion codes, only when they were given", () => {
+    expect(invoiceBody(base)).not.toHaveProperty("buyer_tax_id");
+    expect(invoiceBody(base)).not.toHaveProperty("promotion_codes");
+    expect(invoiceBody({ ...base, buyer: { taxId: " TL-4242 ", name: "  Acme " }, codes: ["TEA5", "WELCOME"] })).toMatchObject({ buyer_tax_id: "TL-4242", buyer_name: "Acme", promotion_codes: "TEA5 WELCOME" });
+    expect(invoiceBody({ ...base, buyer: { taxId: "TL-4242" } })).not.toHaveProperty("buyer_name");
+    expect(invoiceBody({ ...base, buyer: { taxId: "  " } })).not.toHaveProperty("buyer_tax_id");
+  });
+
+  it("marks an unsent sale as sold offline with its total, and the snapshot only when this device priced it", () => {
+    expect(offlineSale({ id: "x" }, { total: 139, snapshot: "v1" })).toEqual({ id: "x", sold_offline: true, till_total: "139", price_snapshot: "v1" });
+    expect(offlineSale({ id: "x" }, { total: "139.00" })).toEqual({ id: "x", sold_offline: true, till_total: "139.00" });
+  });
+
+  it("says on its face that the till's own receipt is not the register's", () => {
+    expect(fallbackReceiptHtml({ profile_name: "Counter" }, { number: "N", items: [], payments: [] })).toContain("Printed on this device: not the register&#39;s receipt");
   });
 });

@@ -61,3 +61,18 @@ export function pointsFor(amount: number, available: number, factor: number, pre
   while (points > 0 && pointsValue(points, factor, precision) > amount) points--;
   return points;
 }
+
+/** What each tender came to: what was handed over, what of it pays the bill, and the change handed back. Only cash is
+ *  handed back (the last cash tender gives it, as the server nets change off cash). */
+export function perTender(due: number, paid: Paid[], precision = 2): { tendered: number; taken: number; change: number }[] {
+  const { change } = tally(due, paid, 0, precision);
+  const lastCash = paid.map((p) => p.kind).lastIndexOf("Cash");
+  return paid.map((p, i) => {
+    const tendered = p.amount > 0 ? round(p.amount, precision) : 0;
+    const back = i === lastCash ? Math.min(change, tendered) : 0;
+    return { tendered, taken: round(tendered - back, precision), change: back };
+  });
+}
+
+/** What is left on a stored-value card once `amount` is taken from the `balance` it holds (never below nothing). */
+export const leftOnCard = (balance: number, amount: number, precision = 2): number => Math.max(0, round(balance - amount, precision));

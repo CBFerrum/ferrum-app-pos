@@ -50,3 +50,51 @@ export interface ExchangeAnswer {
   sale: Doc;
 }
 export const exchange = (back: Doc, out: Doc, key: string) => till<ExchangeAnswer>("/api/app/pos/exchange", { method: "POST", body: { back, out }, idempotencyKey: key });
+
+// ── what 0.7.0 added: the receipt's papers, the refund plan, the snapshot, the shift's papers, price differences ──
+
+const PAPER = "text/html";
+
+/** `GET /receipt/{sale}?profile=`: the sale's first receipt as the server's template (`pos.receipt`) renders it, a page to print.
+ *  Given once: the server marks it printed under the sale's lock, and a second ask is refused ("ask for a copy"). */
+export const firstReceipt = (profile: string, sale: string) => till<string>(`/api/app/pos/receipt/${encodeURIComponent(sale)}`, { query: { profile }, accept: PAPER });
+
+/** `POST /reprint`: a copy (marked COPY n, counted, kept with who, when, why and by whose approval) or a gift receipt (no prices),
+ *  as a page to print. `reason` is one of the business's reprint reasons (its id or its words) when it has some; `approval` another
+ *  person's, for someone whose limits do not allow reprints (it covers one copy). */
+export interface ReprintAsk {
+  profile: string;
+  sale: string;
+  kind: "copy" | "gift";
+  reason?: string;
+  approval?: string;
+}
+export const reprint = (ask: ReprintAsk) => till<string>("/api/app/pos/reprint", { method: "POST", body: ask, accept: PAPER });
+
+/** `POST /send`: the receipt by message to an address or number, with the buyer's consent: for this receipt only, or kept for more.
+ *  Answers the event and what the channels sent (the receipt attached when the workspace keeps files). */
+export interface SendAsk {
+  profile: string;
+  sale: string;
+  to: string;
+  consent: "once" | "opt_in";
+}
+export const sendReceipt = (ask: SendAsk) => till<{ event: string; sent: { channel?: string }[]; receipt: string | null }>("/api/app/pos/send", { method: "POST", body: ask });
+
+/** `POST /returns/{sale}/plan`: what a return of those lines (the sale's line ids, a positive quantity, a condition) is worth and how the
+ *  register proposes to refund it: a proposal, the return is still checked whatever is sent. */
+export interface RefundProposal {
+  total: string;
+  refunds: { mode: string; name: string | null; kind: string | null; amount: string }[];
+  /** What no method of this register can take back. */
+  unplaced: string;
+}
+export const returnPlan = (profile: string, sale: string, lines: { line: string; qty: string; condition?: string }[], signal?: AbortSignal) =>
+  till<RefundProposal>(`/api/app/pos/returns/${encodeURIComponent(sale)}/plan`, { method: "POST", body: { profile, lines }, signal });
+
+/** A record on paper by one of the app's document templates (`pos.shift_report` on a closing, `pos.cash_slip` on a cash movement). */
+export const paperOf = (entity: string, id: string, template: string) => till<string>(docPath(entity, id, "print"), { query: { template, format: "html" }, accept: PAPER });
+
+/** The `review` action on a Price Difference: what was found and done. */
+export const reviewDifference = (id: string, resolution: string) =>
+  till<unknown>(docPath("PosPriceDifference", id, "actions", "review"), { method: "POST", body: { resolution } });
