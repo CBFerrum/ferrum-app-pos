@@ -272,6 +272,8 @@
     - {name: tax_invoice, type: check, read_only: true, no_copy: true, label: Tax Invoice, description: "Given to a registered buyer: the sales invoice made at the sale is the document"}
     - {name: price_snapshot, type: data, no_copy: true, label: Price Snapshot, description: "A sale made offline: the version of the register's snapshot of prices, taxes and promotions the till priced it with"}
     - {name: till_total, type: currency, no_copy: true, label: Total on the Till, description: "A sale made offline: the total the till showed and took payment for"}
+    - {name: given_promotions, type: json, read_only: true, hidden: true, no_copy: true, label: Promotions the Till Gave,
+       description: "A sale made offline: the promotions its snapshot gave, as the server priced them again, passed to ERP to check, keep and count once"}
     - {name: reprints, type: int, default: 0, read_only: true, no_copy: true, label: Copies Printed}
     - {name: receipt_printed, type: check, read_only: true, no_copy: true, label: Receipt Printed, description: "The first receipt was printed; later ones are copies, marked and counted"}
     - {name: needs_buyer, type: check, read_only: true, hidden: true, no_copy: true}
