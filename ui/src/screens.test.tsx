@@ -19,6 +19,7 @@ import ReceiptMore from "./ReceiptMore";
 import ReturnDesk, { Sale } from "./Returns";
 import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
+import DifferencesPage from "./Differences";
 import { Till } from "./Till";
 import { Currency } from "./fmt";
 import { ownerOf, saveCart } from "./lib/held";
@@ -511,5 +512,28 @@ describe("the end of a shift", () => {
 
   it("says plainly when no register was chosen", () => {
     expect(draw(<ShiftPage />)).toContain("No register chosen");
+  });
+});
+
+describe("prices offline", () => {
+  it("says plainly that promotions come when the sale is sent, and which snapshot priced it", () => {
+    const doc = { total: "100.00", total_taxes: "10.00", rounded_total: "110.00", offline: true };
+    const html = draw(<Totals doc={doc} due={110} offline builtAt="2026-11-13T09:00:00Z" version="ab12cd34ef56" />);
+    expect(html).toContain("Priced on this device");
+    expect(html).toContain("Snapshot ab12cd34.");
+    expect(html).toContain("this till does not work out promotions");
+    expect(draw(<Totals doc={doc} due={110} />)).not.toContain("promotions");
+  });
+
+  it("lists the sales whose offline price the register could not agree with, and lets a reviewer write what was found", () => {
+    const rows = [{ id: "d1", pos_invoice: "s1", pos_profile: "p1", price_snapshot: "ab12cd34ef56", till_total: "139.00", replay_total: "139.00", sale_total: "131.00", snapshot_kept: true, status: "Open", _titles: { pos_invoice: "C1-0042", pos_profile: "Counter 1" } }];
+    const html = draw(<DifferencesPage />, (qc) => qc.setQueryData(["pos", "differences", "Open"], { rows }));
+    expect(html).toContain("Price differences");
+    expect(html).toContain("C1-0042");
+    expect(html).toContain("Till 139.00 · snapshot 139.00 · recorded 131.00");
+    expect(html).toContain("8.00 less recorded");
+    expect(html).toContain("The till took payment for 139.00; the register recorded 131.00.");
+    expect(html).toContain("Mark reviewed");
+    expect(draw(<DifferencesPage />, (qc) => qc.setQueryData(["pos", "differences", "Open"], { rows: [] }))).toContain("Nothing to review");
   });
 });
