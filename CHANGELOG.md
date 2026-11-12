@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.4
+
+Interface only (the Rust side is unchanged): two faults a browser walk found.
+
+- **Shift crashed with "N.find is not a function" when reached from the till.** The till and the shift screen cached different shapes (`{rows}` from the records list, a bare array from the shift's own read) under the same query keys (`["pos","modes"]`, `["pos","session",profile,email]`); the till's came first, so the shift read an object as a list. A direct load had nothing cached, which is why only navigation crashed. The shift's reads have their own keys now (`["pos","modes","rows"]`, `["pos","session","rows",...]`), and a test draws the shift with the till's shapes cached.
+- **No buyer, no sale.** The server refuses a sale whose register has no default customer and names nobody ("choose a customer"), yet the till showed "Walk-in customer". Now such a register shows "Choose a customer" (required) on the sale and in the payment step, which has its own customer picker (customers the person may read); Complete sale waits until one is chosen or found by the buyer's tax registration (which makes the customer where the register's "A Buyer With a Registration" is Find or Create; with Find Only the step says an existing customer must be chosen). The returns desk for goods with no receipt asks the same. Offline the picker cannot search: a customer already on the sale (kept with it on this device) is used; otherwise the step says to connect. Registers with a default customer are unchanged.
+- Not done: Arabic and Hindi for 7 new sentences (their English stands in the two catalogs); customers are not cached on the device for offline search.
+
 ## 0.7.3
 
 The till's screens for 0.7.2 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 6d4c321. The server and the till change together: the offline snapshot's shape changed in 0.7.2, so the 0.7.1 till cannot read it.

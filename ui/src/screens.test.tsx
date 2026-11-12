@@ -82,6 +82,26 @@ describe("taking payment", () => {
     expect(html).toContain("Exact");
   });
 
+  it("a register with no default customer asks who is buying, online and offline, and will not complete until someone is chosen", () => {
+    const bare = { ...profile, customer: null, _titles: { currency: "INR" } };
+    const blocked = /<button[^>]*disabled[^>]*>(?:(?!<\/button>).)*Complete sale/s;
+    const none = { ...props, profile: bare, walkIn: false, noBuyer: true, customerTitle: undefined, onCustomer: () => {} };
+    const online = draw(<PayDialog {...none} />);
+    expect(online).toContain("This register has no walk-in customer, so the sale needs one.");
+    expect(online).toContain("Choose a customer");
+    expect(online).toContain("found or made");
+    expect(online).toMatch(blocked);
+    expect(draw(<PayDialog {...none} profile={{ ...bare, buyer_customer: "Find Only" }} />)).toContain("does not make new ones");
+    expect(draw(<PayDialog {...none} offline />)).toContain("Offline, customers cannot be searched");
+    // Someone chosen (also offline, from the sale kept on this device): sells.
+    const named = draw(<PayDialog {...none} noBuyer={false} customer="c1" customerTitle="Asha" offline />);
+    expect(named).not.toMatch(blocked);
+    // A register with a walk-in customer shows no picker and is not held up.
+    const walk = draw(<PayDialog {...props} />);
+    expect(walk).not.toContain("no walk-in customer");
+    expect(walk).not.toMatch(blocked);
+  });
+
   it("opens credit to a named customer, and says why points wait offline", () => {
     const html = draw(<PayDialog {...props} walkIn={false} customer="c1" />);
     expect(html).not.toContain("Paying later needs");
@@ -448,14 +468,24 @@ describe("the end of a shift", () => {
   const seed = (qc: QueryClient) => {
     localStorage.setItem("ferrum.pos.profile", "p1");
     qc.setQueryData(["pos", "profile", "p1"], profile);
-    qc.setQueryData(["pos", "modes"], modes);
-    qc.setQueryData(["pos", "session", "p1", "asha@shop.test"], [{ id: "s1", number: "POS-OPEN-1" }]);
+    qc.setQueryData(["pos", "modes", "rows"], modes);
+    qc.setQueryData(["pos", "session", "rows", "p1", "asha@shop.test"], [{ id: "s1", number: "POS-OPEN-1" }]);
     qc.setQueryData(["pos", "report", "s1"], report);
     qc.setQueryData(["pos", "closing", "s1"], null);
     qc.setQueryData(["pos", "moves", "s1"], [{ id: "m1", movement_type: "Cash Out", amount: "20", reason: "Milk" }]);
     qc.setQueryData(["pos", "drafts", "s1"], []);
     qc.setQueryData(["pos", "currency", "inr"], { precision: 2 });
   };
+
+  it("draws after the till has cached its own list answers (Shift reached by navigation: no N.find crash)", () => {
+    const html = draw(<ShiftPage />, (qc) => {
+      seed(qc);
+      // The till's register keeps these under its keys as {rows, ...}, not as bare arrays.
+      qc.setQueryData(["pos", "modes"], { rows: modes, total: 4 });
+      qc.setQueryData(["pos", "session", "p1", "asha@shop.test"], { rows: [{ id: "s1", number: "POS-OPEN-1" }], total: 1 });
+    });
+    expect(html).toContain("Close the shift");
+  });
 
   it("lays out what is expected against what is counted, and the report so far", () => {
     const html = draw(<ShiftPage />, seed);

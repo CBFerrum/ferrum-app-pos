@@ -45,6 +45,8 @@ export default function Unreceipted({
   const why = reasons.filter((r) => r.applies_to === "Return" && r.disabled !== true);
 
   const [customer, setCustomer] = useState<{ id: string | null; title?: string }>({ id: null });
+  // The register's own walk-in customer stands in for nobody when it has none: then someone must be chosen.
+  const noBuyer = !str(profile.customer) && !customer.id;
   const [back, setBack] = useState<BackLine[]>([]);
   const [out, setOut] = useState<CartLine[]>([]);
   const [reason, setReason] = useState("");
@@ -72,8 +74,8 @@ export default function Unreceipted({
 
   // The price and fee the policy gives, and what goes out, as the server works them out.
   const backBody = useMemo(
-    () => (back.length && policy ? unreceiptedBody({ profile: profileId, session, customer: customer.id, reason: "", items: backItems(back, policy.price_basis) }) : null),
-    [back, policy, profileId, session, customer.id],
+    () => (back.length && policy && !noBuyer ? unreceiptedBody({ profile: profileId, session, customer: customer.id, reason: "", items: backItems(back, policy.price_basis) }) : null),
+    [back, policy, profileId, session, customer.id, noBuyer],
   );
   const backCalc = useQuery({
     queryKey: ["pos", "unreceipted", JSON.stringify(backBody)],
@@ -81,7 +83,7 @@ export default function Unreceipted({
     queryFn: ({ signal }) => till<Doc>(docPath("PosInvoice", "_calc"), { method: "POST", body: backBody, signal }),
     staleTime: 0,
   });
-  const outBody = useMemo(() => (exchanging && out.length ? invoiceBody({ profile: profileId, session, customer: customer.id, lines: out, tenders: [] }) : null), [exchanging, out, profileId, session, customer.id]);
+  const outBody = useMemo(() => (exchanging && out.length && !noBuyer ? invoiceBody({ profile: profileId, session, customer: customer.id, lines: out, tenders: [] }) : null), [exchanging, out, profileId, session, customer.id, noBuyer]);
   const outCalc = useQuery({
     queryKey: ["pos", "exchange-out", JSON.stringify(outBody)],
     enabled: !!outBody,
@@ -96,7 +98,7 @@ export default function Unreceipted({
   const priceProblem = back.map((l) => (policy ? enteredPriceProblem(policy.price_basis, l.price) : null)).find(Boolean) ?? null;
   const cardless = split.refund > 0 && refundVia?.kind === "Stored Value" && !codeOk(card.code);
   const ready =
-    !!policy && back.length > 0 && backSettled && outSettled && (!exchanging || out.length > 0) && !priceProblem && !!reason && !cardless && !busy &&
+    !noBuyer && !!policy && back.length > 0 && backSettled && outSettled && (!exchanging || out.length > 0) && !priceProblem && !!reason && !cardless && !busy &&
     (split.refund > 0 ? !!refundWith : true) && (split.due > 0 ? !!payWith : true) && (exchanging || backTotal > 0);
 
   const lineOf = (i: number) => (backCalc.data?.items as Doc[] | undefined)?.[i];
@@ -161,7 +163,8 @@ export default function Unreceipted({
       {policyQ.error && <Alert tone="error">{isolate(errorMessage(policyQ.error))}</Alert>}
       {policy && (
         <>
-          <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={t("Customer (if they give one)")} placeholder={t("Walk-in customer")} />
+          <LinkInput to="Customer" value={customer.id} title={customer.title} onChange={(id, title) => setCustomer({ id, title })} label={noBuyer ? t("Customer") : t("Customer (if they give one)")} placeholder={noBuyer ? t("Choose a customer") : titleOf(profile, "customer") || t("Walk-in customer")} required={noBuyer} />
+          {noBuyer && <p className="pos-hint">{t("This register has no customer of its own for a sale nobody is named on: choose the customer, or ask an administrator to set the register's customer.")}</p>}
 
           <h3 className="pos-sub">{both("return")}</h3>
           <Finder label={t("Item coming back")} onPick={(i, qty) => setBack((l) => (l.some((x) => x.item === i.id) ? l.map((x) => (x.item === i.id ? { ...x, qty: x.qty + qty } : x)) : [...l, { key: newKey(), item: i.id, item_name: i.name, qty, condition: "Resaleable" }]))} />
