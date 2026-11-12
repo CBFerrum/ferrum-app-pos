@@ -9,17 +9,17 @@
 // With a customer on the sale, the tax invoice can be issued at once.
 
 import { useQuery } from "@tanstack/react-query";
-import { useContext, useMemo, useState, type FormEvent } from "react";
+import { lazy, Suspense, useContext, useEffect, useMemo, useState, type FormEvent } from "react";
 import { docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, placed, toast } from "@ferrum/kit";
+import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, ListSkeleton, placed, toast } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { AskDialog } from "./Approval";
 import { CardInputs } from "./Card";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
-import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
-import { quickCash, receiptHtml, type Tender } from "./lib/pos";
-import { till, tillAll } from "./lib/offline";
-import { cardBalance, voidSale } from "./lib/server";
+import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
+import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
+import { serverDown, till, tillAll, unreachable } from "./lib/offline";
+import { cardBalance, firstReceipt, voidSale } from "./lib/server";
 import { allows, type Limits } from "./lib/rights";
 import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
 import { printHtml } from "./print";
@@ -50,12 +50,30 @@ export interface PayProps {
   offline: boolean;
   /** Steps cash is likely to be handed over in. */
   steps: number[];
+  /** The buyer who gave a tax registration, and how to change it: the server finds or makes the customer when it prices the sale. */
+  buyer: Buyer | null;
+  onBuyer: (b: Buyer | null) => void;
+  /** Promotion codes the buyer gave, and how to change them (the server checks each). */
+  codes: string[];
+  onCodes: (c: string[]) => void;
+  /** The sale as priced (the server's, or this till's offline): the buyer it found, the promotions it took, whether it needs a named buyer. */
+  doc: Doc | null;
+  /** The server's refusal of the sale as it stands (a registration, a code), shown as it is. */
+  problem?: string | null;
+  pricing?: boolean;
+  /** The buyer rule the till holds offline (from the snapshot): above this a walk-in sale needs a named buyer. */
+  namedAbove?: string | null;
   onClose: () => void;
   /** Sells; the answer is what went wrong, or null once it is done. */
   onComplete: (tenders: Tender[], o: { invoiceNow: boolean }) => Promise<string | null>;
 }
 
-export function PayDialog({ profile, modes, due, grand, walkIn, customer, program, offline, steps, onClose, onComplete }: PayProps) {
+/** What a payment dialog says about the sale being priced on this device: the totals are the book's, and the promotions are the server's to apply. */
+export const offlinePromotions = () => tr("Offline: this till does not work out promotions. Any that apply are taken when the sale reaches the server, so the total it records may be lower than this one.");
+
+type Added = Tender & { left?: number };
+
+export function PayDialog({ profile, modes, due, grand, walkIn, customer, program, offline, steps, buyer, onBuyer, codes, onCodes, doc, problem, pricing, namedAbove, onClose, onComplete }: PayProps) {
   const money = useMoney();
   const { precision } = useContext(Currency);
   const methods: Method[] = useMemo(
@@ -109,7 +127,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const usable = (m: Method) => !whyNot(m);
 
   const first = methods.find((m) => m.isDefault && usable(m)) ?? methods.find((m) => m.kind === "Cash" && usable(m)) ?? methods.find(usable);
-  const [added, setAdded] = useState<Tender[]>([]);
+  const [added, setAdded] = useState<Added[]>([]);
   const [method, setMethod] = useState(first?.id ?? "");
   const [amount, setAmount] = useState(String(due));
   const [reference, setReference] = useState("");
@@ -121,6 +139,15 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const [invoiceNow, setInvoiceNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The buyer's registration and the promotion code are typed here and put on the sale when asked for.
+  const [taxId, setTaxId] = useState(buyer?.taxId ?? "");
+  const [buyerName, setBuyerName] = useState(buyer?.name ?? "");
+  const [asking, setAsking] = useState(!!buyer);
+  const [promo, setPromo] = useState("");
+  // The sale's price changes when a code is taken or a buyer found: what is still due starts again from it, until a payment is added.
+  useEffect(() => {
+    if (!added.length) setAmount(String(due));
+  }, [due]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kindOf = (id: string) => methods.find((m) => m.id === id)?.kind ?? "General";
   const paidOf = (list: Tender[]): Paid[] => list.map((t) => ({ kind: kindOf(t.mode_of_payment), amount: num(t.amount) }));
@@ -141,11 +168,48 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           ...(usingCard ? { stored_value_code: code.trim(), ...(pin.trim() ? { stored_value_pin: pin.trim() } : {}) } : {}),
         }
       : null;
-  const everything = pending ? [...added, pending] : added;
+  const everything: Added[] = pending ? [...added, pending] : added;
   const t = tally(due, paidOf(everything), writeOff, precision);
   const before = stillDue(due, paidOf(added), precision);
-  const covered = t.left === 0 && !t.problem;
+  const rows = perTender(due, paidOf(everything), precision);
   const rounding = round(due - grand, precision);
+
+  // The buyer the server found or made for the registration: made only in its preview, so a customer it cannot read is one it would make.
+  const buyerId = buyer && !offline ? str(doc?.customer) : "";
+  const found = useQuery({
+    queryKey: ["pos", "buyer-found", buyerId],
+    enabled: !!buyerId,
+    staleTime: 60_000,
+    queryFn: () =>
+      till<Doc>(docPath("Customer", buyerId)).then(
+        () => true,
+        (e: unknown) => {
+          if ((e as { status?: number })?.status === 404) return false;
+          throw e;
+        },
+      ),
+  });
+  const taxed = doc?.tax_invoice === true;
+  const applied = ((doc?.applied_promotions as Doc[] | undefined) ?? []).filter(() => !offline && !doc?.offline);
+  // What the register asks of a sale of this size: the server says so when it prices it; offline, the snapshot's rule is held to.
+  const needsBuyer = !buyer && walkIn && (doc?.needs_buyer === true || (offline && !!namedAbove && due > Number(namedAbove)));
+  const heldBack = needsBuyer && offline ? tr("This register asks for a named buyer on a sale this size, and it cannot be checked until the connection is back: pick the customer on the sale, or sell it when the register is online.") : null;
+  const covered = t.left === 0 && !t.problem && !heldBack && !problem && !pricing;
+  const applyBuyer = () => {
+    if (!taxId.trim()) return;
+    onBuyer({ taxId: taxId.trim(), ...(buyerName.trim() ? { name: buyerName.trim() } : {}) });
+  };
+  const dropBuyer = () => {
+    setTaxId("");
+    setBuyerName("");
+    onBuyer(null);
+  };
+  const addCode = () => {
+    const c = promo.trim();
+    if (!c || codes.some((x) => x.toLowerCase() === c.toLowerCase())) return setPromo("");
+    onCodes([...codes, c]);
+    setPromo("");
+  };
 
   const forgetCard = () => {
     setCode("");
@@ -177,7 +241,8 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   };
   const add = () => {
     if (!pending) return;
-    const list = [...added, pending];
+    const left = usingCard && card?.holds === "Money" ? leftOnCard(Number(card.balance), typed, precision) : undefined;
+    const list: Added[] = [...added, { ...pending, ...(left !== undefined ? { left } : {}) }];
     setAdded(list);
     const next = methods.find((m) => m.id !== method && usable(m) && m.kind !== "Loyalty Points") ?? current;
     setMethod(next?.id ?? method);
@@ -195,7 +260,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   };
   const complete = async () => {
     setBusy(true);
-    setError(await onComplete(everything, { invoiceNow: named && invoiceNow }));
+    setError(await onComplete(everything.map(({ left: _left, ...t }) => t), { invoiceNow: named && invoiceNow }));
     setBusy(false);
   };
   const submit = (e: FormEvent) => {
@@ -250,6 +315,116 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           </p>
         )}
 
+        {problem && <Alert tone="error">{isolate(problem)}</Alert>}
+        {offline && <Alert tone="info">{offlinePromotions()}</Alert>}
+        {applied.length > 0 && (
+          <ul className="pos-added" aria-label={tr("Promotions taken")}>
+            {applied.map((a, i) => (
+              <li key={`${str(a.promotion)}-${i}`}>
+                <span>
+                  {isolate(str(a.title))}
+                  {a.code ? ` · ${str(a.code)}` : ""}
+                </span>
+                <strong>−{isolate(money(a.amount))}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="pos-card">
+          <Field label={tr("Promotion code")} htmlFor="pay-promo" hint={offline ? tr("A code is checked by the server: enter it when the connection is back.") : undefined}>
+            <div className="pos-points">
+              <input
+                id="pay-promo"
+                className="input"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                disabled={offline || busy}
+                value={promo}
+                onChange={(e) => setPromo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCode();
+                  }
+                }}
+              />
+              <Button disabled={offline || busy || !promo.trim()} onClick={addCode}>
+                {tr("Apply code")}
+              </Button>
+            </div>
+          </Field>
+          {codes.length > 0 && (
+            <ul className="pos-added" aria-label={tr("Codes on this sale")}>
+              {codes.map((c) => (
+                <li key={c}>
+                  <span>{isolate(c)}</span>
+                  <button type="button" className="icon-btn" aria-label={tr("Take the code {code} off", { code: c })} disabled={busy} onClick={() => onCodes(codes.filter((x) => x !== c))}>
+                    <Icon name="x" size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {asking || buyer || needsBuyer ? (
+          <div className="pos-card">
+            <Field label={tr("Buyer's tax registration")} htmlFor="pay-taxid" required={needsBuyer} hint={tr("The customer holding it is found, or made from it, and gets a tax invoice where the register's countries say so.")}>
+              <input
+                id="pay-taxid"
+                className="input"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                disabled={busy}
+                value={taxId}
+                onChange={(e) => setTaxId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyBuyer();
+                  }
+                }}
+              />
+            </Field>
+            <Field label={tr("Buyer's name")} htmlFor="pay-buyer-name" hint={tr("Used when a customer has to be made for this registration.")}>
+              <input id="pay-buyer-name" className="input" autoComplete="off" disabled={busy} value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />
+            </Field>
+            <div className="pos-points">
+              <Button disabled={busy || !taxId.trim()} loading={!!buyer && !!pricing} onClick={applyBuyer}>
+                {buyer ? tr("Check again") : tr("Use this registration")}
+              </Button>
+              {buyer && (
+                <Button variant="ghost" disabled={busy} onClick={dropBuyer}>
+                  {tr("Remove the registration")}
+                </Button>
+              )}
+            </div>
+            <div aria-live="polite">
+              {buyer && !pricing && !problem && !!doc?.customer && (
+                <p className="pos-hint">
+                  {offline
+                    ? tr("Offline: the registration is checked when the sale is sent, and the register may refuse it then.")
+                    : found.data === false
+                      ? tr("No customer holds this registration: one is made for {name} when the sale is saved.", { name: str(doc?.customer_name) })
+                      : found.data === true
+                        ? tr("Found {name}.", { name: str(doc?.customer_name) })
+                        : ""}
+                  {!offline && ` ${taxed ? tr("The sale gets a tax invoice of its own.") : tr("A simplified receipt: the invoice is made when the shift closes.")}`}
+                </p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <Button disabled={busy} onClick={() => setAsking(true)}>
+            {tr("Buyer has a tax registration")}
+          </Button>
+        )}
+        {needsBuyer && <p className="pos-hint">{tr("This sale is above what the register takes without a named buyer: give the buyer's registration, or pick the customer on the sale.")}</p>}
+        {heldBack && <Alert tone="warning">{heldBack}</Alert>}
+
         <div className="pos-methods" role="group" aria-label={tr("Way of paying")}>
           {methods.map((m) => (
             <button key={m.id} type="button" className="pos-method" aria-pressed={m.id === method} disabled={!usable(m) || busy} onClick={() => choose(m.id)}>
@@ -280,6 +455,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
               <p className="pos-hint" role="status">
                 {card.holds === "Money" ? tr("Balance {balance}", { balance: money(card.balance) }) : tr("{balance} units left", { balance: card.balance })}
                 {card.expires_on ? tr(" · valid until {date}", { date: card.expires_on }) : tr(" · does not expire")}
+                {card.holds === "Money" && typed > 0 && !cardWhy ? tr(" · {left} left after this payment", { left: money(leftOnCard(Number(card.balance), typed, precision)) }) : ""}
               </p>
             )}
             {cardWhy && <Alert tone="warning">{isolate(cardWhy)}</Alert>}
@@ -341,22 +517,31 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           </Field>
         )}
 
-        {added.length > 0 && (
-          <ul className="pos-added" aria-label={tr("Payments added")}>
-            {added.map((p, i) => (
-              <li key={`${p.mode_of_payment}-${i}`}>
-                <span>
-                  {isolate(methods.find((m) => m.id === p.mode_of_payment)?.name ?? "")}
-                  {p.loyalty_points ? tr(" · {loyalty_points} points", { loyalty_points: p.loyalty_points }) : ""}
-                  {p.reference_no ? ` · ${p.reference_no}` : ""}
-                  {p.stored_value_code ? tr(" · card ending {last}", { last: lastFour(p.stored_value_code) }) : ""}
-                </span>
-                <strong>{isolate(money(p.amount))}</strong>
-                <button type="button" className="icon-btn" aria-label={tr("Remove the {name} payment", { name: String(methods.find((m) => m.id === p.mode_of_payment)?.name) })} disabled={busy} onClick={() => setAdded(added.filter((_, j) => j !== i))}>
-                  <Icon name="x" size={14} />
-                </button>
-              </li>
-            ))}
+        {everything.length > 0 && (
+          <ul className="pos-added" aria-label={tr("Payments")}>
+            {everything.map((p, i) => {
+              const name = methods.find((m) => m.id === p.mode_of_payment)?.name ?? "";
+              const row = rows[i];
+              const isAdded = i < added.length;
+              return (
+                <li key={`${p.mode_of_payment}-${i}`}>
+                  <span>
+                    {isolate(name)}
+                    {p.loyalty_points ? tr(" · {loyalty_points} points", { loyalty_points: p.loyalty_points }) : ""}
+                    {p.reference_no ? ` · ${p.reference_no}` : ""}
+                    {p.stored_value_code ? tr(" · card ending {last}", { last: lastFour(p.stored_value_code) }) : ""}
+                    {row.change > 0 && <span className="faint pos-hint">{tr("{tendered} handed over, {change} change", { tendered: money(row.tendered), change: money(row.change) })}</span>}
+                    {(p as Added).left !== undefined && <span className="faint pos-hint">{tr("{left} left on the card", { left: money((p as Added).left) })}</span>}
+                  </span>
+                  <strong>{isolate(money(row.taken))}</strong>
+                  {isAdded && (
+                    <button type="button" className="icon-btn" aria-label={tr("Remove the {name} payment", { name })} disabled={busy} onClick={() => setAdded(added.filter((_, j) => j !== i))}>
+                      <Icon name="x" size={14} />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
 
@@ -378,15 +563,20 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   );
 }
 
-/** What is shown once a sale is done: the change to hand back, the receipt to print, the next sale.
- *  A sale not yet closed into the books can be voided here, with a reason, by someone who may or
- *  with another person's approval (online only: the sale is the server's). */
+const ReceiptMore = lazy(() => import("./ReceiptMore"));
+
+/** What is shown once a sale is done: the change to hand back, the receipt to print (the server's, once; copies, a gift
+ *  receipt and sending it by message are ReceiptMore's), the next sale. A sale not yet closed into the books can be voided
+ *  here, with a reason, by someone who may or with another person's approval (online only: the sale is the server's). */
 export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = false, onClose }: { profile: Doc; sale: Doc; limits?: Limits; reasons?: Doc[]; offline?: boolean; onClose: () => void }) {
   const money = useMoney();
   const change = num(sale.change_amount);
   const kept = sale.pending === true;
+  const saleId = str(sale.id);
   const voidReasons = reasons.filter((r) => r.applies_to === "Void" && r.disabled !== true);
   const [asking, setAsking] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [note, setNote] = useState<{ tone: "warning" | "error" | "success"; text: string } | null>(null);
   const voidable = !kept && !sale.is_return && !sale.exchange && !!sale.id && !!limits && voidReasons.length > 0;
   const voidIt = async (approval: string | undefined, reason: string | undefined) => {
     setAsking(false);
@@ -398,6 +588,28 @@ export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = f
       toast(errorMessage(e), "error");
     }
   };
+  // The server's receipt is given once, so a second press never asks again while the first is on its way.
+  const print = async () => {
+    if (printing) return;
+    setPrinting(true);
+    setNote(null);
+    const own = (text: string) => {
+      printHtml(fallbackReceiptHtml(profile, sale));
+      setNote({ tone: "warning", text });
+    };
+    try {
+      if (kept || !saleId) return own(kept ? tr("This sale is not on the register yet, so this is the till's own receipt, marked as such. The register's numbered receipt is for a copy once the sale is sent.") : tr("This sale has no number from the register yet, so this is the till's own receipt, marked as such."));
+      if (offline || serverDown()) return own(tr("The register cannot be reached, so this is the till's own receipt, marked as such. A copy from the register can be printed once it is back."));
+      printHtml(await firstReceipt(str(profile.id), saleId));
+      setNote({ tone: "success", text: tr("Printed. Another is a copy, marked as one.") });
+    } catch (e) {
+      if (unreachable(e)) own(tr("The register could not be reached, so this is the till's own receipt, marked as such. A copy from the register can be printed once it is back."));
+      else setNote({ tone: "error", text: errorMessage(e) });
+    } finally {
+      setPrinting(false);
+    }
+  };
+  const paidWith = ((sale.payments as Doc[] | undefined) ?? []).filter((p) => num(p.amount) !== 0);
   return (
     <>
       <Dialog
@@ -406,8 +618,8 @@ export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = f
         title={kept ? tr("Sale kept on this device") : sale.is_return ? tr("Return done") : tr("Sale complete")}
         footer={
           <>
-            <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, sale))}>
-              {tr("Print receipt")}
+            <Button icon="printer" loading={printing} onClick={() => void print()}>
+              {kept ? tr("Print a provisional receipt") : tr("Print receipt")}
             </Button>
             {voidable && (
               <Button variant="danger" disabled={offline} title={offline ? tr("Voiding a sale needs a connection.") : undefined} onClick={() => setAsking(true)}>
@@ -429,7 +641,32 @@ export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = f
           <p>
             {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{isolate(str(sale.number))}</strong>} · {isolate(money(sale.rounded_total ?? sale.grand_total))}
           </p>
+          {!kept && (str(sale.buyer_tax_id) || sale.tax_invoice === true) && (
+            <p className="muted">
+              {tr("Buyer {name}", { name: str(sale.customer_name) })}
+              {str(sale.buyer_tax_id) ? ` · ${str(sale.buyer_tax_id)}` : ""} · {sale.tax_invoice === true ? tr("tax invoice issued") : tr("simplified receipt")}
+            </p>
+          )}
+          {paidWith.length > 0 && (
+            <ul className="pos-added" aria-label={tr("Paid with")}>
+              {paidWith.map((p, i) => (
+                <li key={`${str(p.mode_of_payment)}-${i}`}>
+                  <span>
+                    {isolate(titleOf(p, "mode_of_payment"))}
+                    {p.stored_value_balance != null && p.stored_value_balance !== "" && <span className="faint pos-hint">{tr("{left} left on the card", { left: money(p.stored_value_balance) })}</span>}
+                  </span>
+                  <strong>{isolate(money(p.amount))}</strong>
+                </li>
+              ))}
+            </ul>
+          )}
           {kept && <p className="muted">{tr("It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.")}</p>}
+          {note && <Alert tone={note.tone}>{isolate(note.text)}</Alert>}
+          {!kept && !!saleId && !!limits && (
+            <Suspense fallback={<ListSkeleton rows={1} />}>
+              <ReceiptMore profile={profile} sale={sale} limits={limits} reasons={reasons} offline={offline} />
+            </Suspense>
+          )}
         </div>
       </Dialog>
       {asking && limits && (

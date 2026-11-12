@@ -17,7 +17,7 @@ import { Currency, localDate, myEmail, num, remembered, str, titleOf } from "./f
 import { useManager, useOutbox } from "./hooks";
 import { loadHeld, ownerOf } from "./lib/held";
 import { till } from "./lib/offline";
-import { difference, closingBody, countsOf, denominations, reasonOf, remarksOf, standing, typedAmount, zReportHtml, type Report } from "./lib/shift";
+import { difference, closingBody, countsOf, denominations, reasonOf, remarksOf, standing, typedAmount, fallbackShiftHtml, type Report } from "./lib/shift";
 import { printHtml } from "./print";
 
 const rowsOf = <T,>(entity: string, query: Record<string, string | number | boolean>, signal?: AbortSignal) => api.get<{ rows: T[] }>(docPath(entity), query, signal).then((r) => r.rows);
@@ -232,7 +232,7 @@ function Closing({
             </p>
           </div>
           <span className="spacer" />
-          <Button icon="printer" onClick={() => printHtml(zReportHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
+          <Button icon="printer" onClick={() => printHtml(fallbackShiftHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
             {placed(tr("Print the {p1} report"), { p1: z ? "Z" : "X" })}
           </Button>
           <Link className="btn btn-default btn-md" to="/">

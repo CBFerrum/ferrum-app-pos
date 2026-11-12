@@ -20,11 +20,11 @@ import { CardInputs, CodeOnce, makeCode } from "./Card";
 import { Currency, num, str, useMoney } from "./fmt";
 import { till } from "./lib/offline";
 import { pointsValue } from "./lib/pay";
-import { receiptHtml, withMethodNames } from "./lib/pos";
+import { withMethodNames } from "./lib/pos";
 import { checkRefund, REASONS, refundPayments, refundPlan, returnBody, returnItems, type CardProof, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
 import { allows, asksFor, type Approval, type Limits } from "./lib/rights";
 import { codeOk } from "./lib/stored";
-import { printHtml } from "./print";
+import { useReprint } from "./ReceiptMore";
 
 // Returns without a receipt and exchanges load only when chosen.
 const Unreceipted = lazy(() => import("./Unreceipted"));
@@ -117,7 +117,7 @@ function Find({ profile, onPick, onOther, onClose }: { profile: Doc; onPick: (id
   );
 }
 
-export function Sale({ profile, session, modes, limits, sale, onBack, onDone }: DeskProps & { sale: string; onBack: () => void; onDone: (receipt: Doc) => void }) {
+export function Sale({ profile, session, modes, limits, reasons, sale, onBack, onDone }: DeskProps & { sale: string; onBack: () => void; onDone: (receipt: Doc) => void }) {
   const qc = useQueryClient();
   const money = useMoney();
   const { precision } = useContext(Currency);
@@ -140,6 +140,8 @@ export function Sale({ profile, session, modes, limits, sale, onBack, onDone }: 
   const [busy, setBusy] = useState(false);
   const attempt = useRef<{ json: string; key: string } | null>(null);
   const asker = useAsk(profileId, () => false);
+  // A copy of the sale's receipt is the server's: marked COPY, counted, and asked for with the reason and approval the register wants.
+  const copies = useReprint(profile, limits, reasons, false);
 
   const data = sheet.data;
   const items = useMemo(() => (data ? returnItems(data, picks) : []), [data, picks]);
@@ -233,11 +235,13 @@ export function Sale({ profile, session, modes, limits, sale, onBack, onDone }: 
           </span>
         </div>
         <span className="spacer" />
-        <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, data.receipt))}>
+        <Button icon="printer" disabled={copies.busy || busy} onClick={() => copies.copy(data.sale.id, data.sale.number ?? "")}>
           {t("Copy of the receipt")}
         </Button>
       </div>
       {why && <Alert tone="warning">{isolate(why)}</Alert>}
+      {copies.note && <Alert tone={copies.note.tone}>{isolate(copies.note.text)}</Alert>}
+      {copies.asker.node}
 
       <h3 className="pos-sub">{t("What comes back")}</h3>
       <ul className="pos-return-lines">

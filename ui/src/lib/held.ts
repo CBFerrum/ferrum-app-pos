@@ -7,7 +7,7 @@
 import { t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import type { Approval } from "./rights";
-import type { CartLine, Voided } from "./pos";
+import type { Buyer, CartLine, Voided } from "./pos";
 
 export interface Customer {
   id: string | null;
@@ -24,6 +24,9 @@ export interface Cart {
   approvals?: Approval[];
   /** Lines taken off after they were rung, with why. */
   voided?: Voided[];
+  /** The tax registration the buyer gave, and the promotion codes (neither is a secret; the server checks both again). */
+  buyer?: Buyer | null;
+  codes?: string[];
   /** A card's code was on a line when this was kept. The code is not (a card's code is never kept on the
    *  device), so the card is asked for again; this only says that it is to be. */
   cardAgain?: boolean;

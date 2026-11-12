@@ -15,6 +15,7 @@ import { HeldDialog, KeysDialog } from "./Held";
 import { AskDialog, SetPinDialog } from "./Approval";
 import { CardLine } from "./Card";
 import { PayDialog, ReceiptDialog } from "./Pay";
+import ReceiptMore from "./ReceiptMore";
 import ReturnDesk, { Sale } from "./Returns";
 import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
@@ -65,7 +66,7 @@ const profile: Doc = {
 };
 
 describe("taking payment", () => {
-  const props = { profile, modes, due: 252.95, grand: 252.97, walkIn: true, customer: null, program: null, offline: false, steps: [10, 50, 100, 500, 2000], onClose: () => {}, onComplete: async () => null };
+  const props = { buyer: null, onBuyer: () => {}, codes: [], onCodes: () => {}, doc: null, profile, modes, due: 252.95, grand: 252.97, walkIn: true, customer: null, program: null, offline: false, steps: [10, 50, 100, 500, 2000], onClose: () => {}, onComplete: async () => null };
 
   it("starts on the default way, with the whole bill typed in, and says why credit and points wait", () => {
     const html = draw(<PayDialog {...props} />);
@@ -99,12 +100,66 @@ describe("taking payment", () => {
     expect(draw(<PayDialog {...props} profile={p} modes={[...modes, mode("gift", "Gift card", "Stored Value")]} offline />)).toMatch(/Cards need a connection/);
   });
 
+  it("asks for the buyer's registration and a promotion code, and says what the server found and took", () => {
+    const html = draw(<PayDialog {...props} />);
+    expect(html).toContain("Promotion code");
+    expect(html).toContain("Buyer has a tax registration");
+    // A buyer already on the sale: the fields are open, the server's find and its tax invoice are told, its promotions listed.
+    const doc = { customer: "c9", customer_name: "Acme Traders", tax_invoice: true, applied_promotions: [{ promotion: "p1", title: "Tea week", amount: "5.00", code: "TEA5" }] };
+    const named = draw(<PayDialog {...props} buyer={{ taxId: "TL-4242", name: "Acme" }} codes={["TEA5"]} doc={doc} walkIn={false} customer="c9" />);
+    expect(named).toContain("Buyer&#x27;s tax registration");
+    expect(named).toContain('value="TL-4242"');
+    expect(named).toMatch(/Tea week.*TEA5.*−5\.00/);
+    expect(named).toContain("Take the code TEA5 off");
+  });
+
+  it("shows the server's refusal of a registration as it is, and does not let the sale complete on it", () => {
+    const html = draw(<PayDialog {...props} buyer={{ taxId: "BAD" }} doc={null} problem="BAD is not a registration the country rules accept for a business" />);
+    expect(html).toContain("BAD is not a registration the country rules accept for a business");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
+  });
+
+  it("says plainly offline that promotions come when the sale is sent, and holds a sale the buyer rule would refuse", () => {
+    const html = draw(<PayDialog {...props} offline namedAbove="200" />);
+    expect(html).toContain("this till does not work out promotions");
+    expect(html).toMatch(/This register asks for a named buyer on a sale this size/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
+    // Under the rule, or a named customer: nothing held back.
+    expect(draw(<PayDialog {...props} offline namedAbove="500" />)).not.toContain("asks for a named buyer on a sale this size");
+    expect(draw(<PayDialog {...props} offline namedAbove="200" walkIn={false} customer="c1" />)).not.toContain("asks for a named buyer on a sale this size");
+  });
+
+  it("lists each way of paying with what it takes of the bill as it is typed (the change and a card's balance are perTender's and leftOnCard's, tested in pay.test.ts)", () => {
+    const html = draw(<PayDialog {...props} />);
+    expect(html).toMatch(/aria-label="Payments"><li><span>Cash<\/span><strong>252\.95<\/strong>/);
+    expect(html).not.toContain("left on the card");
+  });
+
   it("offers to void a finished sale, with a reason, but not a kept one, a return or an exchange", () => {
     const sale = { id: "s1", number: "C1-9", rounded_total: "20", payments: [] };
     const reasons = [{ id: "r1", reason: "Wrong item rung", applies_to: "Void" }];
     expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
     expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
     for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
+  });
+
+  it("tells a finished sale's buyer, how each way paid, and what is left on a card", () => {
+    const sale = { id: "s1", number: "C1-9", rounded_total: "100", customer_name: "Acme Traders", buyer_tax_id: "TL-4242", tax_invoice: true, change_amount: "0", payments: [{ mode_of_payment: "gift", amount: "100", stored_value_balance: "400.00", _titles: { mode_of_payment: "Gift card" } }] };
+    const html = draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} onClose={() => {}} />);
+    expect(html).toContain("Buyer Acme Traders");
+    expect(html).toContain("TL-4242");
+    expect(html).toContain("tax invoice issued");
+    expect(html).toContain("Gift card");
+    expect(html).toContain("400.00 left on the card");
+  });
+
+  it("offers a copy, a gift receipt and sending by message for a sale the register has, not for one kept on the device", () => {
+    const more = draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
+    for (const word of ["Print a copy", "Gift receipt", "Send by message"]) expect(more).toContain(word);
+    expect(draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
+    const kept = draw(<ReceiptDialog profile={profile} sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
+    expect(kept).toContain("Print a provisional receipt");
+    expect(kept).not.toContain("Print a copy");
   });
 
   it("shows a receipt with the change, and a kept sale as not yet sent", () => {
