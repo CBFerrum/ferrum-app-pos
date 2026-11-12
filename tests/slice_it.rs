@@ -161,6 +161,9 @@ async fn scenario() {
     ferrum_domain::register(&mut hooks);
     ferrum_app_erp::register(&mut hooks);
     ferrum_app_pos::register(&mut hooks);
+    for source in ferrum_app_erp::reports() {
+        ferrum_domain::reports::add_source(source);
+    }
     let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("partitions");
@@ -482,13 +485,18 @@ async fn scenario() {
     let version = snap["version"].as_str().unwrap().to_string();
     assert!(version.len() == 64 && snap["signature"].as_str().is_some_and(|s| s.len() == 64), "versioned and signed: {version} {}", snap["signature"]);
     assert_eq!(snap["promotions"].as_array().map(Vec::len), Some(2), "{snap}");
+    // ERP's pricing snapshot (schema 1): the price list's prices, the items with their units and rates, the tax rows;
+    // and what the till shows.
+    assert_eq!((snap["schema"].clone(), snap["channel"].clone()), (json!(1), json!("Point of Sale")), "{snap}");
     let wid = snap["items"].as_array().unwrap().iter().find(|i| i["id"] == json!(widget.to_string())).expect("the widget");
-    assert_eq!(
-        (dec(&wid["line"]["price"]), dec(&wid["line"]["discount_percent"])),
-        (n("100"), n("0")),
-        "an item as a sale of one prices it, promotions apart: {wid}"
-    );
-    assert!(wid["item_group"].is_string() && snap["engine"]["taxes"].is_array());
+    let price = snap["prices"].as_array().unwrap().iter().find(|p| p["item"] == json!(widget.to_string())).expect("its price");
+    assert_eq!(dec(&price["rate"]), n("100"), "{price}");
+    assert!(wid["item_group"].is_string() && snap["taxes"].as_array().is_some_and(|x| !x.is_empty()), "{snap}");
+    assert!(snap["catalog"].as_array().unwrap().iter().any(|i| i["id"] == json!(widget.to_string()) && i["name"].is_string()), "{snap}");
+    // The till's basket, priced by the crate from what it was given, as the server prices it: 2 widgets, 10 off over 150.
+    let basket = json!({"snapshot": snap.clone(), "basket": {"lines": [{"item": widget.to_string(), "qty": "2"}], "at": format!("{} 12:00", t.k.get(&a, "PosInvoice", uid(&two), false).await.unwrap()["posting_date"].as_str().unwrap())}});
+    let priced: Value = serde_json::from_str(&ferrum_erp_pricing::price_json(&basket.to_string())).unwrap();
+    assert_eq!((dec(&priced["totals"]["rounded_total"]), priced["applied"][0]["promotion"].clone()), (n("198"), json!(p10.to_string())), "{priced}");
     let again = t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.unwrap();
     assert_eq!(again["version"], json!(version), "the same content is the same version");
     let offline = |items: Value, pays: Value, total: &str, snapshot: &str| {
@@ -509,6 +517,26 @@ async fn scenario() {
     let ok = t.sell(&cashier, offline(widgets("2"), json!([pay(&card, "198")]), "198", &version)).await;
     assert_eq!(dec(&ok["replay_total"]), n("198"), "the snapshot's engine and the server's agree: {ok:?}");
     assert!(diff_of(uid(&ok)).await.is_empty());
+    // The promotions the snapshot gave are the sale's: ERP checked and kept them, under the sale's source, and counted
+    // their use once; the Promotions Given report has the till's sales.
+    let kept = ok["applied_promotions"].as_array().unwrap();
+    assert_eq!(
+        (kept.len(), kept[0]["title"].clone(), dec(&kept[0]["amount"]), kept[0]["source"].clone(), kept[0]["counted_elsewhere"].clone()),
+        (1, json!("10 off over 150"), n("20"), json!(format!("pos:{}", uid(&ok))), json!(false)),
+        "{ok:?}"
+    );
+    assert_eq!(used(p10).await, 2, "the online sale's and this one's");
+    let day = ok["posting_date"].as_str().unwrap().to_string();
+    let raw = [("company", cid.to_string()), ("from_date", day.clone()), ("to_date", day)].into_iter().map(|(a, b)| (a.to_string(), b)).collect();
+    let report = ferrum_domain::reports::run(&t.k, &a, "promotions", &raw).await.expect("promotions report");
+    let at_till: Decimal = report["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["promotion"] == json!("10 off over 150") && r["channel"] == json!("Point of Sale"))
+        .map(|r| dec(&r["discount"]))
+        .sum();
+    assert_eq!(at_till, n("40"), "the online sale and the offline one: {report}");
     // The till's total is not what its snapshot gives: the sale stands as paid, a difference waits for a person.
     let wrong = t.sell(&cashier, offline(widgets("2"), json!([pay(&card, "198")]), "190", &version)).await;
     let d = diff_of(uid(&wrong)).await;
@@ -586,6 +614,25 @@ async fn scenario() {
     t.k.update(&a, "PosReturnPolicy", uid(&policy), obj(json!({"unrefundable_to": "Cash"})), None).await.unwrap();
     let p = plan(None).await;
     assert_eq!((p["refunds"][0]["name"].clone(), dec(&p["refunds"][0]["amount"])), (json!("Cash"), n("132")), "{p}");
+    // An exchange against the receipt is planned by the server as /exchange settles it: what goes out is priced for the
+    // customer, the return pays for it, and only what is left over is refunded (or the customer pays the rest).
+    let swap_plan = |out: Value| {
+        let body = json!({"profile": counter.to_string(), "lines": [{"line": line_id.clone(), "qty": "1"}], "out": out});
+        let (t, cashier, path) = (&t, &cashier, format!("/returns/{bid}/plan"));
+        async move { t.site(cashier, "POST", &path, json!({"profile": counter.to_string()}), body).await }
+    };
+    let p = swap_plan(json!([{"item": gadget.to_string(), "qty": "1"}])).await.expect("an exchange plan");
+    let x = &p["exchange"];
+    assert_eq!(
+        (dec(&p["total"]), dec(&x["out_total"]), dec(&x["carried"]), dec(&x["due"]), dec(&x["refund"])),
+        (n("132"), n("44"), n("44"), n("0"), n("88")),
+        "{p}"
+    );
+    assert_eq!(p["refunds"].as_array().unwrap().iter().map(|r| dec(&r["amount"])).sum::<Decimal>(), n("88"), "{p}");
+    let p = swap_plan(json!([{"item": widget.to_string(), "qty": "2"}])).await.expect("the customer pays the rest");
+    let x = &p["exchange"];
+    assert_eq!((dec(&x["due"]), dec(&x["refund"])), (dec(&x["out_total"]) - n("132"), n("0")), "{p}");
+    assert!(dec(&x["due"]) > Decimal::ZERO && p["refunds"].as_array().unwrap().iter().all(|r| dec(&r["amount"]).is_zero()), "{p}");
     // The plan is a proposal; the return follows it and is held to the same rules.
     let one_back = |sale_id: Uuid, line: &Value, pays: Value| json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": sale_id.to_string(), "items": [{"item": widget.to_string(), "qty": "-1", "original_line": line}], "payments": pays});
     let returned = t.sell(&cashier, one_back(bid, &line_id, json!([pay(&cash, "-132")]))).await;
@@ -690,7 +737,8 @@ async fn scenario() {
         Ok(d) => t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&d), None).await.unwrap_err(),
         Err(e) => e,
     };
-    assert!(messages(&e).contains("the drawer holds 750"), "{e:?}");
+    // Counting blind: the refusal says no figure the count is checked against.
+    assert!(messages(&e).contains("cannot take more than the drawer holds") && !messages(&e).contains("750"), "{e:?}");
     let drop = t.insert(&kiosk_cashier, "PosCashMovement", movement("Safe Drop", "200", json!({}))).await;
     assert_eq!(drop["account"], safe["id"], "to the register's safe: {drop:?}");
     t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&drop), None).await.expect("dropped");
@@ -707,6 +755,31 @@ async fn scenario() {
     // Counting blind: the closing does not say what the drawer was expected to hold until it is counted.
     let close = t.insert(&kiosk_cashier, "PosClosingEntry", json!({"pos_opening_entry": session.to_string()})).await;
     assert!(close["payments"].as_array().unwrap().iter().all(|r| r["expected_amount"].is_null()), "nothing to see before counting: {close:?}");
+    // Nor anything to work it out from: the shift's sales, refunds, taxes and movements, on the closing, on its paper,
+    // or in a report the cashier runs (a manager's shows them).
+    for f in ["grand_total", "net_total", "total_taxes", "refund_total", "paid_in", "paid_out", "safe_drops", "total_difference"] {
+        assert!(close[f].is_null(), "{f} before counting: {close:?}");
+    }
+    assert_eq!(close["tax_rows"], json!([]));
+    let paper = String::from_utf8_lossy(&t.k.render_document(&kiosk_cashier, "pos.shift_report", uid(&close), None, false).await.expect("an X report").bytes)
+        .to_string();
+    assert!(paper.contains("Counted blind") && !paper.contains("220") && !paper.contains("550"), "{paper}");
+    let run = |who: &Ctx, name: &'static str, extra: Vec<(&'static str, String)>| {
+        let mut raw: std::collections::HashMap<String, String> =
+            [("company".to_string(), cid.to_string()), ("pos_profile".to_string(), kiosk.to_string())].into();
+        raw.extend(extra.into_iter().map(|(a, b)| (a.to_string(), b)));
+        let (k, who) = (t.k.clone(), who.clone());
+        async move { ferrum_app_pos::reports()[0].run(&k, &who, name, &raw).await.expect(name) }
+    };
+    let x = run(&kiosk_cashier, "pos_sales_summary", vec![("pos_opening_entry", session.to_string())]).await;
+    assert!(x["rows"].as_array().unwrap().is_empty() && dec(&x["meta"]["grand_total"]).is_zero(), "the cashier's X report: {x}");
+    assert!(x["meta"]["session"]["reconciliation"].as_array().unwrap().iter().all(|r| r["expected"].is_null()), "{x}");
+    for name in ["pos_daily_sales", "pos_top_items", "pos_hourly_sales"] {
+        let out = run(&kiosk_cashier, name, vec![]).await;
+        assert!(out["rows"].as_array().unwrap().is_empty(), "{name}: {out}");
+    }
+    let seen = run(&manager, "pos_sales_summary", vec![("pos_opening_entry", session.to_string())]).await;
+    assert_eq!(dec(&seen["meta"]["grand_total"]), n("220"), "a manager's: {seen}");
     let e = t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.unwrap_err();
     assert!(messages(&e).contains("count every payment method"), "{e:?}");
     // The count: 545 where 550 was expected (500 + 220 + 50 - 20 - 200), and the card terminal's 0.
@@ -720,6 +793,7 @@ async fn scenario() {
     let close = t.k.update(&kiosk_cashier, "PosClosingEntry", uid(&close), obj(json!({"payments": counted})), None).await.expect("counted");
     let cash_row = close["payments"].as_array().unwrap().iter().find(|r| r["mode_of_payment"] == cash["id"]).unwrap().clone();
     assert_eq!((dec(&cash_row["expected_amount"]), dec(&cash_row["difference"])), (n("550"), n("-5")), "seen after the count: {cash_row}");
+    assert_eq!(dec(&close["grand_total"]), n("220"), "every way counted: the figures come back");
     let closed = t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.expect("closed");
     assert_eq!(
         (dec(&closed["paid_in"]), dec(&closed["paid_out"]), dec(&closed["safe_drops"]), dec(&closed["total_difference"])),
@@ -759,10 +833,42 @@ async fn scenario() {
         )
         .await;
     let session2 = uid(&t.k.submit(&kiosk_cashier, "PosOpeningEntry", uid(&again), None).await.expect("open again"));
+    // A shift that spans the upgrade: a sale made before sales kept their tax breakdown (a book taxed at its own 0%
+    // beside a widget at 10%) is broken down again from what it recorded, exactly, not put all at the row's rate.
+    let mut book = item("BOOK");
+    book["is_stock_item"] = json!(false);
+    book["tax_rates"] = json!([{"tax_account": output_tax.to_string(), "rate": "0"}]);
+    let book = uid(&t.insert(&a, "Item", book).await);
+    t.insert(&a, "ItemPrice", json!({"item": book.to_string(), "price_list": selling["id"], "rate": "50", "valid_from": "2020-01-01"})).await;
+    let both = json!([{"item": widget.to_string(), "qty": "1"}, {"item": book.to_string(), "qty": "1"}]);
+    let old = t.sell(&kiosk_cashier, json!({"pos_profile": kiosk.to_string(), "items": both, "payments": [pay(&card, "182")]})).await;
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("delete from e_pos_invoice__tax_breakdown where tenant_id = $1 and parent_id = $2")
+        .bind(tenant)
+        .bind(uid(&old))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let open_close = t.insert(&kiosk_cashier, "PosClosingEntry", json!({"pos_opening_entry": session2.to_string()})).await;
+    let rows_: Vec<(Value, Decimal, Decimal, Decimal)> = open_close["tax_rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["description"].clone(), dec(&r["rate"]), dec(&r["taxable_amount"]), dec(&r["tax_amount"])))
+        .collect();
+    assert_eq!(rows_, [(json!("VAT 10%"), n("0"), n("50"), n("0")), (json!("VAT 10%"), n("10"), n("120"), n("12"))], "{open_close:?}");
     assert!(open_close["payments"].as_array().unwrap().iter().any(|r| dec(&r["expected_amount"]) == n("100")), "{open_close:?}");
     t.k.submit(&manager, "PosClosingEntry", uid(&open_close), None).await.expect("an uncounted close, as before");
     println!("item 6 ok");
+
+    // Erasure of a buyer: the name and registration they gave on their sales go, the sales stay as sold.
+    let sold = t.k.get(&a, "PosInvoice", uid(&one), false).await.unwrap();
+    assert_eq!((sold["buyer_name"].clone(), sold["buyer_tax_id"].clone()), (json!("Acme Ltd"), json!("TL-555")));
+    let out = t.k.erase_personal_data(&a, "acme@buyer.test", "the buyer asked").await.expect("erased");
+    let after = t.k.get(&a, "PosInvoice", uid(&one), false).await.unwrap();
+    assert!(after["buyer_name"].is_null() && after["buyer_tax_id"].is_null(), "{out} {after:?}");
+    assert_eq!((after["rounded_total"].clone(), after["customer"].clone()), (sold["rounded_total"].clone(), sold["customer"].clone()));
 }
 
 async fn plan_for(t: &T, who: &Ctx, profile: Uuid, sale: Uuid, line: &Value) -> Value {
