@@ -10,7 +10,7 @@
 //! Returns copy the prices, discounts and taxes of the sale they reverse, cannot bring back
 //! more than each line sold, and refund through what the sale was paid with.
 
-use crate::logic::{self, Kind, Refundable, Tender};
+use crate::logic::{self, Act, Kind, LineAsk, Refundable, Tender};
 use crate::loyalty::{self, Program};
 use crate::{Mode, Profile, is_manager, live_session, open_session, opt_dec, rows_value};
 use async_trait::async_trait;
@@ -287,50 +287,36 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
     set(doc, "items", rows_value(items));
     calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await?;
 
-    let manager = is_manager(hc.ctx);
-    let allow_discount = b(&profile.doc, "allow_discount_change");
-    let allow_rate = b(&profile.doc, "allow_rate_change");
-    let max_discount = if allow_discount { d(&profile.doc, "max_discount") } else { Decimal::ZERO };
+    let limits = crate::limits::of(hc.ctx, hc.tx, profile).await?;
     let header = d(doc, "discount_percent");
-    let hundred = Decimal::ONE_HUNDRED;
     let mut items = rows(doc, "items");
     let mut errors = Vec::new();
     let mut again = false;
+    let mut asks = Vec::with_capacity(items.len());
     for (i, r) in items.iter_mut().enumerate() {
         let (list, rule) = (d(r, "price_list_rate"), d(r, "discount_percent"));
         let (ask_discount, ask_rate) = asked[i];
         let price = ask_rate.unwrap_or(list);
         let discount = ask_discount.unwrap_or(rule);
-        let name = s(r, "item_name").unwrap_or("this item").to_string();
         if price <= Decimal::ZERO {
+            let name = s(r, "item_name").unwrap_or("this item");
             errors.push(FieldError::new("manual_rate", format!("{name} has no price in the price list; type its price")).in_row("items", i));
-            continue;
         }
-        if !manager {
-            if ask_rate.is_some_and(|m| m != list) && !allow_rate {
-                errors.push(FieldError::new("manual_rate", "this register does not allow changing prices; ask a POS manager").in_row("items", i));
-            }
-            if (discount > rule || header > Decimal::ZERO) && !allow_discount {
-                errors.push(FieldError::new("discount_percent", "this register does not allow discounts; ask a POS manager").in_row("items", i));
-            } else if list > Decimal::ZERO {
-                // What the customer saves against the list price: typed price, line and invoice discount together.
-                let pays = price / list * (hundred - discount) / hundred * (hundred - header) / hundred;
-                let saving = ((Decimal::ONE - pays) * hundred).round_dp(4);
-                let limit = rule.max(max_discount);
-                if saving > limit {
-                    errors.push(
-                        FieldError::new(
-                            "discount_percent",
-                            format!("a {}% discount on {name} exceeds the {}% allowed; ask a POS manager", saving.normalize(), limit.normalize()),
-                        )
-                        .in_row("items", i),
-                    );
-                }
-            }
-        }
+        asks.push(LineAsk { qty: d(r, "qty"), list, rule, price: ask_rate, discount: ask_discount });
         again |= price != list || discount != rule;
         set(r, "price_list_rate", money(price));
         set(r, "discount_percent", money(discount));
+    }
+    if errors.is_empty() {
+        for (line, act, _, why) in logic::beyond(&limits, &asks, header) {
+            let field = if act == Act::PriceChange { "manual_rate" } else { "discount_percent" };
+            let e = match line {
+                Some(i) => FieldError::new(field, format!("{}: {why}; ask someone who may to approve it", s(&items[i], "item_name").unwrap_or("item")))
+                    .in_row("items", i),
+                None => FieldError::new("discount_percent", format!("{why}; ask someone who may to approve it")),
+            };
+            errors.push(e);
+        }
     }
     if !errors.is_empty() {
         return Err(Error::Validation(errors));
@@ -557,7 +543,21 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
     let room = taken(hc.tx, hc.ctx.tenant, &orig, id(doc, "id")).await?;
     let left = left_to_refund(&room, &orig);
     let refunds = tenders(payments, -Decimal::ONE);
-    logic::check_refunds(-d(doc, "rounded_total"), &refunds, &left).map_err(|m| Error::field("payments", m))
+    logic::check_refunds(-d(doc, "rounded_total"), &refunds, &left).map_err(|m| Error::field("payments", m))?;
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
+    let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
+    let total = -d(doc, "rounded_total");
+    if !limits.allows(Act::Refund, total) {
+        return Err(Error::field(
+            "payments",
+            format!(
+                "a refund of {} is more than the {} you may give; ask someone who may to approve it",
+                total.normalize(),
+                limits.refund.unwrap_or_default().normalize()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// A named customer with a credit limit: the consolidated invoice will count the whole sale

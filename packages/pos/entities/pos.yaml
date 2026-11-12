@@ -388,3 +388,24 @@
     - {name: resolve, label: Mark Put Right, permission: write, condition: "doc.status == 'Open'",
        params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]}
   list: {columns: [item_name, warehouse, qty_short, pos_invoice, status], sort: created_at desc}
+
+- name: PosRoleLimit
+  label: POS Role Limit
+  kind: master
+  module: pos
+  title_field: role
+  description: "What a role may do at the till without someone else approving it. A person with several roles gets the most generous of them; a row naming a register applies there instead of the role's row for every register. A person none of whose roles has a row keeps the register's own discount and price settings (a POS Manager: no limit)."
+  fields:
+    - {name: role, type: data, required: true, in_list: true, in_filter: true, description: "The role's name, as given to people (Cashier, POS Manager, or your own)"}
+    - {name: pos_profile, type: link, to: PosProfile, label: Register, in_list: true, in_filter: true, description: "Empty: every register"}
+    - {name: discount_percent, type: percent, default: 0, min: "0", max: "100", label: Largest Discount %, in_list: true, description: "On a line against its list price, beyond what pricing rules give (a typed price, the line's and the sale's discounts together)"}
+    - {name: discount_amount, type: currency, min: "0", label: Largest Discount per Sale, description: "In money, beyond what pricing rules give; empty: no amount limit"}
+    - {name: change_price, type: check, label: May Change Prices}
+    - {name: void_line, type: check, default: true, label: May Void a Line}
+    - {name: void_sale, type: check, label: May Void a Sale}
+    - {name: refund_limit, type: currency, min: "0", label: Largest Refund, description: "Of one return; empty: no limit"}
+    - {name: return_without_receipt, type: check, label: May Take Returns Without a Receipt}
+    - {name: open_drawer, type: check, label: May Open the Drawer Without a Sale}
+    - {name: reprint, type: check, default: true, label: May Reprint Receipts}
+  unique: [[role, pos_profile]]
+  list: {columns: [role, pos_profile, discount_percent, refund_limit], sort: role asc}
