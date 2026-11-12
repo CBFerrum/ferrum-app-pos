@@ -38,7 +38,7 @@ modules:
     order: 45
     items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
-            report:pos_returns]
+            report:pos_returns, report:pos_shift_report]
 
 roles:
   - name: Cashier
@@ -136,6 +136,7 @@ seed:
 personal_data:
   - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}
+  - {entity: PosInvoice, match: customer, erase: [buyer_name, buyer_tax_id]}
 
 # The till's papers and messages. A workspace edits them under Settings (a copy of a default, reset to it when it
 # wants); the till asks the server for the receipt (GET /receipt/{sale}, POST /reprint) and prints what comes back.
@@ -258,6 +259,28 @@ documents:
           <tr><td><b>Over / short</b></td><td></td><td></td><td></td><td class="n"><b>{{ doc.total_difference|amount }}</b></td></tr>
           </table>
           {% if doc.remarks %}<div class="rule"></div><div dir="auto">{{ doc.remarks }}</div>{% endif %}
+          </div>
+  - key: pos.cash_slip
+    label: Cash slip
+    entity: PosCashMovement
+    output: page
+    default: true
+    languages:
+      en:
+        body: |-
+          <style>@page {size: 80mm 100mm; margin: 3mm} .r {font: 9pt sans-serif; color: #000} .r table {width: 100%; border-collapse: collapse} .n {text-align: right} .mark {font-weight: bold; text-align: center; border: 1px solid #000; margin: 2px 0}</style>
+          <div class="r">
+          <div class="mark">{% if doc.movement_type == 'Safe Drop' %}SAFE DROP{% elif doc.movement_type == 'Cash Out' %}PAID OUT{% else %}PAID IN{% endif %}</div>
+          <table>
+          <tr><td>No.</td><td class="n">{{ doc.number }}</td></tr>
+          <tr><td>Session</td><td class="n">{{ links.pos_opening_entry.number }}</td></tr>
+          <tr><td>Cashier</td><td class="n">{{ doc.cashier }}</td></tr>
+          <tr><td>Date</td><td class="n">{{ doc.posting_date|date('short') }}</td></tr>
+          <tr><td><b>Amount</b></td><td class="n"><b>{{ doc.amount|amount }}</b></td></tr>
+          {% if doc.reason %}<tr><td colspan="2" dir="auto">{{ doc.reason }}</td></tr>{% endif %}
+          </table>
+          <div style="text-align:center">{{ barcode(doc.number, module=1, height=30, text=true) }}</div>
+          <p>Signed ____________________</p>
           </div>
 
 messages:
