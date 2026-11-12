@@ -6,7 +6,7 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 
 | Entity | What it is |
 |---|---|
-| `ModeOfPayment` | Tender: `mode_type` Cash, Bank (card, UPI, wallet), General, Credit (on account), Loyalty Points; account per company (Cash/Bank fall back to the company cash/bank account). Seeded: Cash, Card, UPI, Wallet, Credit, Loyalty Points |
+| `ModeOfPayment` (ERP's, from 0.6.2) | Tender. Point of Sale adds `mode_type` Cash, Bank (card, UPI, wallet), General, Credit (on account), Loyalty Points; stored-value kind and offline limit, and `account` on ERP's accounts per company (Cash/Bank fall back to the company cash/bank account). Seeded: Cash, Card, UPI, Wallet, Credit, Loyalty Points |
 | `PosProfile` | A register: company, warehouse, price list, walk-in customer, tax template, payment methods (default, allowed in returns), invoice prefix, write-off account/limit, cash-difference account, negative stock, cashier discount/price rights, item and customer groups, receipt texts |
 | `PosOpeningEntry` | A cashier's session (submittable): opening float per payment method. One open session per register and cashier |
 | `PosInvoice` | A sale or return (submittable). Stock moves on submit; numbers are `PREFIX-<FY>-000001`, gapless per prefix |

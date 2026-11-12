@@ -20,7 +20,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("packages");
+    // Read when the script runs, not baked in when it is compiled: two checkouts of this app sharing
+    // one target reuse one compiled build script, which must embed the checkout being built.
+    let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
+    let root = dir.join("packages");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut code = String::from("// (package, path inside the package, content)\npub static EMBEDDED: &[(&str, &str, &str)] = &[\n");
     let mut packages: Vec<_> =
@@ -40,7 +43,7 @@ fn main() {
     std::fs::write(out.join("packages.rs"), code).expect("write packages.rs");
 
     // The interface's built files, without the build's own notes (dotfiles such as .source).
-    let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join("dist");
+    let ui = dir.join("ui").join("dist");
     println!("cargo:rerun-if-changed={}", ui.display());
     let mut code = String::from("/// This app's own interface: its built files (path under ui/dist, content).\npub static UI: &[(&str, &[u8])] = &[\n");
     let mut files = Vec::new();

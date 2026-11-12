@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+
+Builds with ERP 0.22.0 and needs it (`requires: {erp: ">=0.22"}`). ERP 0.22.0 defines `ModeOfPayment` and `ModeOfPaymentAccount` for payment instruments, so the platform refused to load Point of Sale's own entities of the same names beside it.
+
+- **Modes of payment are ERP's.** Point of Sale no longer defines them: a mode of payment and its accounts by company are accounting's, as in ERP. Point of Sale adds its own fields to them as the columns they always were (`mode_type`, `stored_value_kind`, `offline_limit` on the mode, `account`, labelled Till Account, on its row for a company), so every mode, its values and its rows stay where they are, and nothing needs migrating. The seeded modes are seeded as before, by key, never overwriting a mode that is there.
+- **One row per company.** A mode's accounts may hold ERP's instruments accounts and the till's account in one row; a second row for the same company is refused (ERP and the till both read the first), and a row with no till account is accepted.
+- **Built from its own checkout.** The build script reads where the app is when it runs instead of when it was compiled, so two checkouts sharing one build directory no longer embed each other's packages (a sweep had passed 0.6.1's tests on 0.6.2's packages this way).
+
+On upgrade an administrator sees Mode of Payment under Accounting as well as under Point of Sale, with ERP's Paid by Instrument and Charge for a Bounce beside the till's Type, and ERP's three instruments accounts beside Till Account in each company's row. Nothing is asked of them, in whichever order the two apps are updated.
+
 ## 0.6.1
 
 The till's own screens for what 0.6.0 added on the server (interface only; the Rust side is unchanged), built with Ferrum-Frontend e9dae86.
