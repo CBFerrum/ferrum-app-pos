@@ -33,6 +33,7 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosProfile", Arc::new(masters::PosProfileHook))
         .register("ItemBarcode", Arc::new(masters::ItemBarcodeHook))
         .register("LoyaltyPointEntry", Arc::new(masters::PointEntryHook))
+        .register("PosApproval", Arc::new(masters::EngineOnly))
         .register("PosOpeningEntry", Arc::new(session::OpeningHook))
         .register("PosCashMovement", Arc::new(session::CashMovementHook))
         .register("PosInvoice", Arc::new(invoice::PosInvoiceHook))

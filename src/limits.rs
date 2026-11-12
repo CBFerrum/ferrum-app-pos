@@ -4,11 +4,12 @@
 //! existed (its discount and price settings; a POS Manager, everything), so nothing changes on
 //! upgrade until a business writes its rows.
 
-use crate::logic::Limits;
+use crate::logic::{Act, Limits};
 use crate::{Profile, is_manager};
-use ferrum_domain::util::{b, d, s};
-use ferrum_kernel::{Ctx, Doc, Result, Tx};
+use ferrum_domain::util::{b, d, elevated, s};
+use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, Tx};
 use rust_decimal::Decimal;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -83,4 +84,193 @@ pub(crate) async fn rows_for(tx: &mut Tx, tenant: Uuid, profile: Uuid) -> Result
             .fetch_all(&mut **tx)
             .await?;
     Ok(found.into_iter().filter_map(|v| v.as_object().cloned()).collect())
+}
+
+// ───────────────────────────── PINs and approvals ─────────────────────────────
+//
+// Approval at the till (PS-21): someone whose limits allow it types their PIN on the cashier's till,
+// without the cashier signing out. The PIN is kept only as an argon2id hash (`pos_staff_pin`), five
+// wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's
+// audited parameters: it travels only in the body of the register's own endpoints. An approval is a
+// record (`PosApproval`) for one act in one session, used once: by one sale that names it, or by one
+// void, drawer opening or reprint. Offline there is no approval: a till cannot check a PIN without
+// keeping something on the device that a short PIN's few thousand values would give away to
+// whoever holds it, so an act beyond the cashier's own limits waits for the connection.
+
+const WRONG_PINS: i32 = 5;
+const LOCKED_MINUTES: i32 = 15;
+
+/// A PIN as people type it: four to twelve digits.
+fn check_pin_shape(pin: &str) -> Result<()> {
+    if (4..=12).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit()) { Ok(()) } else { Err(Error::field("pin", "a PIN is four to twelve digits")) }
+}
+
+/// Sets the signed-in person's own PIN (kept as a hash; any wrong tries are forgotten).
+pub(crate) async fn set_pin(k: &Kernel, ctx: &Ctx, pin: &str) -> Result<()> {
+    check_pin_shape(pin)?;
+    if ctx.email.is_empty() || ctx.outside {
+        return Err(Error::Forbidden("only a member of the workspace sets a PIN".into()));
+    }
+    let hash = ferrum_kernel::auth::hash_password(pin.to_string()).await?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    sqlx::query(
+        "insert into pos_staff_pin (tenant_id, email, pin_hash) values ($1, lower($2), $3) \
+         on conflict (tenant_id, email) do update set pin_hash = excluded.pin_hash, failures = 0, locked_until = null, set_at = now()",
+    )
+    .bind(ctx.tenant)
+    .bind(&ctx.email)
+    .bind(hash)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The person `email` proved by `pin`: their context, or a refusal that counts a wrong try (kept
+/// whatever becomes of the caller's transaction) and locks the PIN after too many.
+async fn prove(k: &Kernel, tenant: Uuid, email: &str, pin: &str) -> Result<Ctx> {
+    let wrong = || Error::invalid("that person's PIN does not match");
+    let mut sys = k.db.system_tx().await?;
+    let user: Option<(Uuid, bool)> = sqlx::query_as("select id, is_active from app_user where tenant_id = $1 and email = lower($2)")
+        .bind(tenant)
+        .bind(email.trim())
+        .fetch_optional(&mut *sys)
+        .await?;
+    let row: Option<(String, bool)> =
+        sqlx::query_as("select pin_hash, coalesce(locked_until > now(), false) from pos_staff_pin where tenant_id = $1 and email = lower($2)")
+            .bind(tenant)
+            .bind(email.trim())
+            .fetch_optional(&mut *sys)
+            .await?;
+    sys.commit().await?;
+    let (Some((user, true)), Some((hash, locked))) = (user, row) else {
+        // As long as a real check, so a refusal does not say whether the person has a PIN.
+        ferrum_kernel::auth::verify_password(
+            pin.to_string(),
+            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$ZmVycnVtLWR1bW15LWhhc2gtZm9yLXRpbWluZw".into(),
+        )
+        .await;
+        return Err(wrong());
+    };
+    if locked {
+        return Err(Error::TooManyRequests(format!("too many wrong PINs for {email}: try again in {LOCKED_MINUTES} minutes")));
+    }
+    let right = ferrum_kernel::auth::verify_password(pin.to_string(), hash).await;
+    let mut sys = k.db.system_tx().await?;
+    if right {
+        sqlx::query("update pos_staff_pin set failures = 0 where tenant_id = $1 and email = lower($2)")
+            .bind(tenant)
+            .bind(email.trim())
+            .execute(&mut *sys)
+            .await?;
+    } else {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update pos_staff_pin set failures = case when failures + 1 >= {WRONG_PINS} then 0 else failures + 1 end, \
+             locked_until = case when failures + 1 >= {WRONG_PINS} then now() + interval '{LOCKED_MINUTES} minutes' else locked_until end \
+             where tenant_id = $1 and email = lower($2)"
+        )))
+        .bind(tenant)
+        .bind(email.trim())
+        .execute(&mut *sys)
+        .await?;
+    }
+    sys.commit().await?;
+    if !right {
+        return Err(wrong());
+    }
+    k.load_ctx(tenant, user, None, "pos-approval".into()).await
+}
+
+/// What a till asks to have approved.
+pub(crate) struct Ask<'a> {
+    pub profile: Uuid,
+    pub approver: &'a str,
+    pub pin: &'a str,
+    pub act: Act,
+    pub amount: Option<Decimal>,
+    pub reason: &'a str,
+}
+
+/// Approves one act for the signed-in cashier in their open session at the register, by another
+/// person's PIN, when that person's own limits allow it: the approval's id.
+pub(crate) async fn approve(k: &Kernel, ctx: &Ctx, ask: Ask<'_>) -> Result<Value> {
+    if ask.reason.trim().is_empty() {
+        return Err(Error::field("reason", "say why"));
+    }
+    if ask.approver.trim().eq_ignore_ascii_case(&ctx.email) {
+        return Err(Error::field("approver", "someone else approves what is beyond your own limits"));
+    }
+    k.get(ctx, "PosProfile", ask.profile, false).await?;
+    let approver = prove(k, ctx.tenant, ask.approver, ask.pin).await?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let profile = Profile::load(k, ctx, &mut tx, ask.profile).await?;
+    let session = crate::open_session_in(&mut tx, ctx.tenant, ask.profile, &ctx.email)
+        .await?
+        .ok_or_else(|| Error::invalid(format!("open your session at {} first", profile.name())))?;
+    let theirs = of(&approver, &mut tx, &profile).await?;
+    if !theirs.allows(ask.act, ask.amount.unwrap_or_default()) {
+        return Err(Error::Forbidden(format!("{} may not approve this either", approver.email)));
+    }
+    let row = json!({
+        "pos_profile": profile.id, "pos_opening_entry": session, "cashier": ctx.email.to_lowercase(), "approver": approver.email.to_lowercase(),
+        "action": ask.act.label(), "amount": ask.amount.map(|a| a.normalize().to_string()), "reason": ask.reason.trim(),
+        "limits": theirs, "approved_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let made = k.insert_tx(&elevated(ctx), &mut tx, "PosApproval", row.as_object().cloned().unwrap_or_default()).await?;
+    tx.commit().await?;
+    Ok(json!({"approval": made.get("id"), "approver": approver.email, "action": ask.act.label()}))
+}
+
+/// Whether approval `approval` covers `act` at `figure` for the act or sale `used_for`, by
+/// `cashier` in `session`: the approver's limits as they approved and the amount approved. `money`
+/// says a discount's figure is the sale's amount rather than a line's percent.
+pub(crate) async fn covers(
+    tx: &mut Tx,
+    tenant: Uuid,
+    approval: Uuid,
+    at: (&str, Uuid),
+    act: Act,
+    figure: Decimal,
+    money: bool,
+    used_for: Uuid,
+) -> Result<bool> {
+    let (cashier, session) = at;
+    let found: Option<(Option<String>, Option<Uuid>, Option<String>, Option<Decimal>, Option<Value>, Option<String>)> =
+        sqlx::query_as("select cashier, pos_opening_entry, action, amount, limits, used_for from e_pos_approval where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(approval)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some((who, sess, action, amount, limits, used)) = found else { return Ok(false) };
+    if !who.is_some_and(|w| w.eq_ignore_ascii_case(cashier)) || sess != Some(session) || action.as_deref() != Some(act.label()) {
+        return Ok(false);
+    }
+    if used.is_some_and(|u| u != used_for.to_string()) {
+        return Ok(false);
+    }
+    let Some(theirs) = limits.and_then(|l| serde_json::from_value::<Limits>(l).ok()) else { return Ok(false) };
+    Ok(if money { theirs.discount_amount.is_none_or(|c| figure <= c) } else { theirs.allows(act, figure) && amount.is_none_or(|a| figure <= a) })
+}
+
+/// Marks approvals used by `used_for`, refusing one another act took meanwhile (the rows locked).
+pub(crate) async fn use_approvals(tx: &mut Tx, tenant: Uuid, approvals: &[Uuid], used_for: Uuid) -> Result<()> {
+    for a in approvals {
+        let taken: Option<Option<String>> = sqlx::query_scalar("select used_for from e_pos_approval where tenant_id = $1 and id = $2 for update")
+            .bind(tenant)
+            .bind(a)
+            .fetch_optional(&mut **tx)
+            .await?;
+        match taken {
+            Some(Some(u)) if u != used_for.to_string() => return Err(Error::invalid("that approval was already used; ask again")),
+            Some(_) => {}
+            None => return Err(Error::invalid("no such approval")),
+        }
+        sqlx::query("update e_pos_approval set used_for = $3, updated_at = now() where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(a)
+            .bind(used_for.to_string())
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }

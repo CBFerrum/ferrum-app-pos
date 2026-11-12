@@ -137,3 +137,17 @@ impl DocHook for PointEntryHook {
         engine_only(hc)
     }
 }
+
+/// Records only the engine writes (approvals at the till).
+pub struct EngineOnly;
+
+#[async_trait]
+impl DocHook for EngineOnly {
+    async fn validate(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
+        if hc.ctx.is_system { Ok(()) } else { Err(Error::Forbidden("written by the till itself; it cannot be edited".into())) }
+    }
+
+    async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
+        if hc.ctx.is_system { Ok(()) } else { Err(Error::Forbidden("written by the till itself; it cannot be deleted".into())) }
+    }
+}

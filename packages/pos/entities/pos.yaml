@@ -164,6 +164,25 @@
     - {name: note, type: data, max_length: 200, label: Line Note, description: "What the cashier wrote on the line (a gift, a promised repair); printed under it on the receipt"}
     - {name: item_tax_rates, type: json, read_only: true}
 
+- name: PosInvoiceApproval
+  label: POS Approval on a Sale
+  kind: child
+  fields:
+    - {name: approval, type: link, to: PosApproval, required: true, in_list: true}
+    - {name: action, type: data, fetch_from: approval.action, read_only: true, in_list: true}
+    - {name: approver, type: data, fetch_from: approval.approver, read_only: true, in_list: true}
+    - {name: amount, type: decimal, fetch_from: approval.amount, read_only: true}
+    - {name: reason, type: data, fetch_from: approval.reason, read_only: true}
+
+- name: PosInvoiceVoid
+  label: Voided Line
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: qty, type: decimal, required: true, in_list: true}
+    - {name: amount, type: currency, in_list: true}
+    - {name: reason, type: link, to: PosReason, required: true, in_list: true, link_filters: {applies_to: Void}}
+
 - name: PosInvoicePayment
   label: POS Payment
   kind: child
@@ -229,13 +248,22 @@
     - {name: status, type: select, options: [Draft, Paid, Unpaid, Return, Consolidated, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: consolidated_invoice, type: link, to: SalesInvoice, read_only: true, no_copy: true}
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
+    - {name: approvals, type: table, of: PosInvoiceApproval, description: "Approvals by another person for what this sale asks beyond the cashier's limits; each is used once"}
+    - {name: voided_lines, type: table, of: PosInvoiceVoid, description: "Lines rung up and taken off before payment, with why"}
+    - {name: void_reason, type: link, to: PosReason, read_only: true, no_copy: true, label: Voided Because}
+    - {name: voided_by, type: data, read_only: true, no_copy: true}
     - {name: remarks, type: text}
   form:
     - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, return_reason, cashier]}
     - {label: Items, fields: [items, discount_percent]}
     - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
     - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}
+    - {label: Approvals and Voids, collapsible: true, fields: [approvals, voided_lines, void_reason, voided_by]}
     - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
+  actions:
+    - {name: void, label: Void Sale, permission: write, condition: "doc.docstatus == 1 && doc.consolidated_invoice == null",
+       confirm: "Void this sale? Its stock comes back and it leaves the session's takings.",
+       params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]}
   rules:
     - {name: time_format, check: "doc.posting_time == null || doc.posting_time.matches('^[0-2][0-9]:[0-5][0-9](:[0-5][0-9])?$')", message: "Posting time must be HH:MM or HH:MM:SS"}
   list: {columns: [number, customer_name, posting_date, rounded_total, status], sort: created_at desc}
@@ -409,3 +437,35 @@
     - {name: reprint, type: check, default: true, label: May Reprint Receipts}
   unique: [[role, pos_profile]]
   list: {columns: [role, pos_profile, discount_percent, refund_limit], sort: role asc}
+
+- name: PosReason
+  label: POS Reason
+  kind: master
+  module: pos
+  title_field: reason
+  description: "The reasons a till offers for voiding, returning, opening the drawer without a sale or reprinting. Disable one to stop offering it."
+  fields:
+    - {name: reason, type: data, required: true, in_list: true}
+    - {name: applies_to, type: select, options: [Void, Return, No Sale, Reprint], required: true, default: Void, in_list: true, in_filter: true}
+    - {name: disabled, type: check, in_filter: true}
+  unique: [[reason, applies_to]]
+  list: {columns: [reason, applies_to, disabled], sort: reason asc}
+
+- name: PosApproval
+  label: POS Approval
+  kind: master
+  module: pos
+  title_field: action
+  description: "One person's approval, by their PIN at the till, of one thing another person asked beyond their limits, for one sale or one act in their session. Written by the till's approval request; read-only."
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, read_only: true, in_list: true, in_filter: true}
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, read_only: true, label: Session, in_filter: true}
+    - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true, label: Asked By}
+    - {name: approver, type: data, read_only: true, in_list: true, in_filter: true}
+    - {name: action, type: select, options: [Discount, Price Change, Void Line, Void Sale, Refund, Return Without Receipt, No Sale, Reprint], read_only: true, in_list: true, in_filter: true}
+    - {name: amount, type: decimal, read_only: true, in_list: true, description: "The discount percent or the refund approved, when the act has one"}
+    - {name: reason, type: data, read_only: true}
+    - {name: limits, type: json, read_only: true, hidden: true, description: "The approver's limits when they approved"}
+    - {name: used_for, type: data, read_only: true, in_list: true, description: "The sale or the act it was used for; an approval is used once"}
+    - {name: approved_at, type: datetime, read_only: true, in_list: true}
+  list: {columns: [action, cashier, approver, amount, used_for, approved_at], sort: created_at desc}
