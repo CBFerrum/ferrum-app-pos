@@ -6,7 +6,8 @@
 
 import { formatDecimal, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
-import { pointsValue, round } from "./pay";
+import { pointsFor, pointsValue, round } from "./pay";
+import type { RefundProposal } from "./server";
 
 export interface Found {
   id: string;
@@ -21,6 +22,8 @@ export interface Found {
   left_qty: string;
   /** Why it cannot be returned here yet. */
   blocked: string | null;
+  /** The last day it comes back, when the register's return policy has a window. */
+  returns_until?: string | null;
 }
 
 export interface SaleLine {
@@ -48,6 +51,8 @@ export interface Method {
 export interface Sheet {
   sale: { id: string; number: string | null; posting_date: string; customer: string | null; customer_name: string | null; cashier: string | null; register: string | null; total: string | null };
   blocked: string | null;
+  /** The last day it comes back, when the register's return policy has a window. */
+  returns_until?: string | null;
   lines: SaleLine[];
   /** What each way of paying took in (cash net of change), refunded so far, and has left. */
   paid_with: { mode: string; paid: string; refunded: string; left: string }[];
@@ -162,6 +167,23 @@ export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: 
     add(via.mode, rest);
   }
   return { rows, problem: null };
+}
+
+/** The refunds the register proposed (`POST /returns/{sale}/plan`) as the desk starts them. What no way of paying could take back is
+ *  what the sale was paid for in points: it goes back as points, as many as cover it; what is still left is said. */
+export function refundsFromProposal(p: RefundProposal, s: Pick<Sheet, "methods" | "loyalty">, precision = 2): { rows: RefundRow[]; problem: string | null } {
+  const rows: RefundRow[] = p.refunds.filter((r) => Number(r.amount) > 0).map((r) => ({ mode: r.mode, amount: Number(r.amount) }));
+  let rest = Number(p.unplaced);
+  const via = s.methods.find((m) => m.kind === "Loyalty Points" && m.usable);
+  if (rest > 0 && s.loyalty && via) {
+    const factor = Number(s.loyalty.factor);
+    const n = pointsFor(rest, s.loyalty.points_left, factor, precision);
+    if (n > 0) {
+      rows.push({ mode: via.mode, amount: pointsValue(n, factor, precision), points: n });
+      rest = Math.max(0, round(rest - pointsValue(n, factor, precision), precision));
+    }
+  }
+  return { rows, problem: rest > 0 ? t("{rest} of this refund has no way back through this register.", { rest: formatDecimal(rest, precision) }) : null };
 }
 
 /** What the server would refuse about these refunds, in the order it checks, or null. */
