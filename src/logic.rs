@@ -193,7 +193,6 @@ pub fn exact_lines(qty: Decimal, net: Decimal, precision: u32, strategy: Roundin
 }
 
 /// Something a person at the till may do on their own only within their limits.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Discount,
@@ -206,8 +205,6 @@ pub enum Act {
     Reprint,
 }
 
-// ponytail: names unused until approvals record them (next item).
-#[allow(dead_code)]
 impl Act {
     pub const ALL: [Act; 8] =
         [Act::Discount, Act::PriceChange, Act::VoidLine, Act::VoidSale, Act::Refund, Act::ReturnWithoutReceipt, Act::NoSale, Act::Reprint];

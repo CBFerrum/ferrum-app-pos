@@ -25,6 +25,11 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["pricebook"]) => Ok(SiteResponse::json(200, &price_book(k, ctx, &req).await?)),
+            ("POST", ["pin"]) => {
+                crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
+                Ok(SiteResponse::json(200, &json!({"ok": true})))
+            }
+            ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("GET", ["returns", sale]) => {
@@ -179,4 +184,25 @@ pub async fn limits(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let limits = crate::limits::of(ctx, &mut tx, &profile).await?;
     tx.commit().await?;
     serde_json::to_value(limits).map_err(|e| Error::internal(e.to_string()))
+}
+
+/// A text field of a JSON body.
+fn body_str(req: &SiteRequest, key: &str) -> Result<Option<String>> {
+    let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
+    Ok(v.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string))
+}
+
+/// `POST /approve` `{profile, approver, pin, action, amount?, reason}`: another person's PIN approves
+/// one act beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
+async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let need = |f: &str| -> Result<String> { body_str(req, f)?.ok_or_else(|| Error::field(f.to_string(), "is required")) };
+    let profile: Uuid = need("profile")?.parse().map_err(|_| Error::field("profile", "is a register's id"))?;
+    let act = crate::logic::Act::parse(&need("action")?).ok_or_else(|| Error::field("action", "is not something that is approved"))?;
+    let amount = match body_str(req, "amount")? {
+        Some(a) => Some(a.parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
+        None => None,
+    };
+    let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
+    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason };
+    crate::limits::approve(k, ctx, ask).await
 }

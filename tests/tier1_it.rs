@@ -211,4 +211,78 @@ async fn scenario() {
                       "items": [line(widget, "-1")], "payments": [pay(&card, "-93.50")]});
     let e = t.refused(&cashier, back.clone()).await;
     assert!(messages(&e).contains("more than the 50 you may give"), "{e:?}");
+
+    // ───────────── 2. approval by another person's PIN, voids with reasons ─────────────
+    let profile = counter.to_string();
+    let ask = |who: &str, pin: &str, action: &str, amount: Option<&str>| json!({"profile": profile, "approver": who, "pin": pin, "action": action, "amount": amount, "reason": "regular customer"});
+    let no_pin = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    assert!(no_pin.is_err(), "no PIN set yet");
+    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "12"})).await.expect_err("a PIN is four to twelve digits");
+    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("set a PIN");
+    let wrong = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "1111", "Discount", Some("15"))).await;
+    assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m.contains("does not match")), "{wrong:?}");
+    let own = t.site(&manager, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    assert!(own.is_err(), "nobody approves their own act");
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await.expect("approved");
+    let approval = ok["approval"].as_str().unwrap().to_string();
+    let mut with = sale(off("15", "1"), json!([pay(&card, "93.50")]));
+    with["approvals"] = json!([{"approval": approval}]);
+    let approved = t.sell(&cashier, with.clone()).await;
+    assert_eq!(approved["approvals"][0]["approver"], json!("manager@shop.test"), "the sale keeps who approved it");
+    let used = t.find_one("PosApproval", json!({"id": approval})).await;
+    assert_eq!(used["used_for"], approved["id"]);
+    let again = t.refused(&cashier, with).await;
+    assert!(messages(&again).contains("exceeds the 5% allowed") || messages(&again).contains("already used"), "used once: {again:?}");
+    let mut more = sale(off("20", "1"), json!([pay(&card, "88")]));
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await.expect("approved");
+    more["approvals"] = json!([{"approval": ok["approval"]}]);
+    assert!(messages(&t.refused(&cashier, more).await).contains("exceeds"), "approved for 15%, not 20%");
+    // The refund over the cashier's 50, approved for up to 100.
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("100"))).await.expect("approved");
+    let mut back = back;
+    back["approvals"] = json!([{"approval": ok["approval"]}]);
+    t.sell(&cashier, back).await;
+    // Someone whose own limits do not reach cannot approve.
+    let colleague = t.user("colleague@shop.test", &["Cashier"]).await;
+    t.site(&colleague, "POST", "/pin", Value::Null, json!({"pin": "2468"})).await.expect("PIN");
+    let weak = t.site(&cashier, "POST", "/approve", Value::Null, ask("colleague@shop.test", "2468", "Void Sale", None)).await;
+    assert!(matches!(weak, Err(Error::Forbidden(ref m)) if m.contains("may not approve")), "{weak:?}");
+    // Voided lines carry one of the business's reasons.
+    let scanned = t.find_one("PosReason", json!({"reason": "Scanned in error"})).await;
+    let faulty = t.find_one("PosReason", json!({"reason": "Faulty"})).await;
+    let mut voids = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
+    voids["voided_lines"] = json!([{"item": widget.to_string(), "qty": "1", "amount": "110", "reason": faulty["id"]}]);
+    let e = messages(&t.refused(&cashier, voids.clone()).await);
+    assert!(e.contains("reason"), "{e}");
+    voids["voided_lines"][0]["reason"] = scanned["id"].clone();
+    let kept = t.sell(&cashier, voids).await;
+    // Voiding a whole sale is beyond a cashier: refused alone, done with an approval, with why.
+    let params = json!({"reason": scanned["id"]});
+    let alone = t.k.run_action(&cashier, "PosInvoice", uid(&kept), "void", params.clone()).await;
+    assert!(matches!(alone, Err(Error::Forbidden(_))), "{alone:?}");
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Void Sale", None)).await.expect("approved");
+    let mut params = params;
+    params["approval"] = ok["approval"].clone();
+    t.k.run_action(&cashier, "PosInvoice", uid(&kept), "void", params).await.expect("voided");
+    let voided = t.find_one("PosInvoice", json!({"id": kept["id"]})).await;
+    assert_eq!(
+        (voided["status"].clone(), voided["void_reason"].clone(), voided["voided_by"].clone()),
+        (json!("Cancelled"), scanned["id"].clone(), json!("cashier@shop.test"))
+    );
+    // Five wrong tries lock the PIN, the right one included, for a while; nothing keeps the PIN itself.
+    for _ in 0..5 {
+        let _ = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "0000", "Discount", Some("15"))).await;
+    }
+    let locked = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    assert!(matches!(locked, Err(Error::TooManyRequests(_))), "{locked:?}");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    let (hash, leaked): (String, bool) = sqlx::query_as(
+        "select pin_hash, exists(select 1 from e_pos_approval a where a.tenant_id = $1 and to_jsonb(a)::text like '%4321%') from pos_staff_pin where tenant_id = $1 and email = 'manager@shop.test'",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert!(hash.starts_with("$argon2id$") && !leaked, "{hash}");
+    drop(tx);
 }

@@ -158,12 +158,38 @@ impl DocHook for PosInvoiceHook {
                 errors.push(FieldError::new("mode_of_payment", "the customer is not in a loyalty program").in_row("payments", i));
             }
         }
+        let voided = rows(doc, "voided_lines");
+        for (i, v) in voided.iter().enumerate() {
+            let ok = match id(v, "reason") {
+                Some(r) => {
+                    let reason = get(hc.kernel, hc.ctx, hc.tx, "PosReason", r).await?;
+                    s(&reason, "applies_to") == Some("Void") && !b(&reason, "disabled")
+                }
+                None => false,
+            };
+            if !ok {
+                errors.push(FieldError::new("reason", "choose one of the business's reasons for voiding").in_row("voided_lines", i));
+            }
+        }
+        if !voided.is_empty() && !crate::limits::of(hc.ctx, hc.tx, &profile).await?.void_line && !approved(hc, doc, Act::VoidLine, Decimal::ZERO, false).await?
+        {
+            errors.push(FieldError::new("voided_lines", "you may not void lines; ask someone who may to approve it"));
+        }
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "void" {
+            return Ok(None);
+        }
+        void_sale(hc, doc, params).await.map(Some)
     }
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         // Under the session lock: the closing cannot run between this check and the commit.
         live_session(hc, id(doc, "pos_opening_entry").unwrap_or_default(), true).await?;
+        let named: Vec<Uuid> = rows(doc, "approvals").iter().filter_map(|r| id(r, "approval")).collect();
+        crate::limits::use_approvals(hc.tx, hc.ctx.tenant, &named, id(doc, "id").unwrap_or_default()).await?;
         let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
         let program = match id(doc, "loyalty_program") {
@@ -308,7 +334,10 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
         set(r, "discount_percent", money(discount));
     }
     if errors.is_empty() {
-        for (line, act, _, why) in logic::beyond(&limits, &asks, header) {
+        for (line, act, figure, why) in logic::beyond(&limits, &asks, header) {
+            if approved(hc, doc, act, figure, line.is_none()).await? {
+                continue;
+            }
             let field = if act == Act::PriceChange { "manual_rate" } else { "discount_percent" };
             let e = match line {
                 Some(i) => FieldError::new(field, format!("{}: {why}; ask someone who may to approve it", s(&items[i], "item_name").unwrap_or("item")))
@@ -547,7 +576,7 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
     let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
     let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
     let total = -d(doc, "rounded_total");
-    if !limits.allows(Act::Refund, total) {
+    if !limits.allows(Act::Refund, total) && !approved(hc, doc, Act::Refund, total, false).await? {
         return Err(Error::field(
             "payments",
             format!(
@@ -708,4 +737,48 @@ async fn post_stock(hc: &mut HookCtx<'_>, doc: &Doc, co: &Company) -> Result<()>
     }
     ledger::post(hc.tx, hc.ctx, entry, co.precision).await?;
     Ok(())
+}
+
+/// Whether an approval the sale names covers `act` at `figure` for its cashier in its session.
+async fn approved(hc: &mut HookCtx<'_>, doc: &Doc, act: Act, figure: Decimal, money: bool) -> Result<bool> {
+    let (Some(cashier), Some(session)) = (s(doc, "cashier").map(str::to_string), id(doc, "pos_opening_entry")) else { return Ok(false) };
+    let me = id(doc, "id").unwrap_or_default();
+    for a in rows(doc, "approvals").iter().filter_map(|r| id(r, "approval")) {
+        if crate::limits::covers(hc.tx, hc.ctx.tenant, a, (&cashier, session), act, figure, money, me).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Voids a submitted sale not yet closed into the books, with one of the business's reasons, by
+/// someone whose limits allow it or with an approval for it: it is cancelled (stock back, out of
+/// the session's takings) and keeps who voided it and why.
+async fn void_sale(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    let sale = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+    let reason: Uuid =
+        params.get("reason").and_then(Value::as_str).and_then(|r| r.parse().ok()).ok_or_else(|| Error::field("reason", "choose why the sale is voided"))?;
+    let r = get(hc.kernel, hc.ctx, hc.tx, "PosReason", reason).await?;
+    if s(&r, "applies_to") != Some("Void") || b(&r, "disabled") {
+        return Err(Error::field("reason", "choose one of the business's reasons for voiding"));
+    }
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
+    if !crate::limits::of(hc.ctx, hc.tx, &profile).await?.void_sale {
+        let approval: Option<Uuid> = params.get("approval").and_then(Value::as_str).and_then(|a| a.parse().ok());
+        let session = crate::open_session_in(hc.tx, hc.ctx.tenant, profile.id, &hc.ctx.email).await?;
+        let ok = match (approval, session) {
+            (Some(a), Some(sid)) => crate::limits::covers(hc.tx, hc.ctx.tenant, a, (&hc.ctx.email, sid), Act::VoidSale, Decimal::ZERO, false, sale).await?,
+            _ => false,
+        };
+        if !ok {
+            return Err(Error::Forbidden("you may not void sales; ask someone who may to approve it".into()));
+        }
+        crate::limits::use_approvals(hc.tx, hc.ctx.tenant, &approval.into_iter().collect::<Vec<_>>(), sale).await?;
+    }
+    let mut v = Doc::new();
+    v.insert("void_reason".into(), json!(reason.to_string()));
+    v.insert("voided_by".into(), json!(hc.ctx.email));
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PosInvoice", sale, v).await?;
+    hc.kernel.cancel_tx(&ferrum_domain::util::elevated(hc.ctx), hc.tx, "PosInvoice", sale, None).await?;
+    Ok(json!({"status": "Cancelled"}))
 }
