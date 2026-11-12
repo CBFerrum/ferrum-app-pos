@@ -4,20 +4,19 @@
 // queue of sales waiting for the connection.
 
 import { useState } from "react";
-import { docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
+import { errorMessage, t as tr, isolate } from "@ferrum/client";
 import { Alert, Button, Dialog, Field } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
-import { till } from "./lib/offline";
+import { madeCode } from "./lib/server";
 import { esc, printPage } from "./lib/pos";
 import { codeOk } from "./lib/stored";
 import { printHtml } from "./print";
 
 /** Has the server make a new card's code (the kind's `prove`, which answers a made code once and keeps only its hashes). */
 export async function makeCode(kind: string): Promise<string> {
-  const res = await till<Record<string, unknown>>(docPath("StoredValueKind", kind, "actions", "prove"), { method: "POST", body: { operation: "issue" } });
-  const out = (res.result && typeof res.result === "object" ? res.result : res) as Record<string, unknown>;
-  if (typeof out.code !== "string" || !out.code) throw new Error(tr("The server made no code."));
-  return out.code;
+  const { code } = await madeCode(kind);
+  if (typeof code !== "string" || !code) throw new Error(tr("The server made no code."));
+  return code;
 }
 
 /** A made code, shown once: to print on the card or read out. It is not shown again. */

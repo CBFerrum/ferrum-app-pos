@@ -19,6 +19,7 @@ import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { quickCash, receiptHtml, type Tender } from "./lib/pos";
 import { till, tillAll } from "./lib/offline";
+import { cardBalance, voidSale } from "./lib/server";
 import { allows, type Limits } from "./lib/rights";
 import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
 import { printHtml } from "./print";
@@ -165,7 +166,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
     setChecking(true);
     setError(null);
     try {
-      const found = await till<CardBalance>("/api/app/pos/balance", { method: "POST", body: { mode: current.id, code: code.trim(), ...(pin.trim() ? { pin: pin.trim() } : {}) } });
+      const found = await cardBalance(current.id, code.trim(), pin.trim() || undefined);
       setCard(found);
       if (found.holds === "Money" && Number(found.balance) < before) setAmount(String(Number(found.balance)));
     } catch (e) {
@@ -390,7 +391,7 @@ export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = f
   const voidIt = async (approval: string | undefined, reason: string | undefined) => {
     setAsking(false);
     try {
-      await till(docPath("PosInvoice", str(sale.id), "actions", "void"), { method: "POST", body: { reason, ...(approval ? { approval } : {}) } });
+      await voidSale(str(sale.id), reason, approval);
       toast(tr("Sale {number} voided", { number: str(sale.number) }));
       onClose();
     } catch (e) {

@@ -11,7 +11,7 @@ import { Alert, Button, Dialog, Field, toast } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { str } from "./fmt";
 import { approvalProblem, newPinProblem } from "./lib/approval";
-import { till } from "./lib/offline";
+import { approve, setPin as sendPin } from "./lib/server";
 import type { Act, Approval, Ask } from "./lib/rights";
 
 const ACT_WORDS: Record<Act, () => string> = {
@@ -64,8 +64,7 @@ export function AskDialog({ profile, sale, title, steps, reasons, offline, onDon
     setBusy(true);
     setError(null);
     try {
-      const body = { profile, approver: approver.trim(), pin: secret, action: step.act, reason: text, sale, ...(step.figure && !step.money ? { amount: String(step.figure) } : {}) };
-      const res = await till<{ approval: string }>("/api/app/pos/approve", { method: "POST", body });
+      const res = await approve({ profile, approver: approver.trim(), pin: secret, action: step.act, reason: text, sale, ...(step.figure && !step.money ? { amount: String(step.figure) } : {}) });
       const next = [...got, { id: res.approval, act: step.act, figure: step.figure, ...(step.money ? { money: true } : {}), by: approver.trim() }];
       if (next.length < steps.length) {
         setGot(next);
@@ -173,7 +172,7 @@ export function SetPinDialog({ offline, onClose }: { offline: boolean; onClose: 
     setBusy(true);
     setError(null);
     try {
-      await till("/api/app/pos/pin", { method: "POST", body: { pin: secret } });
+      await sendPin(secret);
       toast(tr("Your PIN is set"));
       onClose();
     } catch (err) {

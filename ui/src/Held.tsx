@@ -28,6 +28,7 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
                     {s.total ? ` · ${money(s.total)}` : ""}
                   </span>
                   <span className="faint pos-held-items">{isolate(s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", "))}</span>
+                  {s.cardAgain && <span className="faint">{t("Needs the card's code again: it is never kept.")}</span>}
                 </div>
                 <Button variant="primary" className="pos-btn" onClick={() => onResume(s.key)}>
                   {t("Resume")}

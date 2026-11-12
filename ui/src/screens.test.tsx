@@ -201,6 +201,10 @@ describe("hold and keys", () => {
     expect(html).toContain("Asha Rao");
     expect(html).toContain("2 × Tea");
     expect(html).toContain("Resume");
+    expect(html).not.toContain("card's code again");
+    // A sale that had a card on it says the card is asked for again; the code itself is nowhere in it.
+    const card = draw(<HeldDialog held={[{ ...sale, cardAgain: true }]} onResume={() => {}} onDiscard={() => {}} onClose={() => {}} />);
+    expect(card).toContain("Needs the card&#x27;s code again: it is never kept.");
   });
 
   it("names the shortcuts", () => {

@@ -24,6 +24,9 @@ export interface Cart {
   approvals?: Approval[];
   /** Lines taken off after they were rung, with why. */
   voided?: Voided[];
+  /** A card's code was on a line when this was kept. The code is not (a card's code is never kept on the
+   *  device), so the card is asked for again; this only says that it is to be. */
+  cardAgain?: boolean;
 }
 
 export interface HeldSale extends Cart {
