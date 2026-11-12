@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backItems, checkRefund, enteredPriceProblem, exchange, parsePolicy, refundPayments, refundPlan, restockingFee, returnBody, returnItems, unreceiptedBody, type Method, type Sheet } from "./returns";
+import { backItems, checkRefund, enteredPriceProblem, exchange, parsePolicy, refundPayments, refundPlan, refundsFromProposal, restockingFee, returnBody, returnItems, unreceiptedBody, type Method, type Sheet } from "./returns";
 
 const cash: Method = { mode: "cash", name: "Cash", kind: "Cash", usable: true };
 const card: Method = { mode: "card", name: "Card", kind: "Bank", usable: true };
@@ -177,5 +177,25 @@ describe("returns without a receipt and exchanges (logic.rs)", () => {
       payments: [],
       approvals: [{ approval: "a1" }],
     });
+  });
+});
+
+describe("the refund the register proposes", () => {
+  const sheet = { methods: [cash, card, points], loyalty: { factor: "0.5", points_left: 100 } };
+
+  it("starts the desk's refunds where the register's plan put them", () => {
+    const got = refundsFromProposal({ total: "120.00", refunds: [{ mode: "card", name: "Card", kind: "Bank", amount: "100.00" }, { mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00" }, sheet);
+    expect(got).toEqual({ rows: [{ mode: "card", amount: 100 }, { mode: "cash", amount: 20 }], problem: null });
+  });
+
+  it("sends what no way of paying can take back as points, and says what is still left", () => {
+    // 30.00 was paid in points: at 0.5 a point, 60 points; no more points than were used.
+    const some = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00" }, sheet);
+    expect(some.rows).toEqual([{ mode: "cash", amount: 20 }, { mode: "points", amount: 30, points: 60 }]);
+    expect(some.problem).toBeNull();
+    const short = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00" }, { ...sheet, loyalty: { factor: "0.5", points_left: 40 } });
+    expect(short.rows[1]).toEqual({ mode: "points", amount: 20, points: 40 });
+    expect(short.problem).toBe("10.00 of this refund has no way back through this register.");
+    expect(refundsFromProposal({ total: "5.00", refunds: [], unplaced: "5.00" }, { methods: [cash], loyalty: null }).problem).toContain("5.00");
   });
 });

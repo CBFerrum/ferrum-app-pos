@@ -768,11 +768,24 @@ li.pos-tile {
   cursor: not-allowed;
 }
 
+.pos-found-all {
+  max-height: none;
+}
+
 .pos-found-main {
   display: grid;
   gap: 0.125rem;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* a row that is a record, not a button (the Price Differences list) */
+.pos-found-row[data-static] {
+  cursor: default;
+}
+
+.pos-found-row[data-static]:hover {
+  background: var(--surface);
 }
 
 .pos-found-why {

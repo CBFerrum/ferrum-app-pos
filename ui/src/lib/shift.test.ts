@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, zReportHtml, type Report } from "./shift";
+import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, fallbackShiftHtml, sentOf, expectedShown, uncounted, movementBody, dropRefusal, movedOf, type Report } from "./shift";
 
 describe("counting the drawer", () => {
   it("adds notes and coins, and anything odd, exactly", () => {
@@ -99,7 +99,7 @@ describe("the Z report", () => {
   };
 
   it("prints what was sold, taken and counted, with everything escaped", () => {
-    const html = zReportHtml({ profile_name: "Front <Counter>", print_format: "Thermal 80mm" }, report, "Cash short by 2.00");
+    const html = fallbackShiftHtml({ profile_name: "Front <Counter>", print_format: "Thermal 80mm" }, report, "Cash short by 2.00");
     expect(html).toContain("Z REPORT");
     expect(html).toContain("Front &#60;Counter&#62;");
     expect(html).toContain("Cash &#60;b&#62;");
@@ -109,11 +109,58 @@ describe("the Z report", () => {
     expect(html).toContain("Cash short by 2.00");
   });
 
+  it("leaves out what a blind register expected until that method is counted", () => {
+    const blind = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, reconciliation: [{ ...report.meta.session!.reconciliation[0], expected: "777.00", counted: null }] } } };
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, true)).not.toContain("777.00");
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, false)).toContain("777.00");
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind)).toContain("not the register&#39;s report");
+  });
+
   it("is an X report while the shift is open and leaves out a count that was not made", () => {
     const open = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, report: "X" as const, closed_at: null, reconciliation: [{ ...report.meta.session!.reconciliation[0], counted: null }] } } };
-    const html = zReportHtml({ profile_name: "Counter" }, open);
+    const html = fallbackShiftHtml({ profile_name: "Counter" }, open);
     expect(html).toContain("X REPORT");
     expect(html).not.toContain("counted");
     expect(html).not.toContain("Closed");
+  });
+});
+
+describe("a blind close", () => {
+  const closing = { payments: [{ mode_of_payment: "cash", opening_amount: "100", expected_amount: "530.00", closing_amount: "528.00", difference: "-2.00" }, { mode_of_payment: "card", opening_amount: "0", expected_amount: null, closing_amount: null, difference: "0" }] };
+
+  it("knows only the methods whose count was sent, with their expected figure", () => {
+    const sent = sentOf(closing);
+    expect([...sent.keys()]).toEqual(["cash"]);
+    expect(sent.get("cash")).toEqual({ expected: 530, counted: 528, difference: -2 });
+    expect(sentOf(null).size).toBe(0);
+  });
+
+  it("never shows an expected figure before its method is counted, nor reads the report's for a blind register", () => {
+    const sent = sentOf(closing);
+    expect(expectedShown(true, false, sent, "cash", 999)).toBe(530);
+    expect(expectedShown(true, false, sent, "card", 999)).toBeNull();
+    expect(expectedShown(true, false, new Map(), "cash", 999)).toBeNull();
+    // Closed: all counted, the report's figure is then fine for a method the closing carried no expected for.
+    expect(expectedShown(true, true, sent, "card", 12)).toBe(12);
+    // A register that is not blind shows it at once, as before.
+    expect(expectedShown(false, false, new Map(), "cash", 530)).toBe(530);
+    expect(uncounted([1, null, 0, null])).toBe(2);
+  });
+
+  it("takes a safe drop with no account or reason, and paid in or out with both", () => {
+    const base = { session: "s1", amount: 200, reason: "", account: "acc", date: "2026-11-13" };
+    expect(movementBody({ ...base, kind: "Safe Drop" })).toEqual({ pos_opening_entry: "s1", movement_type: "Safe Drop", amount: "200", posting_date: "2026-11-13" });
+    expect(movementBody({ ...base, kind: "Cash Out", reason: " Milk " })).toEqual({ pos_opening_entry: "s1", movement_type: "Cash Out", amount: "200", posting_date: "2026-11-13", reason: "Milk", account: "acc" });
+  });
+
+  it("keeps the drawer's figure out of a refused drop on a blind register only", () => {
+    const said = "the drawer holds 530: a drop cannot take more";
+    expect(dropRefusal(true, said)).toBe("The drawer does not hold that much.");
+    expect(dropRefusal(false, said)).toBe(said);
+    expect(dropRefusal(true, "the register has no safe account: name it on the register, or give the account")).toContain("no safe account");
+  });
+
+  it("adds up what moved", () => {
+    expect(movedOf([{ movement_type: "Cash In", amount: "50" }, { movement_type: "Cash Out", amount: "12.5" }, { movement_type: "Cash Out", amount: "7.5" }, { movement_type: "Safe Drop", amount: "300" }])).toEqual({ paidIn: 50, paidOut: 20, dropped: 300 });
   });
 });

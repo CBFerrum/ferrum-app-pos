@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
-import { api, docPath, errorMessage, formatDecimal, formatMoment, request, t as tr, isolate } from "@ferrum/client";
+import { api, docPath, errorMessage, formatDecimal, formatMoment, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Field, toast, useShellTitle, placed, FormSkeleton, StatePanel } from "@ferrum/kit";
 import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
@@ -16,8 +16,9 @@ import { CashCounter, countTotal, type Counted } from "./Count";
 import { Currency, localDate, myEmail, num, remembered, str, titleOf } from "./fmt";
 import { useManager, useOutbox } from "./hooks";
 import { loadHeld, ownerOf } from "./lib/held";
-import { till } from "./lib/offline";
-import { difference, closingBody, countsOf, denominations, reasonOf, remarksOf, standing, typedAmount, zReportHtml, type Report } from "./lib/shift";
+import { till, unreachable } from "./lib/offline";
+import { paperOf } from "./lib/server";
+import { difference, closingBody, countsOf, denominations, dropRefusal, expectedShown, fallbackShiftHtml, movedOf, movementBody, reasonOf, remarksOf, sentOf, standing, typedAmount, uncounted, type Report } from "./lib/shift";
 import { printHtml } from "./print";
 
 const rowsOf = <T,>(entity: string, query: Record<string, string | number | boolean>, signal?: AbortSignal) => api.get<{ rows: T[] }>(docPath(entity), query, signal).then((r) => r.rows);
@@ -125,7 +126,7 @@ function Closing({
   });
   const moves = useQuery({
     queryKey: ["pos", "moves", session.id],
-    queryFn: ({ signal }) => rowsOf<Doc>("PosCashMovement", { filters: JSON.stringify({ pos_opening_entry: session.id, docstatus: 1 }), fields: "movement_type,amount,reason", sort: "created_at asc", limit: 100 }, signal),
+    queryFn: ({ signal }) => rowsOf<Doc>("PosCashMovement", { filters: JSON.stringify({ pos_opening_entry: session.id, docstatus: 1 }), fields: "id,number,movement_type,amount,reason", sort: "created_at asc", limit: 100 }, signal),
     staleTime: 0,
   });
   const unfinished = useQuery({
@@ -141,6 +142,8 @@ function Closing({
     if (drawn && hash) document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" });
   }, [drawn, hash]);
 
+  // A blind register: what each method was expected to hold is not shown (nor read from the report) until that method's count has been sent.
+  const blind = profile.blind_close === true;
   const recon = report.data?.meta.session?.reconciliation ?? [];
   const kindOf = (mode: string) => str(modes.find((m) => m.id === mode)?.mode_type);
   const drawer = recon.find((r) => kindOf(r.mode) === "Cash")?.mode ?? null;
@@ -169,24 +172,31 @@ function Closing({
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const countedOf = (mode: string): number | null => (mode === drawer && counting ? countTotal(counted, places) : typedAmount(typed[mode]));
+  // What the closing saved last says per counted method: on a blind register the only expected figures there are.
+  const sent = sentOf(saved ?? draft.data);
+  const ended = closed || report.data?.meta.session?.report === "Z";
   const lines = recon.map((r) => {
-    const expected = num(r.expected);
+    const expected = expectedShown(blind, ended, sent, r.mode, num(r.expected));
     const got = countedOf(r.mode);
     const text = typed[r.mode];
-    return { ...r, expected, opening: num(r.opening), got, bad: !(r.mode === drawer && counting) && !!text?.trim() && got === null, diff: difference(expected, got, places), name: r.mode_of_payment ?? "" };
+    return { ...r, expected, opening: num(r.opening), got, bad: !(r.mode === drawer && counting) && !!text?.trim() && got === null, diff: expected === null ? 0 : difference(expected, got, places), name: r.mode_of_payment ?? "" };
   });
   const off = lines.filter((l) => l.diff !== 0);
   const anyCounted = lines.some((l) => l.got !== null);
   const unsent = outbox.queued.filter((s) => s.body.pos_opening_entry === session.id);
   const heldAside = loadHeld(ownerOf(profileId, myEmail())).length;
   const drafts = unfinished.data?.length ?? 0;
+  const left = blind ? uncounted(lines.map((l) => l.got)) : 0;
   const invalid = lines.some((l) => l.bad) || (off.length > 0 && !reason.trim());
+  // Sending a blind count reveals the differences, which is when the reason is asked: the count itself is not held back by it.
+  const cannotSend = blind ? lines.some((l) => l.bad) : invalid;
+  const cannotClose = invalid || (blind && left > 0);
 
   const save = async (submit: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      if (submit && !anyCounted && !(await confirmDialog({ title: tr("Close without counting?"), message: tr("Nothing was counted, so the shift closes as the register expects it."), confirmLabel: tr("Close the shift") }))) return;
+      if (submit && !blind && !anyCounted && !(await confirmDialog({ title: tr("Close without counting?"), message: tr("Nothing was counted, so the shift closes as the register expects it."), confirmLabel: tr("Close the shift") }))) return;
       const body = closingBody({
         session: session.id,
         drawer: counting ? drawer : null,
@@ -201,9 +211,10 @@ function Closing({
       if (submit) {
         doc = await api.post<Doc>(docPath("PosClosingEntry", str(doc.id), "submit"), undefined, { ifMatch: Number(doc.version) });
         toast(tr("Shift closed"));
+        setSaved(doc);
         onClosed();
       } else {
-        toast(tr("Count saved"));
+        toast(blind ? tr("Count sent") : tr("Count saved"));
         setSaved(doc);
       }
       void qc.invalidateQueries({ queryKey: ["pos", "closing", session.id] });
@@ -212,6 +223,32 @@ function Closing({
       setError(errorMessage(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // The report on paper is the server's template on the closing (`pos.shift_report`): a draft one for the X report while the shift is open, the
+  // submitted one for the Z report. A shift with no closing yet gets an empty draft to print from (nothing is counted or sent by it).
+  const [printing, setPrinting] = useState(false);
+  const [note, setNote] = useState<{ tone: "warning" | "error"; text: string } | null>(null);
+  const printPaper = async () => {
+    if (printing || !report.data) return;
+    setPrinting(true);
+    setNote(null);
+    try {
+      let target = saved ?? draft.data;
+      if (!target) {
+        target = await api.post<Doc>(docPath("PosClosingEntry"), closingBody({ session: session.id, drawer: null, counts: {}, other: 0, typed: [], remarks: "" }));
+        setSaved(target);
+        void qc.invalidateQueries({ queryKey: ["pos", "closing", session.id] });
+      }
+      printHtml(await paperOf("PosClosingEntry", str(target.id), "pos.shift_report"));
+    } catch (e) {
+      if (unreachable(e) || (e as { status?: number })?.status === 0) {
+        printHtml(fallbackShiftHtml(profile, report.data, ended ? str((saved ?? draft.data)?.remarks) : null, blind));
+        setNote({ tone: "warning", text: tr("The register could not be reached, so this is the till's own report, marked as such.") });
+      } else setNote({ tone: "error", text: errorMessage(e) });
+    } finally {
+      setPrinting(false);
     }
   };
 
@@ -232,7 +269,7 @@ function Closing({
             </p>
           </div>
           <span className="spacer" />
-          <Button icon="printer" onClick={() => printHtml(zReportHtml(profile, report.data, z ? str(draft.data?.remarks) || remarksOf(lines.map((l) => ({ name: l.name, difference: l.diff })), reason, places) : null))}>
+          <Button icon="printer" loading={printing} onClick={() => void printPaper()}>
             {placed(tr("Print the {p1} report"), { p1: z ? "Z" : "X" })}
           </Button>
           <Link className="btn btn-default btn-md" to="/">
@@ -240,6 +277,7 @@ function Closing({
           </Link>
         </header>
 
+        {note && <Alert tone={note.tone}>{isolate(note.text)}</Alert>}
         {!z && (
           <>
             {unsent.length > 0 && (
@@ -256,7 +294,11 @@ function Closing({
 
             <section className="pos-card" aria-label={tr("Count the drawer")}>
               <h2>{tr("Count the drawer")}</h2>
-              <p className="muted">{tr("Count what is in the drawer and on each terminal. Leave a line empty if it is as expected.")}</p>
+              <p className="muted">
+                {blind
+                  ? tr("This register closes blind: count every way of paying first. What each was expected to hold is shown only once its count is sent.")
+                  : tr("Count what is in the drawer and on each terminal. Leave a line empty if it is as expected.")}
+              </p>
               <div className="pos-recon" role="table" aria-label={tr("Expected against counted")}>
                 <div className="pos-recon-head" role="row">
                   <span role="columnheader">{tr("Way of paying")}</span>
@@ -269,7 +311,9 @@ function Closing({
                   <div className="pos-recon-row" role="row" key={l.mode}>
                     <span role="cell" className="pos-recon-name">{isolate(l.name)}</span>
                     <span role="cell" data-label="Opening" className="num faint">{isolate(money(l.opening))}</span>
-                    <span role="cell" data-label="Expected" className="num">{isolate(money(l.expected))}</span>
+                    <span role="cell" data-label="Expected" className="num">
+                      {l.expected === null ? <span className="faint">{tr("after the count is sent")}</span> : isolate(money(l.expected))}
+                    </span>
                     <span role="cell" data-label="Counted">
                       {l.mode === drawer && counting ? (
                         <strong className="num">{isolate(money(countTotal(counted, places)))}</strong>
@@ -277,7 +321,7 @@ function Closing({
                         <input
                           className="input num"
                           inputMode="decimal"
-                          placeholder={tr("as expected")}
+                          placeholder={blind ? tr("count it") : tr("as expected")}
                           aria-label={tr("{name} counted", { name: l.name })}
                           aria-invalid={l.bad || undefined}
                           value={typed[l.mode] ?? ""}
@@ -288,12 +332,18 @@ function Closing({
                         <Button onClick={() => setCounting((c) => !c)}>{counting ? tr("Type the total") : tr("Count notes and coins")}</Button>
                       )}
                     </span>
-                    <span role="cell" data-label="Difference" className="num" data-standing={l.got === null ? undefined : standing(l.diff)}>
-                      {l.got === null ? "" : l.diff === 0 ? tr("Right") : `${l.diff < 0 ? "Short" : "Over"} ${money(Math.abs(l.diff))}`}
+                    <span role="cell" data-label="Difference" className="num" data-standing={l.got === null || l.expected === null ? undefined : standing(l.diff)}>
+                      {l.got === null || l.expected === null ? "" : l.diff === 0 ? tr("Right") : l.diff < 0 ? tr("Short {amount}", { amount: money(Math.abs(l.diff)) }) : tr("Over {amount}", { amount: money(Math.abs(l.diff)) })}
                     </span>
                   </div>
                 ))}
               </div>
+              {lines.some((l) => l.got !== null && l.expected !== null) && (
+                <p className="pos-counter-total" aria-live="polite">
+                  <span className="muted">{tr("Over and short")}</span>
+                  <strong>{isolate(money(lines.reduce((sum, l) => (l.got !== null && l.expected !== null ? sum + l.diff : sum), 0)))}</strong>
+                </p>
+              )}
               {counting && drawer && <CashCounter value={counted} onChange={setCounted} />}
               {off.length > 0 && (
                 <Field label={tr("What happened?")} htmlFor="shift-reason" required hint={tr("Kept with the closing, so whoever checks the books can read why the drawer was not as expected.")}>
@@ -308,15 +358,16 @@ function Closing({
               )}
               <div className="pos-sticky">
                 <span className="spacer" />
-                <Button disabled={busy || invalid} onClick={() => void save(false)}>
-                  {tr("Save the count")}
+                <Button disabled={busy || cannotSend} onClick={() => void save(false)}>
+                  {blind ? tr("Send the count") : tr("Save the count")}
                 </Button>
                 {manager && (
-                  <Button variant="primary" className="pos-btn" loading={busy} disabled={invalid || unsent.length > 0 || drafts > 0} onClick={() => void save(true)}>
+                  <Button variant="primary" className="pos-btn" loading={busy} disabled={cannotClose || unsent.length > 0 || drafts > 0} onClick={() => void save(true)}>
                     {tr("Close the shift")}
                   </Button>
                 )}
               </div>
+              {blind && left > 0 && <p className="faint">{left === 1 ? tr("One way of paying is not counted yet: a blind register closes only when every one is.") : tr("{left} ways of paying are not counted yet: a blind register closes only when every one is.", { left })}</p>}
               {!manager && <p className="faint">{tr("Only a POS manager can close the shift. Saving the count lets them do it without counting again.")}</p>}
             </section>
           </>
@@ -338,7 +389,8 @@ function Closing({
             <dt className="pos-total-label">{tr("Total")}</dt>
             <dd className="pos-total">{isolate(money(meta.grand_total))}</dd>
           </dl>
-          {report.data.rows.length > 0 && (
+          {blind && !z && <p className="faint">{tr("What each way of paying took is shown once the shift is closed: this register closes blind, and the takings are what the drawer is expected to hold.")}</p>}
+          {report.data.rows.length > 0 && (!blind || z) && (
             <>
               <h3 className="pos-sub">{tr("Taken, by way of paying")}</h3>
               <ul className="pos-taken">
@@ -355,42 +407,102 @@ function Closing({
           )}
         </section>
 
-        {!z && <Cash session={session.id} company={company} moves={moves.data ?? []} money={money} onMoved={() => { void moves.refetch(); void report.refetch(); }} />}
+        <Figures closing={saved ?? draft.data ?? null} moves={moves.data ?? []} money={money} />
+
+        {!z && <Cash session={session.id} company={company} moves={moves.data ?? []} money={money} blind={blind} onMoved={() => { void moves.refetch(); void report.refetch(); }} />}
       </div>
     </Currency.Provider>
   );
 }
 
-/** Cash put into or taken out of the drawer during the shift: a float top-up, a payout for milk. */
-function Cash({ session, company, moves, money, onMoved }: { session: string; company: string; moves: Doc[]; money: (v: unknown) => string; onMoved: () => void }) {
-  const [kind, setKind] = useState<"Cash In" | "Cash Out">("Cash Out");
+/** What the shift moved besides sales, and the tax of its sales by rate: the cash paid in and out and dropped to the safe from the movements as they stand, refunds and the tax by
+ *  rate from the closing as it was last saved (the server works them out when a closing is saved). Neither is the expected figure of a method. */
+function Figures({ closing, moves, money }: { closing: Doc | null; moves: Doc[]; money: (v: unknown) => string }) {
+  const moved = movedOf(moves);
+  const tax = ((closing?.tax_rows as Doc[] | undefined) ?? []).filter((r) => num(r.tax_amount) !== 0 || num(r.taxable_amount) !== 0);
+  return (
+    <section className="pos-card" aria-label={tr("What else moved")}>
+      <h2>{tr("What else moved")}</h2>
+      <dl className="pos-totals">
+        <dt>{tr("Paid in")}</dt>
+        <dd>{isolate(money(moved.paidIn))}</dd>
+        <dt>{tr("Paid out")}</dt>
+        <dd>{isolate(money(moved.paidOut))}</dd>
+        <dt>{tr("Dropped to the safe")}</dt>
+        <dd>{isolate(money(moved.dropped))}</dd>
+        {closing && (
+          <>
+            <dt>{tr("Refunded on returns")}</dt>
+            <dd>{isolate(money(closing.refund_total))}</dd>
+          </>
+        )}
+      </dl>
+      {closing ? (
+        tax.length > 0 && (
+          <>
+            <h3 className="pos-sub">{tr("Tax by rate")}</h3>
+            <ul className="pos-taken">
+              {tax.map((r, i) => (
+                <li key={str(r.id) || i}>
+                  <span>
+                    {isolate(str(r.description))}
+                    {num(r.rate) !== 0 ? ` ${isolate(formatDecimal(r.rate, 2))}%` : ""} <span className="faint">{tr("on {amount}", { amount: money(r.taxable_amount) })}</span>
+                  </span>
+                  <strong>{isolate(money(r.tax_amount))}</strong>
+                </li>
+              ))}
+            </ul>
+          </>
+        )
+      ) : (
+        <p className="faint">{tr("Refunds and the tax by rate appear once the count is saved.")}</p>
+      )}
+    </section>
+  );
+}
+
+/** Cash put into or taken out of the drawer during the shift: a float top-up, a payout for milk, a drop to the safe (the register's safe account, never more than the drawer holds). */
+function Cash({ session, company, moves, money, blind, onMoved }: { session: string; company: string; moves: Doc[]; money: (v: unknown) => string; blind: boolean; onMoved: () => void }) {
+  const [kind, setKind] = useState<"Cash In" | "Cash Out" | "Safe Drop">("Cash Out");
   const [amount, setAmount] = useState("");
   const [why, setWhy] = useState("");
   const [account, setAccount] = useState<{ id: string | null; title?: string }>({ id: null });
   const [busy, setBusy] = useState(false);
+  const [slip, setSlip] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const value = typedAmount(amount);
-  const ok = value !== null && value > 0 && !!why.trim() && !!account.id;
+  const drop = kind === "Safe Drop";
+  const ok = value !== null && value > 0 && (drop || (!!why.trim() && !!account.id));
   const add = async () => {
     setBusy(true);
     setError(null);
     try {
-      await request(docPath("PosCashMovement"), {
-        method: "POST",
-        query: { submit: true },
-        body: { pos_opening_entry: session, movement_type: kind, amount: String(value), reason: why.trim(), account: account.id, posting_date: localDate(new Date()) },
-      });
-      toast(kind === "Cash In" ? tr("Cash put in") : tr("Cash taken out"));
+      await till(docPath("PosCashMovement"), { method: "POST", query: { submit: true }, body: movementBody({ session, kind, amount: value ?? 0, reason: why, account: account.id, date: localDate(new Date()) }) });
+      toast(kind === "Cash In" ? tr("Cash put in") : kind === "Cash Out" ? tr("Cash taken out") : tr("Cash dropped to the safe"));
       setAmount("");
       setWhy("");
       setAccount({ id: null });
       onMoved();
     } catch (e) {
-      setError(errorMessage(e));
+      setError(drop ? dropRefusal(blind, errorMessage(e)) : errorMessage(e));
     } finally {
       setBusy(false);
     }
   };
+  // The slip is the server's template for a movement (`pos.cash_slip`), signed by hand.
+  const printSlip = async (id: string) => {
+    if (slip) return;
+    setSlip(id);
+    setError(null);
+    try {
+      printHtml(await paperOf("PosCashMovement", id, "pos.cash_slip"));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setSlip(null);
+    }
+  };
+  const words = (k: string) => (k === "Cash In" ? tr("Paid in") : k === "Safe Drop" ? tr("Safe drop") : tr("Paid out"));
   return (
     <section className="pos-card" id="cash" aria-label={tr("Cash in and out")}>
       <h2>{tr("Cash in and out")}</h2>
@@ -401,10 +513,15 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
           {moves.map((m, i) => (
             <li key={str(m.id) || i}>
               <span>
-                {isolate(str(m.movement_type))} <span className="faint">{isolate(str(m.reason))}</span>
+                {isolate(words(str(m.movement_type)))} <span className="faint">{isolate(str(m.reason))}</span>
+                {!!m.id && (
+                  <Button variant="ghost" icon="printer" loading={slip === str(m.id)} disabled={!!slip} onClick={() => void printSlip(str(m.id))}>
+                    {tr("Print slip")}
+                  </Button>
+                )}
               </span>
               <strong>
-                {m.movement_type === "Cash Out" ? "−" : "+"}
+                {m.movement_type === "Cash In" ? "+" : "−"}
                 {isolate(money(m.amount))}
               </strong>
             </li>
@@ -418,25 +535,27 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
           if (ok && !busy) void add();
         }}
       >
-        <div className="segmented" role="group" aria-label={tr("In or out")}>
-          {(["Cash Out", "Cash In"] as const).map((k) => (
+        <div className="segmented" role="group" aria-label={tr("In, out or to the safe")}>
+          {(["Cash Out", "Cash In", "Safe Drop"] as const).map((k) => (
             <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}>
-              {k === "Cash In" ? tr("Put in") : tr("Take out")}
+              {k === "Cash In" ? tr("Put in") : k === "Safe Drop" ? tr("Drop to the safe") : tr("Take out")}
             </button>
           ))}
         </div>
-        <Field label={tr("Amount")} htmlFor="cash-amount">
+        <Field label={tr("Amount")} htmlFor="cash-amount" hint={drop ? tr("Never more than the drawer holds.") : undefined}>
           <input id="cash-amount" className="input" inputMode="decimal" autoComplete="off" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field label={kind === "Cash In" ? tr("Where it came from") : tr("What it was for")} htmlFor="cash-account" required hint={kind === "Cash In" ? tr("The safe or bank account the cash came from.") : tr("The expense account it is booked to.")}>
-          <LinkInput to="Account" id="cash-account" value={account.id} title={account.title} onChange={(id, title) => setAccount({ id, title })} linkFilters={{ is_group: false, company }} />
-        </Field>
-        <Field label={tr("Reason")} htmlFor="cash-reason" required>
-          <input id="cash-reason" className="input" autoComplete="off" value={why} onChange={(e) => setWhy(e.target.value)} placeholder={tr("Milk for the staff room")} />
+        {!drop && (
+          <Field label={kind === "Cash In" ? tr("Where it came from") : tr("What it was for")} htmlFor="cash-account" required hint={kind === "Cash In" ? tr("The safe or bank account the cash came from.") : tr("The expense account it is booked to.")}>
+            <LinkInput to="Account" id="cash-account" value={account.id} title={account.title} onChange={(id, title) => setAccount({ id, title })} linkFilters={{ is_group: false, company }} />
+          </Field>
+        )}
+        <Field label={tr("Reason")} htmlFor="cash-reason" required={!drop} hint={drop ? tr("Goes to the register's safe account. A reason is optional.") : undefined}>
+          <input id="cash-reason" className="input" autoComplete="off" value={why} onChange={(e) => setWhy(e.target.value)} placeholder={drop ? tr("End of the lunch rush") : tr("Milk for the staff room")} />
         </Field>
         {error && <Alert tone="error">{isolate(error)}</Alert>}
         <Button type="submit" variant="primary" loading={busy} disabled={!ok}>
-          {kind === "Cash In" ? tr("Put in") : tr("Take out")} {value ? money(value) : ""}
+          {words(kind)} {value ? money(value) : ""}
         </Button>
       </form>
     </section>

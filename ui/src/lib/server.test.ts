@@ -12,7 +12,7 @@ vi.mock("./offline", () => ({
 
 import { approvalProblem } from "./approval";
 import { parseLimits } from "./rights";
-import { approve, cardBalance, exchange, madeCode, setPin, voidSale } from "./server";
+import { approve, cardBalance, exchange, firstReceipt, madeCode, paperOf, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
 import { cardProblem } from "./stored";
 import { makeCode } from "../Card";
 
@@ -88,5 +88,36 @@ describe("what the server was seen to refuse, in the cashier's words", () => {
   it("reads the limits the server answered for a cashier", () => {
     const recorded = { change_price: false, discount_amount: "30", discount_percent: "5", open_drawer: false, refund: "50", reprint: true, return_without_receipt: false, void_line: true, void_sale: false };
     expect(parseLimits(recorded)).toEqual({ change_price: false, discount_amount: 30, discount_percent: 5, open_drawer: false, refund: 50, reprint: true, return_without_receipt: false, void_line: true, void_sale: false });
+  });
+});
+
+describe("what 0.7.0's routes take and answer (read from the server's code: src/receipt.rs, src/returns.rs, src/site.rs)", () => {
+  it("asks for the first receipt as a page, once, and for a copy or a gift receipt with the reason and approval it was given", async () => {
+    answer("<div>RECEIPT</div>");
+    expect(await firstReceipt("reg1", "sale 1")).toBe("<div>RECEIPT</div>");
+    expect(last()).toEqual({ path: "/api/app/pos/receipt/sale%201", o: { query: { profile: "reg1" }, accept: "text/html" } });
+    await reprint({ profile: "reg1", sale: "s1", kind: "copy", reason: "r1", approval: "ap1" });
+    expect(last()).toEqual({ path: "/api/app/pos/reprint", o: { method: "POST", body: { profile: "reg1", sale: "s1", kind: "copy", reason: "r1", approval: "ap1" }, accept: "text/html" } });
+  });
+
+  it("sends the receipt by message with the consent the buyer chose", async () => {
+    answer({ event: "e1", sent: [{ channel: "email" }], receipt: null });
+    expect((await sendReceipt({ profile: "reg1", sale: "s1", to: "a@b.test", consent: "opt_in" })).sent[0].channel).toBe("email");
+    expect(last()).toEqual({ path: "/api/app/pos/send", o: { method: "POST", body: { profile: "reg1", sale: "s1", to: "a@b.test", consent: "opt_in" } } });
+  });
+
+  it("asks the register to plan a refund for lines and quantities", async () => {
+    answer({ total: "120.00", refunds: [{ mode: "m-card", name: "Card", kind: "Bank", amount: "100.00" }, { mode: "m-cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00" });
+    const plan = await returnPlan("reg1", "s1", [{ line: "l1", qty: "2", condition: "Damaged" }]);
+    expect(last()).toEqual({ path: "/api/app/pos/returns/s1/plan", o: { method: "POST", body: { profile: "reg1", lines: [{ line: "l1", qty: "2", condition: "Damaged" }] }, signal: undefined } });
+    expect(plan.refunds.map((r) => [r.mode, r.amount])).toEqual([["m-card", "100.00"], ["m-cash", "20.00"]]);
+  });
+
+  it("prints a closing by the shift template and a movement by the cash slip, and reviews a difference", async () => {
+    answer("<div>SHIFT REPORT</div>");
+    await paperOf("PosClosingEntry", "c1", "pos.shift_report");
+    expect(last()).toEqual({ path: "/api/v1/PosClosingEntry/c1/print", o: { query: { template: "pos.shift_report", format: "html" }, accept: "text/html" } });
+    await reviewDifference("d1", "Till was a day old");
+    expect(last().o).toEqual({ method: "POST", body: { resolution: "Till was a day old" } });
   });
 });

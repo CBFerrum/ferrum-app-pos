@@ -131,8 +131,10 @@ export function reasonOf(remarks: string | null | undefined): string {
   return new RegExp(`(?:${off.join("|")})\\.?$`).test(first) ? rest.join("\n") : (remarks ?? "");
 }
 
-/** The X report (a shift still open) or the Z report (once it is closed), ready to print. */
-export function zReportHtml(profile: Doc, report: Report, remarks?: string | null): string {
+/** The till's own X report (a shift still open) or Z report (closed), for when the server's template (`pos.shift_report`
+ *  on the closing) cannot be had: it says so on its face. On a blind register what was expected is left out of a method
+ *  until it is counted, as the server leaves it out. */
+export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string | null, blind = false): string {
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const s = report.meta.session;
   const at = (v: string | null | undefined) => formatMoment(v, { dateStyle: "medium", timeStyle: "medium" });
@@ -140,7 +142,7 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
   const drawer = (s?.reconciliation ?? [])
     .map(
       (r) =>
-        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${esc(money(r.expected))}</td></tr>` +
+        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${blind && r.counted == null ? "" : esc(money(r.expected))}</td></tr>` +
         (r.counted == null ? "" : `<tr><td><small>${esc(tr("counted"))}</small></td><td class="r">${esc(money(r.counted))}</td></tr><tr><td><small>${esc(Number(r.difference) < 0 ? tr("short") : Number(r.difference) > 0 ? tr("over") : tr("difference"))}</small></td><td class="r">${esc(money(r.difference))}</td></tr>`),
     )
     .join("");
@@ -148,6 +150,7 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
     profile,
     tr("{value} report {value2}", { value: s?.report ?? "X", value2: s?.number ?? "" }),
     `
+    <p><b>${esc(tr("Printed on this device: not the register's report"))}</b></p>
     <h1>${esc(profile.profile_name)}</h1>
     <p><b>${esc(s?.report === "Z" ? tr("Z REPORT") : tr("X REPORT"))}</b><br>${esc(tr("Session {number} · {cashier}", { number: String(s?.number ?? ""), cashier: String(s?.cashier ?? "") }))}<br>${esc(tr("Opened {at}", { at: at(s?.opened_at) }))}${s?.closed_at ? `<br>${esc(tr("Closed {at}", { at: at(s.closed_at) }))}` : ""}</p><hr>
     <table><tr><td>${esc(tr("Sales"))}</td><td class="r">${esc(report.meta.sales)}</td></tr><tr><td>${esc(tr("Returns"))}</td><td class="r">${esc(report.meta.returns)}</td></tr>
@@ -158,4 +161,56 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
     ${remarks ? `<hr><p>${esc(remarks)}</p>` : ""}
   `,
   );
+}
+
+// ── a blind close, and what moved besides sales ──
+
+/** What a saved closing says of a method that was counted. On a blind register the server gives a method's expected figure only
+ *  once it has a count (`reconcile`), so these are the only expected figures the till may show before the shift is closed. */
+export interface Sent {
+  expected: number | null;
+  counted: number;
+  difference: number;
+}
+
+export function sentOf(closing: Doc | null | undefined): Map<string, Sent> {
+  const out = new Map<string, Sent>();
+  for (const r of ((closing?.payments as Doc[] | undefined) ?? []).filter((x) => x.closing_amount != null && x.closing_amount !== "")) {
+    out.set(String(r.mode_of_payment), { expected: r.expected_amount == null || r.expected_amount === "" ? null : Number(r.expected_amount), counted: Number(r.closing_amount), difference: Number(r.difference ?? 0) || 0 });
+  }
+  return out;
+}
+
+/** The expected figure the screen may show for a method: always on a register that is not blind, and on a blind one only once that
+ *  method's count has been sent (or the shift is closed). Never read from the report before. */
+export function expectedShown(blind: boolean, closed: boolean, sent: Map<string, Sent>, mode: string, fromReport: number): number | null {
+  if (!blind) return fromReport;
+  return closed || sent.has(mode) ? (sent.get(mode)?.expected ?? (closed ? fromReport : null)) : null;
+}
+
+/** A blind register closes only once every method is counted (the server refuses otherwise). */
+export const uncounted = (counted: (number | null)[]): number => counted.filter((c) => c === null).length;
+
+/** A cash movement as the server takes it: a safe drop names no account (the register's safe account is the server's) and needs no reason;
+ *  paid in and paid out name the account they came from or went to, and why. */
+export function movementBody(o: { session: string; kind: "Cash In" | "Cash Out" | "Safe Drop"; amount: number; reason: string; account: string | null; date: string }): Doc {
+  return {
+    pos_opening_entry: o.session,
+    movement_type: o.kind,
+    amount: String(o.amount),
+    posting_date: o.date,
+    ...(o.reason.trim() ? { reason: o.reason.trim() } : {}),
+    ...(o.kind !== "Safe Drop" && o.account ? { account: o.account } : {}),
+  };
+}
+
+/** On a blind register a refused safe drop must not say what the drawer holds (the server's words give the figure, which is the expected one). */
+export function dropRefusal(blind: boolean, message: string): string {
+  return blind && /the drawer holds/i.test(message) ? tr("The drawer does not hold that much.") : message;
+}
+
+/** Totals of what moved in a shift, from the movements listed (a closing saved later keeps them too). */
+export function movedOf(moves: Doc[]): { paidIn: number; paidOut: number; dropped: number } {
+  const sum = (kind: string) => round(moves.filter((m) => m.movement_type === kind).reduce((s, m) => s + Number(m.amount ?? 0), 0), 6);
+  return { paidIn: sum("Cash In"), paidOut: sum("Cash Out"), dropped: sum("Safe Drop") };
 }

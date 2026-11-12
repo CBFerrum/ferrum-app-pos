@@ -13,6 +13,7 @@ import type { Doc } from "@ferrum/records";
 import { CardLine } from "./Card";
 import { num, str, useMoney } from "./fmt";
 import type { CartLine, LineCards } from "./lib/pos";
+import { promotionsLater } from "./lib/offline";
 import { discountLimit, lineAsks, lineProblem, type Approval, type Ask, type Limits } from "./lib/rights";
 import { lastFour } from "./lib/stored";
 
@@ -261,7 +262,7 @@ function LineEditor({
 }
 
 /** What the sale comes to: subtotal, discount, taxes, the rounding the currency needs, and the total. */
-export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; offline?: boolean; builtAt?: string }) {
+export function Totals({ doc, due, offline, builtAt, version }: { doc: Doc; due: number; offline?: boolean; builtAt?: string; version?: string }) {
   const money = useMoney();
   const rounding = num(doc.rounding_adjustment);
   return (
@@ -285,8 +286,12 @@ export function Totals({ doc, due, offline, builtAt }: { doc: Doc; due: number; 
       <dt className="pos-total-label">{t("Total")}</dt>
       <dd className="pos-total" aria-live="polite">{isolate(money(due))}</dd>
       {offline && builtAt && (
-        <dd className="pos-totals-note faint">{placed(t("Priced on this device (prices of {p1}); checked again when the sale is sent."), { p1: isolate(formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })) })}</dd>
+        <dd className="pos-totals-note faint">
+          {placed(t("Priced on this device (prices of {p1}); checked again when the sale is sent."), { p1: isolate(formatMoment(builtAt, { dateStyle: "short", timeStyle: "short" })) })}
+          {version ? ` ${t("Snapshot {version}.", { version: version.slice(0, 8) })}` : ""}
+        </dd>
       )}
+      {offline && <dd className="pos-totals-note faint">{promotionsLater()}</dd>}
     </dl>
   );
 }
