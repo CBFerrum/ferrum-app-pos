@@ -132,9 +132,9 @@ export function reasonOf(remarks: string | null | undefined): string {
 }
 
 /** The till's own X report (a shift still open) or Z report (closed), for when the server's template (`pos.shift_report`
- *  on the closing) cannot be had: it says so on its face. On a blind register what was expected is left out of a method
- *  until it is counted, as the server leaves it out. */
-export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string | null, blind = false): string {
+ *  on the closing) cannot be had: it says so on its face. What was expected of a method is printed only when the report
+ *  carries it: on a blind register the server leaves it out until the method is counted. */
+export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string | null): string {
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const s = report.meta.session;
   const at = (v: string | null | undefined) => formatMoment(v, { dateStyle: "medium", timeStyle: "medium" });
@@ -142,7 +142,7 @@ export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string
   const drawer = (s?.reconciliation ?? [])
     .map(
       (r) =>
-        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${blind && r.counted == null ? "" : esc(money(r.expected))}</td></tr>` +
+        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${r.expected == null ? "" : esc(money(r.expected))}</td></tr>` +
         (r.counted == null ? "" : `<tr><td><small>${esc(tr("counted"))}</small></td><td class="r">${esc(money(r.counted))}</td></tr><tr><td><small>${esc(Number(r.difference) < 0 ? tr("short") : Number(r.difference) > 0 ? tr("over") : tr("difference"))}</small></td><td class="r">${esc(money(r.difference))}</td></tr>`),
     )
     .join("");
@@ -166,7 +166,7 @@ export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string
 // ── a blind close, and what moved besides sales ──
 
 /** What a saved closing says of a method that was counted. On a blind register the server gives a method's expected figure only
- *  once it has a count (`reconcile`), so these are the only expected figures the till may show before the shift is closed. */
+ *  once it has a count (`reconcile`), so these are the only expected figures there are before the shift is closed. */
 export interface Sent {
   expected: number | null;
   counted: number;
@@ -181,11 +181,11 @@ export function sentOf(closing: Doc | null | undefined): Map<string, Sent> {
   return out;
 }
 
-/** The expected figure the screen may show for a method: always on a register that is not blind, and on a blind one only once that
- *  method's count has been sent (or the shift is closed). Never read from the report before. */
-export function expectedShown(blind: boolean, closed: boolean, sent: Map<string, Sent>, mode: string, fromReport: number): number | null {
-  if (!blind) return fromReport;
-  return closed || sent.has(mode) ? (sent.get(mode)?.expected ?? (closed ? fromReport : null)) : null;
+/** The expected figure of a method: what the server sent, and nothing else. On a register that closes blind the server sends none before that method's
+ *  count is in (the report's and the closing's figure are null), and the till works no expected amount out. The report's figure, else the saved closing's. */
+export function expectedOf(sent: Map<string, Sent>, mode: string, fromReport: string | null | undefined): number | null {
+  if (fromReport != null && fromReport !== "") return Number(fromReport);
+  return sent.get(mode)?.expected ?? null;
 }
 
 /** A blind register closes only once every method is counted (the server refuses otherwise). */
@@ -202,11 +202,6 @@ export function movementBody(o: { session: string; kind: "Cash In" | "Cash Out" 
     ...(o.reason.trim() ? { reason: o.reason.trim() } : {}),
     ...(o.kind !== "Safe Drop" && o.account ? { account: o.account } : {}),
   };
-}
-
-/** On a blind register a refused safe drop must not say what the drawer holds (the server's words give the figure, which is the expected one). */
-export function dropRefusal(blind: boolean, message: string): string {
-  return blind && /the drawer holds/i.test(message) ? tr("The drawer does not hold that much.") : message;
 }
 
 /** Totals of what moved in a shift, from the movements listed (a closing saved later keeps them too). */

@@ -487,23 +487,33 @@ describe("the end of a shift", () => {
     expect(html).toContain("774.45");
   });
 
-  it("on a blind register shows no expected figure before the count is sent, and only the counted way's after", () => {
+  it("on a blind register shows the expected figures only as the server sends them: none before the count, the counted way's after", () => {
     const blindProfile = { ...profile, blind_close: true };
-    const blindSeed = (qc: QueryClient) => (seed(qc), qc.setQueryData(["pos", "profile", "p1"], blindProfile));
+    // As the server answers a blind register's report before any count: no expected figure, and for a cashier no sales of the open shift.
+    const blindReport = { ...report, rows: [], totals: { amount: "0.00" }, meta: { ...report.meta, sales: 0, returns: 0, net_total: "0.00", total_taxes: "0.00", grand_total: "0.00", session: { ...report.meta.session!, reconciliation: report.meta.session!.reconciliation.map((r) => ({ ...r, expected: null })) } } };
+    const blindSeed = (qc: QueryClient) => (seed(qc), qc.setQueryData(["pos", "profile", "p1"], blindProfile), qc.setQueryData(["pos", "report", "s1"], blindReport));
     const before = draw(<ShiftPage />, blindSeed);
     expect(before).toContain("This register closes blind");
     expect(before).toContain("Send the count");
     expect(before).not.toContain("774.45");
-    expect(before).not.toContain("199.00");
     expect(before).toContain("after the count is sent");
     expect(before).toContain("2 ways of paying are not counted yet");
-    // The cash count was sent: the draft the server saved carries the cash's expected figure, and the card's stays hidden.
+    // Not a zero for sales the server left out of a cashier's report.
+    expect(before).toContain("the shift&#x27;s sales and takings are shown once every way of paying is counted");
+    expect(before).not.toContain("Net sales");
+    // The cash count was sent: the draft the server saved carries the cash's expected figure, and the card's is still null.
     const sent = { id: "c1", version: 2, payments: [{ mode_of_payment: "cash", opening_amount: "500", expected_amount: "774.45", closing_amount: "770.00", difference: "-4.45" }, { mode_of_payment: "card", opening_amount: "0", expected_amount: null, closing_amount: null, difference: "0" }], tax_rows: [] };
     const after = draw(<ShiftPage />, (qc) => (blindSeed(qc), qc.setQueryData(["pos", "closing", "s1"], sent)));
     expect(after).toContain("774.45");
     // (The count typed back into its box, and the short or over beside it, come from an effect a static render does not run.)
     expect(after).not.toContain("199.00");
     expect(after).toContain("ways of paying are not counted yet");
+    // Every way counted: the closing carries its figures, and they are shown as sent.
+    const all = { ...sent, payments: [sent.payments[0], { mode_of_payment: "card", opening_amount: "0", expected_amount: "199.00", closing_amount: "199.00", difference: "0" }], invoice_count: 8, return_count: 1, net_total: "700.00", total_taxes: "70.00", grand_total: "770.00", refund_total: "12.00" };
+    const done = draw(<ShiftPage />, (qc) => (blindSeed(qc), qc.setQueryData(["pos", "closing", "s1"], all)));
+    expect(done).toContain("199.00");
+    expect(done).toContain("Net sales");
+    expect(done).toContain("700.00");
   });
 
   it("holds the closing back while sales wait on the device", () => {
