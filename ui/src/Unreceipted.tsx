@@ -20,6 +20,7 @@ import { CardInputs, CodeOnce, makeCode } from "./Card";
 import type { DeskProps } from "./Returns";
 import { num, str, titleOf, useMoney } from "./fmt";
 import { till } from "./lib/offline";
+import { exchange as sendExchange } from "./lib/server";
 import { addItem, invoiceBody, paymentRows, setQty as setCartQty, withMethodNames, type CartLine } from "./lib/pos";
 import { backItems, CONDITIONS, enteredPriceProblem, exchange, parsePolicy, refundPayments, restockingFee, unreceiptedBody, type BackLine, type CardProof, type Condition } from "./lib/returns";
 import { allows, asksFor, type Approval, type Ask } from "./lib/rights";
@@ -221,7 +222,7 @@ export default function Unreceipted({
         return onDone(withMethodNames(profile, { ...done, is_return: true }));
       }
       const sale = invoiceBody({ id: ids.out, profile: profileId, session, customer: customer.id, lines: out, tenders: [] });
-      const res = await till<{ sale: Doc }>("/api/app/pos/exchange", { method: "POST", body: { back: half, out: { ...sale, payments: tender } }, idempotencyKey: ids.back });
+      const res = await sendExchange(half, { ...sale, payments: tender }, ids.back);
       void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
       onDone(withMethodNames(profile, res.sale));
     } catch (e) {

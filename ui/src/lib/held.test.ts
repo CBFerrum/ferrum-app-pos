@@ -29,6 +29,16 @@ describe("sales set aside", () => {
     expect(takeOut(list, "zzz")).toEqual({ sale: null, rest: list });
   });
 
+  it("keeps that a card was on a held sale, never the card's code", () => {
+    const storage = memory();
+    const mine = ownerOf("p1", "asha@shop.test");
+    const list = putAside([], { ...cart("a", "Gift card"), cardAgain: true }, "t");
+    expect(saveHeld(mine, list, storage)).toBe(true);
+    expect(loadHeld(mine, storage)[0].cardAgain).toBe(true);
+    expect([...storage.mem.values()].join()).not.toMatch(/stored_value|code|pin/i);
+    expect("cardAgain" in putAside([], cart("b", "Tea"), "t")[0]).toBe(false);
+  });
+
   it("belongs to one register and one cashier", () => {
     const storage = memory();
     const mine = ownerOf("p1", "Asha@Shop.test");

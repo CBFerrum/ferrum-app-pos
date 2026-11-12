@@ -63,6 +63,9 @@ interface ListResponse {
 
 const list = (entity: string, query: Record<string, string | number | boolean | undefined>, signal?: AbortSignal) => till<ListResponse>(docPath(entity), { query, signal });
 
+/** Said when a sale that had a card on it comes back: the code was never kept. */
+const cardAgain = () => tr("This sale had a card on a line. The code was not kept: scan or type it again before paying.");
+
 type Dialog = null | "pay" | "held" | "returns" | "keys" | "pin";
 
 export interface TillProps {
@@ -110,9 +113,14 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const [receipt, setReceipt] = useState<Doc | null>(null);
   const scan = useRef<HTMLInputElement>(null);
   const outbox = useOutbox();
+  // Whether a card's code is on a line: kept aside or reloaded, the sale says the card is to be asked for again, never the code.
+  const cardOn = Object.values(cards).some((c) => !!c.code);
   useEffect(() => {
-    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided });
-  }, [owner, lines, customer, approvals, voided]);
+    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) });
+  }, [owner, lines, customer, approvals, voided, cardOn]);
+  useEffect(() => {
+    if (restored?.cardAgain) toast(cardAgain(), "error");
+  }, [restored]);
 
   const focusScan = useCallback(() => {
     if (fine()) scan.current?.focus();
@@ -294,11 +302,11 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const now = () => new Date().toISOString();
   const hold = () => {
     if (!lines.length) return;
-    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided }, now(), totalOf(calc.doc));
+    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
-    toast(tr("Sale put on hold"));
+    toast(cardOn ? tr("Sale put on hold. The card's code is not kept: you will be asked for the card again when you resume it.") : tr("Sale put on hold"));
     focusScan();
   };
   const resume = async (key: string) => {
@@ -313,7 +321,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
-      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided }, now(), totalOf(calc.doc));
+      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     }
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
     setHeld(next);
@@ -325,6 +333,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     setSelected(sale.lines.at(-1)?.key ?? null);
     saleKey.current = sale.key;
     setDialog(null);
+    if (sale.cardAgain) toast(cardAgain(), "error");
   };
   const discard = async (key: string) => {
     const sale = held.find((s) => s.key === key);
