@@ -15,13 +15,16 @@
     - {name: mode_name, type: data, required: true, unique: true, in_list: true}
     - name: mode_type
       type: select
-      options: [Cash, Bank, General, Credit, Loyalty Points]
+      options: [Cash, Bank, General, Credit, Loyalty Points, Stored Value]
       required: true
       default: Cash
       in_list: true
       in_filter: true
-      description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points."
+      description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points. Stored Value: a gift card or store credit of the kind below, taken by its code (and PIN)."
     - {name: accounts, type: table, of: ModeOfPaymentAccount, label: Accounts per Company, description: "Empty: Cash uses the company cash account, Bank the company bank account"}
+    - {name: stored_value_kind, type: link, to: StoredValueKind, visible_if: "doc.mode_type == 'Stored Value'", required_if: "doc.mode_type == 'Stored Value'"}
+    - {name: offline_limit, type: currency, default: 0, min: "0", visible_if: "doc.mode_type == 'Stored Value'", label: Taken Offline Up To,
+       description: "A till without the connection cannot see a card's balance: it refuses the card (0, the default) or takes up to this much, settled when the sale arrives; what the card no longer holds then is a shortfall to put right"}
     - {name: disabled, type: check, in_filter: true}
   list: {columns: [mode_name, mode_type], sort: mode_name asc}
 
@@ -163,6 +166,11 @@
     - {name: original_line, type: data, label: Returned Line, description: "Returns: id of the sold line (found automatically when the item appears once on the original)"}
     - {name: note, type: data, max_length: 200, label: Line Note, description: "What the cashier wrote on the line (a gift, a promised repair); printed under it on the receipt"}
     - {name: item_tax_rates, type: json, read_only: true}
+    - {name: stored_value_kind, type: link, to: StoredValueKind, read_only: true, label: Stored Value, description: "Its item sells stored value of this kind"}
+    - {name: stored_value_code, type: data, no_copy: true, label: Card Code, description: "The card sold or topped up; kept as its last four characters"}
+    - {name: stored_value_pin, type: data, no_copy: true, label: Card PIN, description: "A new card's PIN; never kept as typed"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true, no_copy: true, label: Topped Up}
+    - {name: stored_value_secret, type: data, read_only: true, hidden: true, no_copy: true}
 
 - name: PosInvoiceApproval
   label: POS Approval on a Sale
@@ -193,6 +201,12 @@
     - {name: loyalty_points, type: int, min: 0, description: Points redeemed with the Loyalty Points mode}
     - {name: account, type: link, to: Account, read_only: true}
     - {name: reference_no, type: data, label: Reference, description: "Card approval code, UPI reference..."}
+    - {name: stored_value_code, type: data, no_copy: true, label: Card Code, description: "Stored value: the card's code; kept as its last four characters"}
+    - {name: stored_value_pin, type: data, no_copy: true, label: Card PIN, description: "Never kept"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true, no_copy: true, label: Card}
+    - {name: stored_value_secret, type: data, read_only: true, hidden: true, no_copy: true}
+    - {name: stored_value_payment, type: link, to: PaymentEntry, read_only: true, no_copy: true, label: Card Payment}
+    - {name: stored_value_balance, type: decimal, read_only: true, no_copy: true, label: Left on the Card}
 
 - name: PosInvoice
   label: POS Invoice
@@ -251,6 +265,8 @@
     - {name: approvals, type: table, of: PosInvoiceApproval, description: "Approvals by another person for what this sale asks beyond the cashier's limits; each is used once"}
     - {name: voided_lines, type: table, of: PosInvoiceVoid, description: "Lines rung up and taken off before payment, with why"}
     - {name: void_reason, type: link, to: PosReason, read_only: true, no_copy: true, label: Voided Because}
+    - {name: invoice_now, type: check, no_copy: true, label: Invoice Now, description: "Make this sale's own sales invoice when it is submitted instead of at closing (a business customer's tax invoice); stored value always is"}
+    - {name: invoiced_at_sale, type: check, read_only: true, no_copy: true}
     - {name: voided_by, type: data, read_only: true, no_copy: true}
     - {name: remarks, type: text}
   form:
@@ -407,6 +423,8 @@
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
     - {name: warehouse, type: link, to: Warehouse, read_only: true, in_list: true, in_filter: true}
     - {name: qty_short, type: decimal, read_only: true, in_list: true, label: Quantity Short}
+    - {name: amount_short, type: currency, read_only: true, in_list: true, label: Amount Short, description: "Stored value taken offline that the card no longer held when the sale arrived; written off on the sale"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true}
     - {name: sold_at, type: data, read_only: true, label: Sold At, description: "The sale's date and time on the till"}
     - {name: status, type: select, options: [Open, Put Right], default: Open, read_only: true, in_list: true, in_filter: true}
     - {name: resolution, type: text, read_only: true, label: How It Was Put Right}

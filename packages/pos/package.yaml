@@ -27,6 +27,8 @@ roles:
       - {entity: PosRoleLimit, read: true}
       - {entity: PosReason, read: true}
       - {entity: PosApproval, read: true}
+      - {entity: StoredValueKind, read: true}
+      - {entity: StoredValueAccount, read: true}
       - {entity: LoyaltyProgram, read: true}
       - {entity: LoyaltyPointEntry, read: true}
       - {entity: Customer, read: true, write: true, create: true}
@@ -57,6 +59,8 @@ roles:
       - {entity: PosRoleLimit, read: true, write: true, create: true, delete: true}
       - {entity: PosReason, read: true, write: true, create: true, delete: true}
       - {entity: PosApproval, read: true, export: true}
+      - {entity: StoredValueKind, read: true}
+      - {entity: StoredValueAccount, read: true}
       - {entity: LoyaltyProgram, read: true, write: true, create: true, delete: true}
       - {entity: LoyaltyPointEntry, read: true, export: true}
       - {entity: SalesInvoice, read: true}

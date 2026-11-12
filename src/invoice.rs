@@ -95,6 +95,7 @@ impl DocHook for PosInvoiceHook {
             };
             set(doc, "loyalty_program", program.map(|p| json!(p.id.to_string())).unwrap_or(Value::Null));
         }
+        crate::stored::prepare(hc, doc, &profile).await?;
         derive_payments(hc, doc, &profile, &co).await?;
         if d(doc, "docstatus").is_zero() {
             set(doc, "status", "Draft");
@@ -137,6 +138,9 @@ impl DocHook for PosInvoiceHook {
             _ => {}
         }
         for (i, r) in rows(doc, "items").iter().enumerate() {
+            if ret && id(r, "stored_value_kind").is_some() {
+                errors.push(FieldError::new("item", "a card is not returned: what is left on it can be cashed out or adjusted").in_row("items", i));
+            }
             let q = d(r, "qty");
             if q.is_zero() || (ret && q > Decimal::ZERO) || (!ret && q < Decimal::ZERO) {
                 errors.push(FieldError::new("qty", if ret { "returned quantities are negative" } else { "quantity must be positive" }).in_row("items", i));
@@ -201,7 +205,7 @@ impl DocHook for PosInvoiceHook {
         for p in payments.iter_mut() {
             let mode = Mode::load(hc.kernel, hc.ctx, hc.tx, id(p, "mode_of_payment").unwrap_or_default()).await?;
             let account = match mode.kind {
-                Kind::Credit => None,
+                Kind::Credit | Kind::StoredValue => None,
                 Kind::Loyalty => program.as_ref().and_then(|pr| pr.expense_account),
                 _ => Some(mode.account(&co)?),
             };
@@ -211,8 +215,19 @@ impl DocHook for PosInvoiceHook {
         if b(doc, "is_return") {
             return check_return(hc, doc, &payments).await;
         }
+        // Stored value taken offline: what each card holds now, the rest written off and recorded.
+        let short = crate::stored::offline(hc, doc, &profile).await?;
+        let payments = rows(doc, "payments");
+        let short_total: Decimal = short.iter().map(|x| x.0).sum();
         let total = d(doc, "rounded_total");
-        let st = logic::settle_sale(total, &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit")).map_err(|m| Error::field("payments", m))?;
+        let st = logic::settle_sale(total, &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit") + short_total)
+            .map_err(|m| Error::field("payments", m))?;
+        let system = ferrum_domain::util::elevated(hc.ctx);
+        for (amount, account) in short {
+            let row = json!({"pos_invoice": id(doc, "id"), "pos_profile": profile.id, "company": co.id, "amount_short": money(amount),
+                "stored_value_account": account, "sold_at": format!("{} {}", s(doc, "posting_date").unwrap_or_default(), s(doc, "posting_time").unwrap_or_default())});
+            hc.kernel.insert_tx(&system, hc.tx, "PosStockShortfall", row.as_object().cloned().unwrap_or_default()).await?;
+        }
         set(doc, "paid_amount", money(st.paid));
         set(doc, "change_amount", money(st.change));
         set(doc, "write_off_amount", money(st.write_off));
@@ -247,6 +262,11 @@ impl DocHook for PosInvoiceHook {
         post_stock(hc, doc, &co).await?;
         if let Some(before) = before {
             record_shortfalls(hc, doc, &co, &before).await?;
+        }
+        // Stored value, or a tax invoice asked for now: the sale's own invoice now, cards paid from or onto.
+        if crate::stored::touches(doc) || b(doc, "invoice_now") {
+            let si = crate::closing::invoice_now(hc, iid).await?;
+            crate::stored::settle(hc, doc, si).await?;
         }
         let earned = loyalty::on_submit(hc, doc).await?;
         let status = if b(doc, "is_return") {
