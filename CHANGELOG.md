@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.7.2
+
+Server only. Builds with ERP 0.26.0 and needs it (`requires: {erp: ">=0.26"}`): merge and release ERP 0.26.0 first.
+
+- **Offline prices from one pricing.** The money logic exists once, in ERP's `ferrum-erp-pricing`; this app's replay
+  (`snapshot::replay`) and its copy of `promotion::to_engine` are gone. `GET /snapshot?profile=` is ERP's pricing
+  snapshot, schema 1 (ERP's `docs/pricing.md`: the days it prices for, currency and rounding, tax rows, items with
+  units and their own rates, the price list's prices by day and unit, pricing rules without a condition, the
+  promotions without a code or a first order, the walk-in customer, channel and place), built by
+  `ferrum_app_erp::pricing::snapshot` from the register's price book, plus what the till shows and holds a sale to
+  (`catalog`: each item's code, name, barcode and group; `barcodes`, `unpriced`, `truncated`, `buyer`). It is
+  versioned and signed as before; the version now also changes each day (the snapshot names its days).
+- **An offline sale priced again with the snapshot it named**, by the same crate: `replay_total` is the crate's
+  total, and the promotions it gave are the sale's: each line's share (`promotion_percent`), the free items they
+  added, and `given_promotions` (source `pos:<sale>`, the sale's moment) passed to ERP, which checks them against its
+  records, keeps them in `applied_promotions` and counts their use once on submission; ERP does not look for others
+  the till did not give. Till sales (online and offline) are in ERP's Promotions Given report. When ERP's records no
+  longer take what the till gave (a promotion removed or re-dated since), the paid sale is not refused: it is priced
+  as ERP prices it now and the totals' difference is recorded for a person. A snapshot kept by 0.7.1 (another shape)
+  cannot be read: such a sale is recorded as a difference whose snapshot is gone.
+- **Blind close.** On a register that closes blind, nothing a cashier can read gives an expected figure before that
+  way of paying is counted: a refused safe drop no longer names what the drawer holds; until every way is counted the
+  closing keeps no sales, refund, tax, paid-in, paid-out, drop or over/short figures (they appear with the last count)
+  and its paper (the X report) says it is counted blind; the cashier's reports (Sales Summary, the X and Z report's
+  source, Daily Sales, Top Items, Hourly Sales, Returns) leave out the sales of sessions still open on a blind
+  register (a POS Manager's show them). Tested: the drop's refusal, the draft closing, its paper, each report for the
+  cashier and the manager, and the figures once counted.
+- **Exchanges planned by the server.** `POST /returns/{sale}/plan` takes `out` (the goods going out, as sale lines):
+  they are priced as a sale to the same customer, and `exchange` says what they come to, what the return carries over
+  to them, what the customer still pays (`due`) and what is refunded (`refund`); only `refund` is planned onto ways of
+  paying. Partial returns were already planned by line and quantity.
+- **A shift's tax rows across the upgrade, exact.** A sale made before sales kept their tax breakdown is broken down
+  again at closing from what it recorded (its lines' prices, discounts, promotion shares and item rates, its tax rows)
+  with ERP's pricing, and taken only when that gives back its recorded net total and every tax row's amount to the
+  unit; so a zero-rated line beside a standard one is no longer put at the row's rate on the whole net total. Only a
+  sale whose recorded figures the engine no longer reproduces falls back to the old approximation.
+- **Erasure of a buyer** (declared in 0.7.0) is tested: the name and registration on their sales are blanked, the
+  sales stay as sold.
+
+New: `given_promotions` on a sale (hidden, read-only). Nothing is asked of an administrator on upgrade.
+
+The till (`ui/`, not rebuilt here) must: load ERP's WebAssembly (`priceBasket`, built by ERP's
+`scripts/pricing-wasm.sh` with wasm-bindgen 0.2.129, best shipped as `@ferrum/pricing` beside `@ferrum/calc`); keep
+the new snapshot shape (item names and barcodes are under `catalog`, prices under `prices`, the old `engine` and each
+item's `line` are gone) and price an offline basket with `priceBasket({snapshot, basket})` at the moment in the
+snapshot's time zone, showing the promotional price and the promotions taken instead of its offline notice; drop its
+own refund and exchange arithmetic and show `POST /returns/{sale}/plan` (with `out` for an exchange); show the blind
+closing's figures only as the server gives them.
+
 ## 0.7.1
 
 The till's screens for 0.7.0 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 6d4c321.
