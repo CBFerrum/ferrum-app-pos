@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.5.2** | Rebuilt on the tuned design system: better menu icons, a lighter first page, a visible scroll cue, cleaner print. |
 | **0.5.1** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.5.0** | Offline sales beyond stock follow the register's policy: recorded with a Stock Shortfall to put right, or refused. |
 | **0.4.13** | Its reports' names in Arabic and Hindi. |
