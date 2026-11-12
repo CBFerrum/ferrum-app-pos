@@ -314,7 +314,19 @@ describe("the return desk", () => {
   it("asks which sale, with today's sales waiting for the server", () => {
     const html = draw(<ReturnDesk {...desk} onClose={() => {}} onDone={() => {}} />);
     expect(html).toContain("Return goods");
-    expect(html).toContain("Receipt number or customer");
+    expect(html).toContain("Scan the receipt, or type its number or the customer");
+  });
+
+  it("lists the sales found with the day each comes back until, the register's window, and a sale it cannot take back in the server's words", () => {
+    const rows = [
+      { id: "a", number: "C1-0001", posting_date: "2026-11-10", posting_time: "10:15:00", customer: null, cashier: "asha@shop.test", register: "Counter 1", total: "120.00", status: "Paid", left_qty: "2", returns_until: "2026-12-10", blocked: null },
+      { id: "b", number: "C1-0002", posting_date: "2026-09-01", posting_time: null, customer: "Acme", cashier: "asha@shop.test", register: null, total: "40.00", status: "Paid", left_qty: "1", returns_until: "2026-10-01", blocked: "it is past the days this register takes returns within" },
+    ];
+    const html = draw(<ReturnDesk {...desk} onClose={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "returns", "p1", ""], { rows, window_days: 30 }));
+    expect(html).toMatch(/Comes back until .*2026/);
+    expect(html).toContain("This register takes sales back within 30 days.");
+    expect(html).toContain("Cannot be returned yet: it is past the days this register takes returns within.");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*class="pos-found-row"|class="pos-found-row"[^>]*disabled=""/);
   });
 
   it("offers a return without a receipt and an exchange only where the register has a return policy", () => {
@@ -348,6 +360,13 @@ describe("the return desk", () => {
     expect(html).toContain("Why are they coming back?");
     expect(html).toContain("Choose what comes back to see the refund.");
     expect(html).toContain("Changed their mind");
+  });
+
+  it("shows the day a sale comes back until, and offers an exchange for other goods", () => {
+    const html = draw(<Sale {...desk} sale="sale1" onBack={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "return-sheet", "p1", "sale1"], { ...sheet, returns_until: "2026-12-10" }));
+    expect(html).toMatch(/Comes back until .*2026/);
+    expect(html).toContain("Exchange for other goods");
+    expect(html).toContain("Copy of the receipt");
   });
 
   it("says why a sale cannot come back yet", () => {
