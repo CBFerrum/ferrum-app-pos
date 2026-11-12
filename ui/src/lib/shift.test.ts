@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, fallbackShiftHtml, sentOf, expectedShown, uncounted, movementBody, dropRefusal, movedOf, type Report } from "./shift";
+import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, fallbackShiftHtml, sentOf, expectedOf, uncounted, movementBody, movedOf, type Report } from "./shift";
 
 describe("counting the drawer", () => {
   it("adds notes and coins, and anything odd, exactly", () => {
@@ -109,11 +109,13 @@ describe("the Z report", () => {
     expect(html).toContain("Cash short by 2.00");
   });
 
-  it("leaves out what a blind register expected until that method is counted", () => {
-    const blind = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, reconciliation: [{ ...report.meta.session!.reconciliation[0], expected: "777.00", counted: null }] } } };
-    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, true)).not.toContain("777.00");
-    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, false)).toContain("777.00");
-    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind)).toContain("not the register&#39;s report");
+  it("prints an expected figure only when the report carries it", () => {
+    const row = report.meta.session!.reconciliation[0];
+    const withheld = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, reconciliation: [{ ...row, expected: null, counted: null }] } } };
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, withheld)).not.toContain("777.00");
+    const sent = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, reconciliation: [{ ...row, expected: "777.00", counted: null }] } } };
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, sent)).toContain("777.00");
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, sent)).toContain("not the register&#39;s report");
   });
 
   it("is an X report while the shift is open and leaves out a count that was not made", () => {
@@ -135,15 +137,15 @@ describe("a blind close", () => {
     expect(sentOf(null).size).toBe(0);
   });
 
-  it("never shows an expected figure before its method is counted, nor reads the report's for a blind register", () => {
+  it("shows the expected figure the server sent, the report's else the saved closing's, and works none out", () => {
     const sent = sentOf(closing);
-    expect(expectedShown(true, false, sent, "cash", 999)).toBe(530);
-    expect(expectedShown(true, false, sent, "card", 999)).toBeNull();
-    expect(expectedShown(true, false, new Map(), "cash", 999)).toBeNull();
-    // Closed: all counted, the report's figure is then fine for a method the closing carried no expected for.
-    expect(expectedShown(true, true, sent, "card", 12)).toBe(12);
-    // A register that is not blind shows it at once, as before.
-    expect(expectedShown(false, false, new Map(), "cash", 530)).toBe(530);
+    // The server's report carries it (a register that is not blind, or the shift closed): that is what is shown.
+    expect(expectedOf(sent, "cash", "999.00")).toBe(999);
+    expect(expectedOf(new Map(), "cash", "530")).toBe(530);
+    // Blind: the report's is null until the count is in; the saved closing has the counted method's and not the other's.
+    expect(expectedOf(sent, "cash", null)).toBe(530);
+    expect(expectedOf(sent, "card", null)).toBeNull();
+    expect(expectedOf(new Map(), "cash", null)).toBeNull();
     expect(uncounted([1, null, 0, null])).toBe(2);
   });
 
@@ -151,13 +153,6 @@ describe("a blind close", () => {
     const base = { session: "s1", amount: 200, reason: "", account: "acc", date: "2026-11-13" };
     expect(movementBody({ ...base, kind: "Safe Drop" })).toEqual({ pos_opening_entry: "s1", movement_type: "Safe Drop", amount: "200", posting_date: "2026-11-13" });
     expect(movementBody({ ...base, kind: "Cash Out", reason: " Milk " })).toEqual({ pos_opening_entry: "s1", movement_type: "Cash Out", amount: "200", posting_date: "2026-11-13", reason: "Milk", account: "acc" });
-  });
-
-  it("keeps the drawer's figure out of a refused drop on a blind register only", () => {
-    const said = "the drawer holds 530: a drop cannot take more";
-    expect(dropRefusal(true, said)).toBe("The drawer does not hold that much.");
-    expect(dropRefusal(false, said)).toBe(said);
-    expect(dropRefusal(true, "the register has no safe account: name it on the register, or give the account")).toContain("no safe account");
   });
 
   it("adds up what moved", () => {

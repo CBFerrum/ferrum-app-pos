@@ -239,6 +239,7 @@ documents:
           {% if doc.number %}<tr><td>No.</td><td class="n">{{ doc.number }}</td></tr>{% endif %}
           </table>
           <div class="rule"></div>
+          {% if doc.grand_total is not none %}
           <table>
           <tr><td>Sales</td><td class="n">{{ doc.invoice_count }}</td></tr>
           <tr><td>Returns</td><td class="n">{{ doc.return_count }} · {{ doc.refund_total|amount }}</td></tr>
@@ -252,11 +253,12 @@ documents:
           <tr><td>Paid out</td><td class="n">{{ doc.paid_out|amount }}</td></tr>
           <tr><td>Dropped to the safe</td><td class="n">{{ doc.safe_drops|amount }}</td></tr>
           </table>
+          {% else %}<div>Counted blind: the figures show once every way of paying is counted.</div>{% endif %}
           <div class="rule"></div>
           <table>
           <tr><th align="left">Method</th><th class="n">Float</th><th class="n">Expected</th><th class="n">Counted</th><th class="n">Over / short</th></tr>
           {% for p in doc.payments or [] %}<tr><td>{{ (p._titles or {}).mode_of_payment }}</td><td class="n">{{ p.opening_amount|amount }}</td><td class="n">{% if p.expected_amount is not none %}{{ p.expected_amount|amount }}{% endif %}</td><td class="n">{% if p.closing_amount is not none %}{{ p.closing_amount|amount }}{% endif %}</td><td class="n">{% if p.expected_amount is not none and p.closing_amount is not none %}{{ p.difference|amount }}{% endif %}</td></tr>{% endfor %}
-          <tr><td><b>Over / short</b></td><td></td><td></td><td></td><td class="n"><b>{{ doc.total_difference|amount }}</b></td></tr>
+          {% if doc.total_difference is not none %}<tr><td><b>Over / short</b></td><td></td><td></td><td></td><td class="n"><b>{{ doc.total_difference|amount }}</b></td></tr>{% endif %}
           </table>
           {% if doc.remarks %}<div class="rule"></div><div dir="auto">{{ doc.remarks }}</div>{% endif %}
           </div>

@@ -82,15 +82,19 @@ export interface SendAsk {
 export const sendReceipt = (ask: SendAsk) => till<{ event: string; sent: { channel?: string }[]; receipt: string | null }>("/api/app/pos/send", { method: "POST", body: ask });
 
 /** `POST /returns/{sale}/plan`: what a return of those lines (the sale's line ids, a positive quantity, a condition) is worth and how the
- *  register proposes to refund it: a proposal, the return is still checked whatever is sent. */
+ *  register proposes to refund it: a proposal, the return is still checked whatever is sent. With `out` (the goods going out, as sale lines) it
+ *  is an exchange: the register prices them as a sale to the same customer and says the rest (`exchange`). The till shows that, and works out nothing. */
 export interface RefundProposal {
   total: string;
+  /** With `out` (an exchange): what the goods going out come to, what the return carries over to them, what the customer still pays and what is refunded
+   *  (the only amount `refunds` plans). Null for a return alone. */
+  exchange: { out_total: string; carried: string; due: string; refund: string } | null;
   refunds: { mode: string; name: string | null; kind: string | null; amount: string }[];
   /** What no method of this register can take back. */
   unplaced: string;
 }
-export const returnPlan = (profile: string, sale: string, lines: { line: string; qty: string; condition?: string }[], signal?: AbortSignal) =>
-  till<RefundProposal>(`/api/app/pos/returns/${encodeURIComponent(sale)}/plan`, { method: "POST", body: { profile, lines }, signal });
+export const returnPlan = (profile: string, sale: string, lines: { line: string; qty: string; condition?: string }[], out?: Doc[], signal?: AbortSignal) =>
+  till<RefundProposal>(`/api/app/pos/returns/${encodeURIComponent(sale)}/plan`, { method: "POST", body: { profile, lines, ...(out?.length ? { out } : {}) }, signal });
 
 /** A record on paper by one of the app's document templates (`pos.shift_report` on a closing, `pos.cash_slip` on a cash movement). */
 export const paperOf = (entity: string, id: string, template: string) => till<string>(docPath(entity, id, "print"), { query: { template, format: "html" }, accept: PAPER });

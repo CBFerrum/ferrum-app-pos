@@ -190,7 +190,8 @@ struct Figures {
     tax: Vec<Doc>,
 }
 
-async fn figures(tx: &mut Tx, tenant: Uuid, session: Uuid) -> Result<Figures> {
+async fn figures(k: &Kernel, ctx: &Ctx, tx: &mut Tx, session: Uuid) -> Result<Figures> {
+    let tenant = ctx.tenant;
     let moved: Vec<(String, Decimal)> = sqlx::query_as(
         "select movement_type, coalesce(sum(amount), 0) from e_pos_cash_movement where tenant_id = $1 and pos_opening_entry = $2 and docstatus = 1 group by movement_type",
     )
@@ -206,17 +207,57 @@ async fn figures(tx: &mut Tx, tenant: Uuid, session: Uuid) -> Result<Figures> {
     .bind(session)
     .fetch_one(&mut **tx)
     .await?;
-    let tax: Vec<(Option<String>, Option<Decimal>, Decimal, Decimal)> = sqlx::query_as(
-        "select description, rate, sum(taxable), sum(tax) from (            select b.description, b.rate, b.taxable_amount as taxable, b.tax_amount as tax from e_pos_invoice__tax_breakdown b              join e_pos_invoice p on p.tenant_id = b.tenant_id and p.id = b.parent_id              where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1            union all            select t.description, t.rate, p.net_total, t.tax_amount from e_pos_invoice__taxes t join e_pos_invoice p on p.tenant_id = t.tenant_id and p.id = t.parent_id              where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1                and not exists (select 1 from e_pos_invoice__tax_breakdown b where b.tenant_id = p.tenant_id and b.parent_id = p.id)          ) x group by description, rate order by description, rate",
+    // The tax by rate: each sale's own breakdown; a sale made before breakdowns were kept (a shift that spans the
+    // upgrade) has one worked out again from what it recorded, the same pieces ERP prices with, and taken only when it
+    // gives back the sale's recorded net total and every tax row's amount to the unit.
+    let kept: Vec<(Option<String>, Option<Decimal>, Decimal, Decimal)> = sqlx::query_as(
+        "select b.description, b.rate, sum(b.taxable_amount), sum(b.tax_amount) from e_pos_invoice__tax_breakdown b \
+         join e_pos_invoice p on p.tenant_id = b.tenant_id and p.id = b.parent_id \
+         where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1 group by 1, 2",
     )
     .bind(tenant)
     .bind(session)
     .fetch_all(&mut **tx)
     .await?;
-    let tax = tax
+    let older: Vec<Uuid> = sqlx::query_scalar(
+        "select p.id from e_pos_invoice p where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1 \
+         and not exists (select 1 from e_pos_invoice__tax_breakdown b where b.tenant_id = p.tenant_id and b.parent_id = p.id) order by p.id",
+    )
+    .bind(tenant)
+    .bind(session)
+    .fetch_all(&mut **tx)
+    .await?;
+    // Description, then rate, as the shift report lists them (none last).
+    let mut groups: BTreeMap<(bool, Option<String>, bool, Option<Decimal>), (Decimal, Decimal)> = BTreeMap::new();
+    let mut add = |description: Option<String>, rate: Option<Decimal>, taxable: Decimal, tax: Decimal| {
+        let g = groups.entry((description.is_none(), description, rate.is_none(), rate.map(|r| r.normalize()))).or_default();
+        g.0 += taxable;
+        g.1 += tax;
+    };
+    for (description, rate, taxable, tax) in kept {
+        add(description, rate, taxable, tax);
+    }
+    for sale in older {
+        let doc = k.get_tx(&sys(ctx), tx, "PosInvoice", sale, true).await?;
+        match breakdown_again(k, ctx, tx, &doc).await? {
+            Some(rows_) => {
+                for r in rows_ {
+                    add(s(&r, "description").map(str::to_string), Some(d(&r, "rate")), d(&r, "taxable_amount"), d(&r, "tax_amount"));
+                }
+            }
+            // What it recorded no longer prices to what it recorded (an engine since changed): its tax rows as kept, each
+            // on the sale's net total, as before.
+            None => {
+                for r in rows(&doc, "taxes") {
+                    add(s(&r, "description").map(str::to_string), Some(d(&r, "rate")), d(&doc, "net_total"), d(&r, "tax_amount"));
+                }
+            }
+        }
+    }
+    let tax = groups
         .into_iter()
         .enumerate()
-        .map(|(i, (description, rate, taxable, amount))| {
+        .map(|(i, ((_, description, _, rate), (taxable, amount)))| {
             json!({"id": Uuid::now_v7().to_string(), "idx": i, "description": description, "rate": rate.map(money), "taxable_amount": money(taxable), "tax_amount": money(amount)})
                 .as_object()
                 .cloned()
@@ -224,6 +265,22 @@ async fn figures(tx: &mut Tx, tenant: Uuid, session: Uuid) -> Result<Figures> {
         })
         .collect();
     Ok(Figures { paid_in: of("Cash In"), paid_out: of("Cash Out"), drops: of("Safe Drop"), refunds, tax })
+}
+
+/// A sale's tax breakdown worked out again from what it recorded (its lines' prices, discounts, promotions' shares and
+/// item rates, its tax rows), with ERP's pricing: `None` unless it gives back the recorded net total and each tax row's
+/// recorded amount exactly.
+async fn breakdown_again(k: &Kernel, ctx: &Ctx, tx: &mut Tx, doc: &Doc) -> Result<Option<Vec<Doc>>> {
+    let co = company(k, ctx, tx, id(doc, "company").unwrap_or_default()).await?;
+    let (_, precision) = ferrum_domain::util::currency(k, ctx, tx, id(doc, "currency").unwrap_or(co.currency_id)).await?;
+    let (items, taxes) = (rows(doc, "items"), rows(doc, "taxes"));
+    let rate = Some(d(doc, "conversion_rate")).filter(|r| *r > Decimal::ZERO).unwrap_or(Decimal::ONE);
+    let input = ferrum_app_erp::pricing::calc_input(&items, &taxes, d(doc, "discount_percent"), &co, precision, rate, true);
+    let Ok(out) = ferrum_calc::compute(&input) else { return Ok(None) };
+    if out.net_total != d(doc, "net_total") || out.taxes.len() != taxes.len() || taxes.iter().zip(&out.taxes).any(|(t, o)| d(t, "tax_amount") != o.tax_amount) {
+        return Ok(None);
+    }
+    Ok(Some(ferrum_app_erp::pricing::tax_breakdown(&input, &taxes, &vec![vec![]; items.len()], &out)))
 }
 
 /// What the drawer should hold in cash now: the opening float, cash taken net of change and refunds, cash moved.
@@ -250,7 +307,7 @@ impl DocHook for ClosingHook {
         let blind = ferrum_domain::util::b(&profile, "blind_close");
         let rows_ = reconcile(hc.kernel, hc.ctx, hc.tx, &session, &rows(doc, "payments"), &denominations, blind).await?;
         set(doc, "blind", json!(blind));
-        let f = figures(hc.tx, hc.ctx.tenant, sid).await?;
+        let f = figures(hc.kernel, hc.ctx, hc.tx, sid).await?;
         for (field, v) in [("paid_in", f.paid_in), ("paid_out", f.paid_out), ("safe_drops", f.drops), ("refund_total", f.refunds)] {
             set(doc, field, money(v));
         }
@@ -263,6 +320,14 @@ impl DocHook for ClosingHook {
         set(doc, "total_taxes", money(sum(|i| i.total_taxes)));
         set(doc, "grand_total", money(sum(|i| i.rounded_total)));
         set(doc, "total_difference", money(rows_.iter().map(|r| d(r, "difference")).sum()));
+        // Counting blind: until every way of paying is counted, the closing says nothing a cashier could work an
+        // expected figure out of (what the shift sold, refunded, taxed, moved and came out over or short).
+        if blind && rows_.iter().any(|r| r.get("closing_amount").is_none_or(Value::is_null)) {
+            for f in ["net_total", "total_taxes", "grand_total", "refund_total", "paid_in", "paid_out", "safe_drops", "total_difference"] {
+                set(doc, f, Value::Null);
+            }
+            set(doc, "tax_rows", json!([]));
+        }
         set(doc, "payments", rows_value(rows_));
         set(doc, "denominations", rows_value(denominations));
         if d(doc, "docstatus").is_zero() {

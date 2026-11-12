@@ -18,7 +18,7 @@ import { useManager, useOutbox } from "./hooks";
 import { loadHeld, ownerOf } from "./lib/held";
 import { till, unreachable } from "./lib/offline";
 import { paperOf } from "./lib/server";
-import { difference, closingBody, countsOf, denominations, dropRefusal, expectedShown, fallbackShiftHtml, movedOf, movementBody, reasonOf, remarksOf, sentOf, standing, typedAmount, uncounted, type Report } from "./lib/shift";
+import { difference, closingBody, countsOf, denominations, expectedOf, fallbackShiftHtml, movedOf, movementBody, reasonOf, remarksOf, sentOf, standing, typedAmount, uncounted, type Report } from "./lib/shift";
 import { printHtml } from "./print";
 
 const rowsOf = <T,>(entity: string, query: Record<string, string | number | boolean>, signal?: AbortSignal) => api.get<{ rows: T[] }>(docPath(entity), query, signal).then((r) => r.rows);
@@ -142,7 +142,7 @@ function Closing({
     if (drawn && hash) document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" });
   }, [drawn, hash]);
 
-  // A blind register: what each method was expected to hold is not shown (nor read from the report) until that method's count has been sent.
+  // A blind register: the server sends what a method was expected to hold only once its count is in; the page shows what it is sent, and adds nothing up.
   const blind = profile.blind_close === true;
   const recon = report.data?.meta.session?.reconciliation ?? [];
   const kindOf = (mode: string) => str(modes.find((m) => m.id === mode)?.mode_type);
@@ -172,11 +172,12 @@ function Closing({
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const countedOf = (mode: string): number | null => (mode === drawer && counting ? countTotal(counted, places) : typedAmount(typed[mode]));
-  // What the closing saved last says per counted method: on a blind register the only expected figures there are.
-  const sent = sentOf(saved ?? draft.data);
+  // What the closing saved last says per counted method: on a blind register the only expected figures there are before the report has them.
+  const closing = saved ?? draft.data ?? null;
+  const sent = sentOf(closing);
   const ended = closed || report.data?.meta.session?.report === "Z";
   const lines = recon.map((r) => {
-    const expected = expectedShown(blind, ended, sent, r.mode, num(r.expected));
+    const expected = expectedOf(sent, r.mode, r.expected);
     const got = countedOf(r.mode);
     const text = typed[r.mode];
     return { ...r, expected, opening: num(r.opening), got, bad: !(r.mode === drawer && counting) && !!text?.trim() && got === null, diff: expected === null ? 0 : difference(expected, got, places), name: r.mode_of_payment ?? "" };
@@ -244,7 +245,7 @@ function Closing({
       printHtml(await paperOf("PosClosingEntry", str(target.id), "pos.shift_report"));
     } catch (e) {
       if (unreachable(e) || (e as { status?: number })?.status === 0) {
-        printHtml(fallbackShiftHtml(profile, report.data, ended ? str((saved ?? draft.data)?.remarks) : null, blind));
+        printHtml(fallbackShiftHtml(profile, report.data, ended ? str((saved ?? draft.data)?.remarks) : null));
         setNote({ tone: "warning", text: tr("The register could not be reached, so this is the till's own report, marked as such.") });
       } else setNote({ tone: "error", text: errorMessage(e) });
     } finally {
@@ -256,6 +257,14 @@ function Closing({
   if (!report.data || draft.isLoading) return <FormSkeleton fields={5} />;
   const meta = report.data.meta;
   const z = closed || meta.session?.report === "Z";
+  // The server leaves the sales of a session still open on a blind register out of a cashier's reports (a POS manager's have them): what it
+  // sends then is no count of the shift's sales. The closing's own figures come with the last count, and are shown when they are there.
+  const withheld = blind && !z && !manager;
+  const sales = withheld
+    ? closing?.grand_total != null
+      ? { sales: num(closing.invoice_count), returns: num(closing.return_count), net: closing.net_total, taxes: closing.total_taxes, total: closing.grand_total }
+      : null
+    : { sales: meta.sales, returns: meta.returns, net: meta.net_total, taxes: meta.total_taxes, total: meta.grand_total };
 
   return (
     <Currency.Provider value={{ precision: places, code }}>
@@ -377,20 +386,23 @@ function Closing({
           <h2>
             {z ? tr("Z report") : tr("So far")} <Badge tone={z ? "green" : "blue"}>{z ? tr("Closed") : tr("Open")}</Badge>
           </h2>
-          <dl className="pos-totals">
-            <dt>{tr("Sales")}</dt>
-            <dd>{meta.sales}</dd>
-            <dt>{tr("Returns")}</dt>
-            <dd>{meta.returns}</dd>
-            <dt>{tr("Net sales")}</dt>
-            <dd>{isolate(money(meta.net_total))}</dd>
-            <dt>{tr("Taxes")}</dt>
-            <dd>{isolate(money(meta.total_taxes))}</dd>
-            <dt className="pos-total-label">{tr("Total")}</dt>
-            <dd className="pos-total">{isolate(money(meta.grand_total))}</dd>
-          </dl>
-          {blind && !z && <p className="faint">{tr("What each way of paying took is shown once the shift is closed: this register closes blind, and the takings are what the drawer is expected to hold.")}</p>}
-          {report.data.rows.length > 0 && (!blind || z) && (
+          {sales ? (
+            <dl className="pos-totals">
+              <dt>{tr("Sales")}</dt>
+              <dd>{sales.sales}</dd>
+              <dt>{tr("Returns")}</dt>
+              <dd>{sales.returns}</dd>
+              <dt>{tr("Net sales")}</dt>
+              <dd>{isolate(money(sales.net))}</dd>
+              <dt>{tr("Taxes")}</dt>
+              <dd>{isolate(money(sales.taxes))}</dd>
+              <dt className="pos-total-label">{tr("Total")}</dt>
+              <dd className="pos-total">{isolate(money(sales.total))}</dd>
+            </dl>
+          ) : (
+            <p className="faint">{tr("This register closes blind: the shift's sales and takings are shown once every way of paying is counted.")}</p>
+          )}
+          {!withheld && report.data.rows.length > 0 && (
             <>
               <h3 className="pos-sub">{tr("Taken, by way of paying")}</h3>
               <ul className="pos-taken">
@@ -407,9 +419,9 @@ function Closing({
           )}
         </section>
 
-        <Figures closing={saved ?? draft.data ?? null} moves={moves.data ?? []} money={money} />
+        <Figures closing={closing} moves={moves.data ?? []} money={money} />
 
-        {!z && <Cash session={session.id} company={company} moves={moves.data ?? []} money={money} blind={blind} onMoved={() => { void moves.refetch(); void report.refetch(); }} />}
+        {!z && <Cash session={session.id} company={company} moves={moves.data ?? []} money={money} onMoved={() => { void moves.refetch(); void report.refetch(); }} />}
       </div>
     </Currency.Provider>
   );
@@ -462,7 +474,7 @@ function Figures({ closing, moves, money }: { closing: Doc | null; moves: Doc[];
 }
 
 /** Cash put into or taken out of the drawer during the shift: a float top-up, a payout for milk, a drop to the safe (the register's safe account, never more than the drawer holds). */
-function Cash({ session, company, moves, money, blind, onMoved }: { session: string; company: string; moves: Doc[]; money: (v: unknown) => string; blind: boolean; onMoved: () => void }) {
+function Cash({ session, company, moves, money, onMoved }: { session: string; company: string; moves: Doc[]; money: (v: unknown) => string; onMoved: () => void }) {
   const [kind, setKind] = useState<"Cash In" | "Cash Out" | "Safe Drop">("Cash Out");
   const [amount, setAmount] = useState("");
   const [why, setWhy] = useState("");
@@ -484,7 +496,7 @@ function Cash({ session, company, moves, money, blind, onMoved }: { session: str
       setAccount({ id: null });
       onMoved();
     } catch (e) {
-      setError(drop ? dropRefusal(blind, errorMessage(e)) : errorMessage(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }

@@ -3,7 +3,7 @@
 use crate::{Kind, Mode, Profile, is_manager, open_session};
 use async_trait::async_trait;
 use ferrum_app_erp::ledger::{self, Entry, Line};
-use ferrum_domain::util::{company, d, date, get, id, rows, s, set, sys};
+use ferrum_domain::util::{b, company, d, date, get, id, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use serde_json::{Value, json};
 
@@ -143,6 +143,11 @@ impl DocHook for CashMovementHook {
             let mode = Self::mode(hc, doc).await?;
             let held = crate::closing::drawer_cash(hc.kernel, hc.ctx, hc.tx, &session, mode.id).await?;
             if d(doc, "amount") > held && d(doc, "docstatus").is_zero() {
+                // On a register that closes blind, what the drawer holds is what the count is checked against: not said.
+                let profile = get(hc.kernel, hc.ctx, hc.tx, "PosProfile", id(&session, "pos_profile").unwrap_or_default()).await?;
+                if b(&profile, "blind_close") {
+                    return Err(Error::field("amount", "a drop cannot take more than the drawer holds"));
+                }
                 return Err(Error::field("amount", format!("the drawer holds {}: a drop cannot take more", held.normalize())));
             }
         }

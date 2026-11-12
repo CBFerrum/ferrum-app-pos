@@ -113,6 +113,19 @@ describe("what 0.7.0's routes take and answer (read from the server's code: src/
     expect(plan.refunds.map((r) => [r.mode, r.amount])).toEqual([["m-card", "100.00"], ["m-cash", "20.00"]]);
   });
 
+  it("asks the register to plan an exchange with the goods going out, and takes what it says of the difference as it is", async () => {
+    // What the server's plan answers for 120.00 coming back and 100.00 going out (returns.rs `plan`): only the 20.00 left is planned onto ways of paying.
+    answer({ total: "120.00", exchange: { out_total: "100.00", carried: "100.00", due: "0.00", refund: "20.00" }, refunds: [{ mode: "m-cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00" });
+    const out = [{ item: "i9", qty: "1" }];
+    const plan = await returnPlan("reg1", "s1", [{ line: "l1", qty: "1" }], out);
+    expect(last().o.body).toEqual({ profile: "reg1", lines: [{ line: "l1", qty: "1" }], out });
+    expect([plan.exchange?.out_total, plan.exchange?.due, plan.exchange?.refund, plan.refunds.length]).toEqual(["100.00", "0.00", "20.00", 1]);
+    // A return alone sends no `out`, and the register answers no exchange.
+    answer({ total: "120.00", exchange: null, refunds: [], unplaced: "0.00" });
+    expect((await returnPlan("reg1", "s1", [{ line: "l1", qty: "1" }])).exchange).toBeNull();
+    expect(Object.keys(last().o.body as object)).toEqual(["profile", "lines"]);
+  });
+
   it("prints a closing by the shift template and a movement by the cash slip, and reviews a difference", async () => {
     answer("<div>SHIFT REPORT</div>");
     await paperOf("PosClosingEntry", "c1", "pos.shift_report");

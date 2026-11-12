@@ -249,10 +249,13 @@ pub async fn sheet(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Resu
     }))
 }
 
-/// `POST /returns/{sale}/plan` `{profile, lines: [{line, qty, condition?}]}`: what a return of those lines is worth and how the
-/// register proposes to refund it: back through the methods the sale was paid with where the register allows and
-/// they have room, the rest onto store credit or out as cash as the return policy says, what the customer still owes
-/// cancelled first. A proposal: the return itself is held to `check_refunds` whatever is sent.
+/// `POST /returns/{sale}/plan` `{profile, lines: [{line, qty, condition?}], out?: [{item, qty, ...}]}`: what a return of
+/// those lines (some of a line, or all) is worth and how the register proposes to refund it: back through the methods
+/// the sale was paid with where the register allows and they have room, the rest onto store credit or out as cash as
+/// the return policy says, what the customer still owes cancelled first. With `out`, an exchange: the goods going
+/// out are priced as a sale to the same customer, and `exchange` says what they come to, what the return carries
+/// over to them, what the customer still pays (`due`) and what is refunded (`refund`, the only amount planned). A
+/// proposal: the return itself is held to `check_refunds` whatever is sent.
 pub async fn plan(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Result<Value> {
     let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
     let pid: Uuid = v.get("profile").and_then(Value::as_str).and_then(|p| p.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
@@ -282,7 +285,18 @@ pub async fn plan(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Resul
     }
     let draft = json!({"pos_profile": pid, "is_return": true, "return_against": sale, "items": items});
     let priced = k.preview(ctx, "PosInvoice", draft.as_object().cloned().unwrap_or_default()).await?;
-    let total = -d(&priced, "rounded_total");
+    let back = -d(&priced, "rounded_total");
+    // An exchange: what goes out, priced by the register for the sale's customer, settles against what comes back
+    // as `/exchange` settles it; only what the return leaves over is refunded.
+    let out: Vec<Value> = v.get("out").and_then(Value::as_array).into_iter().flatten().filter(|l| l.is_object()).cloned().collect();
+    let (exchange, total) = if out.is_empty() {
+        (Value::Null, back)
+    } else {
+        let sale = json!({"pos_profile": pid, "customer": orig.get("customer"), "items": out});
+        let sold = d(&k.preview(ctx, "PosInvoice", sale.as_object().cloned().unwrap_or_default()).await?, "rounded_total");
+        let x = crate::logic::exchange(back, sold);
+        (json!({"out_total": money(sold), "carried": money(x.carried), "due": money(x.due), "refund": money(x.refund)}), x.refund)
+    };
     let room = taken(&mut tx, ctx.tenant, &orig, None).await?;
     let left = left_to_refund(&room, &orig);
     let policy = match id(&profile.doc, "return_policy") {
@@ -304,7 +318,8 @@ pub async fn plan(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Resul
     let (refunds, unplaced) = plan_refund(total, &ways, left.credit, store_credit, cash_to, prefer_store_credit);
     let name = |m: Uuid| profile.mode(m).map(|(x, _)| x.name.clone());
     Ok(json!({
-        "total": money(total),
+        "total": money(back),
+        "exchange": exchange,
         "refunds": refunds.iter().map(|(m, a)| json!({"mode": m, "name": name(*m), "kind": profile.mode(*m).and_then(|x| s(&x.0.doc, "mode_type")), "amount": money(*a)})).collect::<Vec<_>>(),
         "unplaced": money(unplaced),
     }))

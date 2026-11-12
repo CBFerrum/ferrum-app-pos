@@ -1,0 +1,932 @@
+{
+ "//": "Two of ERP pricing/tests/baskets.jsonl and priced.jsonl (lines 9 and 25, from ERP 1bbf893): what the crate gives, byte for byte.",
+ "cases": [
+  {
+   "request": {
+    "snapshot": {
+     "schema": 1,
+     "valid_from": "2026-11-12",
+     "valid_until": "2026-11-26",
+     "time_zone": null,
+     "currency": "XXX",
+     "precision": 2,
+     "base_precision": 2,
+     "conversion_rate": "1",
+     "rounding": "half_even",
+     "round_total_to": null,
+     "tax_rounding": "per_document",
+     "taxes": [
+      {
+       "key": "t0",
+       "charge_type": "on_net_total",
+       "rate": "8",
+       "amount": "0",
+       "row_ref": null,
+       "included_in_price": false,
+       "deduct": false,
+       "reverse_charge": false,
+       "description": "Tax",
+       "account": "acc0",
+       "category": null,
+       "exemption_reason": null
+      }
+     ],
+     "items": [
+      {
+       "id": "i0",
+       "item_group": "g0",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": []
+      },
+      {
+       "id": "i1",
+       "item_group": "g1",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": []
+      },
+      {
+       "id": "i2",
+       "item_group": "g0",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": [
+        {
+         "tax_account": "acc0",
+         "rate": "10",
+         "category": null,
+         "exemption_reason": null
+        }
+       ]
+      }
+     ],
+     "prices": [
+      {
+       "item": "i0",
+       "uom": null,
+       "rate": "15.49",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      },
+      {
+       "item": "i1",
+       "uom": null,
+       "rate": "169.33",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      },
+      {
+       "item": "i2",
+       "uom": null,
+       "rate": "34.08",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      }
+     ],
+     "rules": [
+      {
+       "id": "ri0",
+       "apply_on": "Item",
+       "item": "i0",
+       "item_group": null,
+       "customer": null,
+       "customer_group": null,
+       "min_qty": "0",
+       "max_qty": "0",
+       "valid_from": null,
+       "valid_upto": null,
+       "priority": null,
+       "discount_percent": "11",
+       "rate": "0"
+      },
+      {
+       "id": "ri1",
+       "apply_on": "Item",
+       "item": "i1",
+       "item_group": null,
+       "customer": null,
+       "customer_group": null,
+       "min_qty": "0",
+       "max_qty": "0",
+       "valid_from": null,
+       "valid_upto": null,
+       "priority": null,
+       "discount_percent": "11",
+       "rate": "0"
+      },
+      {
+       "id": "ri2",
+       "apply_on": "Item",
+       "item": "i2",
+       "item_group": null,
+       "customer": null,
+       "customer_group": null,
+       "min_qty": "0",
+       "max_qty": "0",
+       "valid_from": null,
+       "valid_upto": null,
+       "priority": null,
+       "discount_percent": "8",
+       "rate": "0"
+      }
+     ],
+     "promotions": [
+      {
+       "id": "p0",
+       "title": "p0",
+       "priority": 2,
+       "valid_from": null,
+       "valid_upto": null,
+       "weekdays": [],
+       "from_time": null,
+       "to_time": null,
+       "customers": [],
+       "customer_groups": [],
+       "channels": [],
+       "places": [],
+       "requires_code": false,
+       "first_order_only": false,
+       "min_amount": "0",
+       "min_qty": "0",
+       "qualifying": {
+        "items": [],
+        "item_groups": []
+       },
+       "gives": {
+        "kind": "free_item",
+        "item": "i0",
+        "qty": "1"
+       },
+       "combinable": true,
+       "with_line_discounts": true,
+       "max_discount": null
+      },
+      {
+       "id": "p1",
+       "title": "p1",
+       "priority": 0,
+       "valid_from": null,
+       "valid_upto": null,
+       "weekdays": [],
+       "from_time": null,
+       "to_time": null,
+       "customers": [],
+       "customer_groups": [],
+       "channels": [],
+       "places": [],
+       "requires_code": false,
+       "first_order_only": false,
+       "min_amount": "0",
+       "min_qty": "0",
+       "qualifying": {
+        "items": [],
+        "item_groups": []
+       },
+       "gives": {
+        "kind": "percent_off_document",
+        "percent": "10"
+       },
+       "combinable": true,
+       "with_line_discounts": true,
+       "max_discount": null
+      }
+     ],
+     "customer": "walk-in",
+     "customer_group": "retail",
+     "channel": "Point of Sale",
+     "place": "store"
+    },
+    "basket": {
+     "lines": [
+      {
+       "item": "i1",
+       "qty": "5",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      },
+      {
+       "item": "i1",
+       "qty": "3",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      },
+      {
+       "item": "i2",
+       "qty": "1",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      }
+     ],
+     "at": "2026-11-12 10:30",
+     "customer": null,
+     "customer_group": null,
+     "discount_percent": "0"
+    }
+   },
+   "priced": {
+    "schema": 1,
+    "lines": [
+     {
+      "key": "0",
+      "item": "i1",
+      "qty": "5",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "5",
+      "price_list_rate": "169.33",
+      "discount_percent": "11",
+      "promotion_percent": "9.9997345790423611848391549",
+      "added_by_promotion": null,
+      "tax_rates": {}
+     },
+     {
+      "key": "1",
+      "item": "i1",
+      "qty": "3",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "3",
+      "price_list_rate": "169.33",
+      "discount_percent": "11",
+      "promotion_percent": "9.999778814890181592975160912",
+      "added_by_promotion": null,
+      "tax_rates": {}
+     },
+     {
+      "key": "2",
+      "item": "i2",
+      "qty": "1",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "1",
+      "price_list_rate": "34.08",
+      "discount_percent": "8",
+      "promotion_percent": "10.015948963317384370015948963",
+      "added_by_promotion": null,
+      "tax_rates": {
+       "t0": "10"
+      }
+     },
+     {
+      "key": "3",
+      "item": "i0",
+      "qty": "1",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "1",
+      "price_list_rate": "15.49",
+      "discount_percent": "11",
+      "promotion_percent": "100",
+      "added_by_promotion": "p0",
+      "tax_rates": {}
+     }
+    ],
+    "applied": [
+     {
+      "promotion": "p0",
+      "title": "p0",
+      "line": "3",
+      "amount": "13.79",
+      "code": null
+     },
+     {
+      "promotion": "p1",
+      "title": "p1",
+      "line": "0",
+      "amount": "75.35",
+      "code": null
+     },
+     {
+      "promotion": "p1",
+      "title": "p1",
+      "line": "1",
+      "amount": "45.21",
+      "code": null
+     },
+     {
+      "promotion": "p1",
+      "title": "p1",
+      "line": "2",
+      "amount": "3.14",
+      "code": null
+     }
+    ],
+    "totals": {
+     "lines": [
+      {
+       "key": "0",
+       "rate": "135.633729999",
+       "amount": "678.17",
+       "net_amount": "678.17",
+       "taxes": [
+        "54.26"
+       ],
+       "base_net_amount": "678.17",
+       "base_taxes": [
+        "54.26"
+       ]
+      },
+      {
+       "key": "1",
+       "rate": "135.633663334",
+       "amount": "406.90",
+       "net_amount": "406.90",
+       "taxes": [
+        "32.55"
+       ],
+       "base_net_amount": "406.90",
+       "base_taxes": [
+        "32.55"
+       ]
+      },
+      {
+       "key": "2",
+       "rate": "28.213239426",
+       "amount": "28.21",
+       "net_amount": "28.21",
+       "taxes": [
+        "2.82"
+       ],
+       "base_net_amount": "28.21",
+       "base_taxes": [
+        "2.82"
+       ]
+      },
+      {
+       "key": "3",
+       "rate": "0",
+       "amount": "0.00",
+       "net_amount": "0.00",
+       "taxes": [
+        "0.00"
+       ],
+       "base_net_amount": "0.00",
+       "base_taxes": [
+        "0.00"
+       ]
+      }
+     ],
+     "taxes": [
+      {
+       "key": "t0",
+       "tax_amount": "89.63",
+       "deduct": false,
+       "reverse_charge": false,
+       "total": "1202.91",
+       "base_tax_amount": "89.63",
+       "base_total": "1202.91"
+      }
+     ],
+     "total": "1113.28",
+     "discount_amount": "0",
+     "net_total": "1113.28",
+     "total_taxes": "89.63",
+     "grand_total": "1202.91",
+     "rounding_adjustment": "0.00",
+     "rounded_total": "1202.91",
+     "base_net_total": "1113.28",
+     "base_total_taxes": "89.63",
+     "base_grand_total": "1202.91",
+     "base_rounding_adjustment": "0.00",
+     "base_rounded_total": "1202.91"
+    },
+    "tax_summary": [
+     {
+      "tax": 0,
+      "description": "Tax",
+      "account": "acc0",
+      "category": "Standard",
+      "rate": "8",
+      "exemption_reason": null,
+      "reverse_charge": false,
+      "taxable_amount": "1085.07",
+      "tax_amount": "86.81",
+      "base_taxable_amount": "1085.07",
+      "base_tax_amount": "86.81"
+     },
+     {
+      "tax": 0,
+      "description": "Tax",
+      "account": "acc0",
+      "category": "Standard",
+      "rate": "10",
+      "exemption_reason": null,
+      "reverse_charge": false,
+      "taxable_amount": "28.21",
+      "tax_amount": "2.82",
+      "base_taxable_amount": "28.21",
+      "base_tax_amount": "2.82"
+     }
+    ]
+   }
+  },
+  {
+   "request": {
+    "snapshot": {
+     "schema": 1,
+     "valid_from": "2026-11-12",
+     "valid_until": "2026-11-26",
+     "time_zone": null,
+     "currency": "XXX",
+     "precision": 2,
+     "base_precision": 2,
+     "conversion_rate": "1",
+     "rounding": "half_even",
+     "round_total_to": null,
+     "tax_rounding": "per_document",
+     "taxes": [
+      {
+       "key": "t0",
+       "charge_type": "on_net_total",
+       "rate": "7",
+       "amount": "0",
+       "row_ref": null,
+       "included_in_price": true,
+       "deduct": false,
+       "reverse_charge": false,
+       "description": "Tax",
+       "account": "acc0",
+       "category": null,
+       "exemption_reason": null
+      }
+     ],
+     "items": [
+      {
+       "id": "i0",
+       "item_group": "g1",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": []
+      },
+      {
+       "id": "i1",
+       "item_group": "g1",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": [
+        {
+         "tax_account": "acc0",
+         "rate": "5",
+         "category": null,
+         "exemption_reason": null
+        }
+       ]
+      },
+      {
+       "id": "i2",
+       "item_group": "g1",
+       "stock_uom": "nos",
+       "units": [],
+       "standard_rate": "0",
+       "delivery": false,
+       "tax_rates": []
+      }
+     ],
+     "prices": [
+      {
+       "item": "i0",
+       "uom": null,
+       "rate": "147.80",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      },
+      {
+       "item": "i1",
+       "uom": null,
+       "rate": "170.28",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      },
+      {
+       "item": "i2",
+       "uom": null,
+       "rate": "41.07",
+       "valid_from": "2026-01-01",
+       "valid_upto": null
+      }
+     ],
+     "rules": [
+      {
+       "id": "ri1",
+       "apply_on": "Item",
+       "item": "i1",
+       "item_group": null,
+       "customer": null,
+       "customer_group": null,
+       "min_qty": "0",
+       "max_qty": "0",
+       "valid_from": null,
+       "valid_upto": null,
+       "priority": null,
+       "discount_percent": "17",
+       "rate": "0"
+      },
+      {
+       "id": "ri2",
+       "apply_on": "Item",
+       "item": "i2",
+       "item_group": null,
+       "customer": null,
+       "customer_group": null,
+       "min_qty": "0",
+       "max_qty": "0",
+       "valid_from": null,
+       "valid_upto": null,
+       "priority": null,
+       "discount_percent": "21",
+       "rate": "0"
+      }
+     ],
+     "promotions": [
+      {
+       "id": "p0",
+       "title": "p0",
+       "priority": 0,
+       "valid_from": null,
+       "valid_upto": null,
+       "weekdays": [],
+       "from_time": null,
+       "to_time": null,
+       "customers": [],
+       "customer_groups": [],
+       "channels": [],
+       "places": [],
+       "requires_code": false,
+       "first_order_only": false,
+       "min_amount": "34.08",
+       "min_qty": "0",
+       "qualifying": {
+        "items": [],
+        "item_groups": []
+       },
+       "gives": {
+        "kind": "bundle",
+        "parts": [
+         [
+          "i0",
+          "1"
+         ],
+         [
+          "i1",
+          "2"
+         ]
+        ],
+        "price": "69.55"
+       },
+       "combinable": true,
+       "with_line_discounts": true,
+       "max_discount": "8.73"
+      },
+      {
+       "id": "p1",
+       "title": "p1",
+       "priority": 2,
+       "valid_from": null,
+       "valid_upto": null,
+       "weekdays": [],
+       "from_time": null,
+       "to_time": null,
+       "customers": [],
+       "customer_groups": [],
+       "channels": [],
+       "places": [],
+       "requires_code": false,
+       "first_order_only": false,
+       "min_amount": "274.89",
+       "min_qty": "0",
+       "qualifying": {
+        "items": [
+         "i0"
+        ],
+        "item_groups": []
+       },
+       "gives": {
+        "kind": "amount_off_lines",
+        "amount": "25.36"
+       },
+       "combinable": true,
+       "with_line_discounts": true,
+       "max_discount": null
+      },
+      {
+       "id": "p2",
+       "title": "p2",
+       "priority": 1,
+       "valid_from": null,
+       "valid_upto": null,
+       "weekdays": [],
+       "from_time": null,
+       "to_time": null,
+       "customers": [],
+       "customer_groups": [],
+       "channels": [],
+       "places": [],
+       "requires_code": false,
+       "first_order_only": false,
+       "min_amount": "0",
+       "min_qty": "0",
+       "qualifying": {
+        "items": [],
+        "item_groups": []
+       },
+       "gives": {
+        "kind": "percent_off_document",
+        "percent": "9"
+       },
+       "combinable": true,
+       "with_line_discounts": true,
+       "max_discount": "26.29"
+      }
+     ],
+     "customer": "walk-in",
+     "customer_group": "retail",
+     "channel": "Point of Sale",
+     "place": "store"
+    },
+    "basket": {
+     "lines": [
+      {
+       "item": "i1",
+       "qty": "3",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      },
+      {
+       "item": "i0",
+       "qty": "5",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      },
+      {
+       "item": "i1",
+       "qty": "4",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      },
+      {
+       "item": "i0",
+       "qty": "3",
+       "uom": null,
+       "price": null,
+       "discount_percent": null
+      }
+     ],
+     "at": "2026-11-14 18:05",
+     "customer": null,
+     "customer_group": null,
+     "discount_percent": "5"
+    }
+   },
+   "priced": {
+    "schema": 1,
+    "lines": [
+     {
+      "key": "0",
+      "item": "i1",
+      "qty": "3",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "3",
+      "price_list_rate": "170.28",
+      "discount_percent": "17",
+      "promotion_percent": "1.9056603773584905660377358491",
+      "added_by_promotion": null,
+      "tax_rates": {
+       "t0": "5"
+      }
+     },
+     {
+      "key": "1",
+      "item": "i0",
+      "qty": "5",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "5",
+      "price_list_rate": "147.80",
+      "discount_percent": "0",
+      "promotion_percent": "3.7428958051420838971583220568",
+      "added_by_promotion": null,
+      "tax_rates": {}
+     },
+     {
+      "key": "2",
+      "item": "i1",
+      "qty": "4",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "4",
+      "price_list_rate": "170.28",
+      "discount_percent": "17",
+      "promotion_percent": "1.7370385438593387932711867405",
+      "added_by_promotion": null,
+      "tax_rates": {
+       "t0": "5"
+      }
+     },
+     {
+      "key": "3",
+      "item": "i0",
+      "qty": "3",
+      "uom": "nos",
+      "conversion_factor": "1",
+      "stock_qty": "3",
+      "price_list_rate": "147.80",
+      "discount_percent": "0",
+      "promotion_percent": "3.3423545331529093369418132612",
+      "added_by_promotion": null,
+      "tax_rates": {}
+     }
+    ],
+    "applied": [
+     {
+      "promotion": "p1",
+      "title": "p1",
+      "line": "1",
+      "amount": "15.85",
+      "code": null
+     },
+     {
+      "promotion": "p1",
+      "title": "p1",
+      "line": "3",
+      "amount": "9.51",
+      "code": null
+     },
+     {
+      "promotion": "p2",
+      "title": "p2",
+      "line": "0",
+      "amount": "5.19",
+      "code": null
+     },
+     {
+      "promotion": "p2",
+      "title": "p2",
+      "line": "1",
+      "amount": "8.86",
+      "code": null
+     },
+     {
+      "promotion": "p2",
+      "title": "p2",
+      "line": "2",
+      "amount": "6.93",
+      "code": null
+     },
+     {
+      "promotion": "p2",
+      "title": "p2",
+      "line": "3",
+      "amount": "5.31",
+      "code": null
+     },
+     {
+      "promotion": "p0",
+      "title": "p0",
+      "line": "0",
+      "amount": "2.89",
+      "code": null
+     },
+     {
+      "promotion": "p0",
+      "title": "p0",
+      "line": "1",
+      "amount": "2.95",
+      "code": null
+     },
+     {
+      "promotion": "p0",
+      "title": "p0",
+      "line": "2",
+      "amount": "2.89",
+      "code": null
+     }
+    ],
+    "totals": {
+     "lines": [
+      {
+       "key": "0",
+       "rate": "138.639084453",
+       "amount": "415.92",
+       "net_amount": "376.31",
+       "taxes": [
+        "18.81"
+       ],
+       "base_net_amount": "376.31",
+       "base_taxes": [
+        "18.81"
+       ]
+      },
+      {
+       "key": "1",
+       "rate": "142.268",
+       "amount": "711.34",
+       "net_amount": "631.56",
+       "taxes": [
+        "44.21"
+       ],
+       "base_net_amount": "631.56",
+       "base_taxes": [
+        "44.21"
+       ]
+      },
+      {
+       "key": "2",
+       "rate": "138.877401737",
+       "amount": "555.51",
+       "net_amount": "502.60",
+       "taxes": [
+        "25.13"
+       ],
+       "base_net_amount": "502.60",
+       "base_taxes": [
+        "25.13"
+       ]
+      },
+      {
+       "key": "3",
+       "rate": "142.86",
+       "amount": "428.58",
+       "net_amount": "380.52",
+       "taxes": [
+        "26.64"
+       ],
+       "base_net_amount": "380.52",
+       "base_taxes": [
+        "26.64"
+       ]
+      }
+     ],
+     "taxes": [
+      {
+       "key": "t0",
+       "tax_amount": "114.79",
+       "deduct": false,
+       "reverse_charge": false,
+       "total": "2005.78",
+       "base_tax_amount": "114.79",
+       "base_total": "2005.78"
+      }
+     ],
+     "total": "2111.35",
+     "discount_amount": "99.53",
+     "net_total": "1890.99",
+     "total_taxes": "114.79",
+     "grand_total": "2005.78",
+     "rounding_adjustment": "0.00",
+     "rounded_total": "2005.78",
+     "base_net_total": "1890.99",
+     "base_total_taxes": "114.79",
+     "base_grand_total": "2005.78",
+     "base_rounding_adjustment": "0.00",
+     "base_rounded_total": "2005.78"
+    },
+    "tax_summary": [
+     {
+      "tax": 0,
+      "description": "Tax",
+      "account": "acc0",
+      "category": "Standard",
+      "rate": "5",
+      "exemption_reason": null,
+      "reverse_charge": false,
+      "taxable_amount": "878.91",
+      "tax_amount": "43.94",
+      "base_taxable_amount": "878.91",
+      "base_tax_amount": "43.94"
+     },
+     {
+      "tax": 0,
+      "description": "Tax",
+      "account": "acc0",
+      "category": "Standard",
+      "rate": "7",
+      "exemption_reason": null,
+      "reverse_charge": false,
+      "taxable_amount": "1012.08",
+      "tax_amount": "70.85",
+      "base_taxable_amount": "1012.08",
+      "base_tax_amount": "70.85"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -78,6 +78,9 @@ struct Range {
     to: NaiveDate,
     profile: Option<Uuid>,
     cashier: Option<String>,
+    /// Sessions still open on a register that closes blind, whose sales a person who is not a POS Manager does not see
+    /// counted up: what they come to by way of paying is what the drawer is expected to hold.
+    hidden: Vec<Uuid>,
 }
 
 #[async_trait]
@@ -100,7 +103,18 @@ impl ReportSource for PosReports {
         let own = ctx.perms.access("PosInvoice", Action::Read) == Access::Own;
         let cashier = if own { Some(ctx.email.to_lowercase()) } else { p.str("cashier").map(str::to_lowercase) };
         let (from, to) = period(&p, &co)?;
-        let range = Range { company: co.id, from, to, profile: p.uuid("pos_profile")?, cashier };
+        let hidden: Vec<Uuid> = if crate::is_manager(ctx) {
+            vec![]
+        } else {
+            sqlx::query_scalar(
+                "select o.id from e_pos_opening_entry o join e_pos_profile r on r.tenant_id = o.tenant_id and r.id = o.pos_profile \
+                 where o.tenant_id = $1 and coalesce(r.blind_close, false) and o.status is distinct from 'Closed'",
+            )
+            .bind(ctx.tenant)
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        let range = Range { company: co.id, from, to, profile: p.uuid("pos_profile")?, cashier, hidden };
         let mut out = match name {
             "pos_sales_summary" => sales_summary(k, ctx, &mut tx, &range, p.uuid("pos_opening_entry")?).await?,
             "pos_daily_sales" => daily_sales(&mut tx, ctx, &co, &range, p.str("group_by") == Some("Item Group")).await?,
@@ -192,7 +206,7 @@ async fn sales_summary(k: &Kernel, ctx: &Ctx, tx: &mut Tx, r: &Range, session: O
         "select p.id, o.number as session, p.cashier, p.is_return, p.change_amount, p.net_total, p.total_taxes, p.rounded_total \
          from e_pos_invoice p left join e_pos_opening_entry o on o.tenant_id = p.tenant_id and o.id = p.pos_opening_entry \
          where p.tenant_id = $1 and p.company = $2 and p.docstatus = 1 and ($3::uuid is not null or p.posting_date between $4 and $5) \
-         and ($3::uuid is null or p.pos_opening_entry = $3) and ($6::uuid is null or p.pos_profile = $6) and ($7::text is null or lower(p.cashier) = $7) \
+         and ($3::uuid is null or p.pos_opening_entry = $3) and ($6::uuid is null or p.pos_profile = $6) and ($7::text is null or lower(p.cashier) = $7) and coalesce(p.pos_opening_entry = any($8), false) = false \
          order by o.number, p.cashier",
     )
     .bind(ctx.tenant)
@@ -202,6 +216,7 @@ async fn sales_summary(k: &Kernel, ctx: &Ctx, tx: &mut Tx, r: &Range, session: O
     .bind(r.to)
     .bind(r.profile)
     .bind(&r.cashier)
+    .bind(&r.hidden)
     .fetch_all(&mut **tx)
     .await?;
     let ids: Vec<Uuid> = sales.iter().map(|s| s.id).collect();
@@ -289,7 +304,7 @@ async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_g
          from e_pos_invoice__items l join e_pos_invoice p on p.tenant_id = l.tenant_id and p.id = l.parent_id \
          join e_item i on i.tenant_id = l.tenant_id and i.id = l.item left join e_item_group g on g.tenant_id = i.tenant_id and g.id = i.item_group \
          where p.tenant_id = $1 and p.company = $2 and p.docstatus = 1 and p.posting_date between $3 and $4 and ($5::uuid is null or p.pos_profile = $5) \
-         and ($6::text is null or lower(p.cashier) = $6) group by {cols} order by {cols}"
+         and ($6::text is null or lower(p.cashier) = $6) and coalesce(p.pos_opening_entry = any($7), false) = false group by {cols} order by {cols}"
     );
     let data: Vec<(NaiveDate, String, Option<String>, Option<String>, Decimal, Decimal, Decimal)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(ctx.tenant)
@@ -298,6 +313,7 @@ async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_g
         .bind(r.to)
         .bind(r.profile)
         .bind(&r.cashier)
+        .bind(&r.hidden)
         .fetch_all(&mut **tx)
         .await?;
     let (mut tq, mut tn) = (Decimal::ZERO, Decimal::ZERO);
@@ -313,7 +329,7 @@ async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_g
     // The tax total comes from the invoices themselves, not from the rounded line shares.
     let taxes: Decimal = sqlx::query_scalar(
         "select coalesce(sum(total_taxes), 0) from e_pos_invoice p where p.tenant_id = $1 and p.company = $2 and p.docstatus = 1 \
-         and p.posting_date between $3 and $4 and ($5::uuid is null or p.pos_profile = $5) and ($6::text is null or lower(p.cashier) = $6)",
+         and p.posting_date between $3 and $4 and ($5::uuid is null or p.pos_profile = $5) and ($6::text is null or lower(p.cashier) = $6) and coalesce(p.pos_opening_entry = any($7), false) = false",
     )
     .bind(ctx.tenant)
     .bind(r.company)
@@ -321,6 +337,7 @@ async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_g
     .bind(r.to)
     .bind(r.profile)
     .bind(&r.cashier)
+    .bind(&r.hidden)
     .fetch_one(&mut **tx)
     .await?;
     let mut columns = vec![col("posting_date", "Date", "date"), col("item_group", "Item Group", "data")];
@@ -386,7 +403,7 @@ async fn top_items(tx: &mut Tx, ctx: &Ctx, r: &Range, limit: i64) -> Result<Valu
         "select i.item_code, i.item_name, coalesce(sum(l.qty), 0), coalesce(sum(l.net_amount), 0), count(distinct p.id) \
          from e_pos_invoice__items l join e_pos_invoice p on p.tenant_id = l.tenant_id and p.id = l.parent_id join e_item i on i.tenant_id = l.tenant_id and i.id = l.item \
          where p.tenant_id = $1 and p.company = $2 and p.docstatus = 1 and p.posting_date between $3 and $4 and ($5::uuid is null or p.pos_profile = $5) \
-         and ($6::text is null or lower(p.cashier) = $6) group by i.item_code, i.item_name order by 4 desc, 3 desc limit $7",
+         and ($6::text is null or lower(p.cashier) = $6) and coalesce(p.pos_opening_entry = any($8), false) = false group by i.item_code, i.item_name order by 4 desc, 3 desc limit $7",
     )
     .bind(ctx.tenant)
     .bind(r.company)
@@ -395,6 +412,7 @@ async fn top_items(tx: &mut Tx, ctx: &Ctx, r: &Range, limit: i64) -> Result<Valu
     .bind(r.profile)
     .bind(&r.cashier)
     .bind(limit.clamp(1, 1000))
+    .bind(&r.hidden)
     .fetch_all(&mut **tx)
     .await?;
     let out: Vec<Value> = data
@@ -414,7 +432,7 @@ async fn hourly(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
         "select substr(coalesce(p.posting_time, '00'), 1, 2), count(*) filter (where not p.is_return), count(*) filter (where p.is_return), \
          coalesce(sum(p.net_total), 0), coalesce(sum(p.rounded_total), 0) from e_pos_invoice p \
          where p.tenant_id = $1 and p.company = $2 and p.docstatus = 1 and p.posting_date between $3 and $4 and ($5::uuid is null or p.pos_profile = $5) \
-         and ($6::text is null or lower(p.cashier) = $6) group by 1 order by 1",
+         and ($6::text is null or lower(p.cashier) = $6) and coalesce(p.pos_opening_entry = any($7), false) = false group by 1 order by 1",
     )
     .bind(ctx.tenant)
     .bind(r.company)
@@ -422,6 +440,7 @@ async fn hourly(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
     .bind(r.to)
     .bind(r.profile)
     .bind(&r.cashier)
+    .bind(&r.hidden)
     .fetch_all(&mut **tx)
     .await?;
     let (mut tn, mut tg) = (Decimal::ZERO, Decimal::ZERO);
@@ -461,7 +480,7 @@ async fn returns(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
               and m.id = pm.mode_of_payment where pm.tenant_id = r.tenant_id and pm.parent_id = r.id), r.status, r.return_reason \
              from e_pos_invoice r left join e_pos_invoice o on o.tenant_id = r.tenant_id and o.id = r.return_against \
              where r.tenant_id = $1 and r.company = $2 and r.docstatus = 1 and r.is_return and r.posting_date between $3 and $4 \
-             and ($5::uuid is null or r.pos_profile = $5) and ($6::text is null or lower(r.cashier) = $6) order by r.posting_date, r.number",
+             and ($5::uuid is null or r.pos_profile = $5) and ($6::text is null or lower(r.cashier) = $6) and coalesce(r.pos_opening_entry = any($7), false) = false order by r.posting_date, r.number",
     )
     .bind(ctx.tenant)
     .bind(r.company)
@@ -469,6 +488,7 @@ async fn returns(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
     .bind(r.to)
     .bind(r.profile)
     .bind(&r.cashier)
+    .bind(&r.hidden)
     .fetch_all(&mut **tx)
     .await?;
     let total: Decimal = data.iter().map(|d| d.6).sum();

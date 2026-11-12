@@ -18,7 +18,7 @@ import { CardInputs } from "./Card";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
-import { promotionsLater, serverDown, till, tillAll, unreachable } from "./lib/offline";
+import { serverDown, till, tillAll, unreachable } from "./lib/offline";
 import { cardBalance, firstReceipt, voidSale } from "./lib/server";
 import { allows, type Limits } from "./lib/rights";
 import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
@@ -187,7 +187,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
       ),
   });
   const taxed = doc?.tax_invoice === true;
-  const applied = ((doc?.applied_promotions as Doc[] | undefined) ?? []).filter(() => !offline && !doc?.offline);
+  const applied = (doc?.applied_promotions as Doc[] | undefined) ?? [];
   // What the register asks of a sale of this size: the server says so when it prices it; offline, the snapshot's rule is held to.
   const needsBuyer = !buyer && walkIn && (doc?.needs_buyer === true || (offline && !!namedAbove && due > Number(namedAbove)));
   const heldBack = needsBuyer && offline ? tr("This register asks for a named buyer on a sale this size, and it cannot be checked until the connection is back: pick the customer on the sale, or sell it when the register is online.") : null;
@@ -313,7 +313,6 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
         )}
 
         {problem && <Alert tone="error">{isolate(problem)}</Alert>}
-        {offline && <Alert tone="info">{promotionsLater()}</Alert>}
         {applied.length > 0 && (
           <ul className="pos-added" aria-label={tr("Promotions taken")}>
             {applied.map((a, i) => (
