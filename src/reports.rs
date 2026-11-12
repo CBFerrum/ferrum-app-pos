@@ -53,6 +53,7 @@ const DEFS: &[Def] = &[
     },
     Def { name: "pos_hourly_sales", label: "POS Hourly Sales", entity: "PosInvoice", params: RANGE },
     Def { name: "pos_returns", label: "POS Returns", entity: "PosInvoice", params: RANGE },
+    Def { name: "pos_shift_report", label: "POS Shift Report", entity: "PosClosingEntry", params: RANGE },
     Def { name: "pos_item_lookup", label: "POS Item Lookup", entity: "PosProfile", params: &["pos_profile", "code", "search", "item_group"] },
 ];
 
@@ -107,6 +108,7 @@ impl ReportSource for PosReports {
             "pos_top_items" => top_items(&mut tx, ctx, &range, p.str("limit").and_then(|l| l.parse().ok()).unwrap_or(20)).await?,
             "pos_hourly_sales" => hourly(&mut tx, ctx, &range).await?,
             "pos_returns" => returns(&mut tx, ctx, &range).await?,
+            "pos_shift_report" => shifts(&mut tx, ctx, &range).await?,
             _ => return Err(Error::NotFound(format!("report {name}"))),
         };
         tx.rollback().await?;
@@ -119,6 +121,55 @@ impl ReportSource for PosReports {
         }
         Ok(out)
     }
+}
+
+/// Each closed shift: what it sold, took back, taxed (by rate, beneath it), paid in and out, dropped to the safe, and the
+/// count's difference (short is negative). The same figures as the shift report a closing prints.
+async fn shifts(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Uuid, Option<String>, Option<String>, Option<String>, NaiveDate, i64, i64, Decimal, Decimal, Decimal, Decimal, Decimal, Decimal, Decimal)> =
+        sqlx::query_as(
+            "select c.id, c.number, o.number, c.\"user\", c.posting_date, coalesce(c.invoice_count, 0)::bigint, coalesce(c.return_count, 0)::bigint, coalesce(c.net_total, 0), \
+             coalesce(c.total_taxes, 0), coalesce(c.grand_total, 0), coalesce(c.paid_in, 0), coalesce(c.paid_out, 0), coalesce(c.safe_drops, 0), coalesce(c.total_difference, 0) \
+             from e_pos_closing_entry c left join e_pos_opening_entry o on o.tenant_id = c.tenant_id and o.id = c.pos_opening_entry \
+             where c.tenant_id = $1 and c.company = $2 and c.docstatus = 1 and c.posting_date between $3 and $4 and ($5::uuid is null or c.pos_profile = $5) \
+             and ($6::text is null or lower(c.\"user\") = $6) order by c.posting_date, c.number",
+        )
+        .bind(ctx.tenant)
+        .bind(r.company)
+        .bind(r.from)
+        .bind(r.to)
+        .bind(r.profile)
+        .bind(&r.cashier)
+        .fetch_all(&mut **tx)
+        .await?;
+    let ids: Vec<Uuid> = data.iter().map(|d| d.0).collect();
+    let taxes: Vec<(Uuid, Option<String>, Option<Decimal>, Decimal, Decimal)> = sqlx::query_as(
+        "select parent_id, description, rate, coalesce(taxable_amount, 0), coalesce(tax_amount, 0) from e_pos_closing_entry__tax_rows where tenant_id = $1 and parent_id = any($2) order by parent_id, idx",
+    )
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut rows_out = Vec::new();
+    let mut total = Decimal::ZERO;
+    for (id, number, session, cashier, day, sales, returns, net, tax, grand, paid_in, paid_out, drops, diff) in data {
+        total += grand;
+        rows_out.push(json!({"closing": number, "session": session, "cashier": cashier, "posting_date": day, "sales": sales, "returns": returns, "net_total": money(net),
+            "tax": money(tax), "total": money(grand), "paid_in": money(paid_in), "paid_out": money(paid_out), "safe_drops": money(drops), "difference": money(diff), "_bold": true}));
+        for (_, description, rate, taxable, amount) in taxes.iter().filter(|t| t.0 == id) {
+            let name = format!("{}{}", description.clone().unwrap_or_default(), rate.map(|x| format!(" {}%", x.normalize())).unwrap_or_default());
+            rows_out.push(json!({"closing": name, "net_total": money(*taxable), "tax": money(*amount), "_indent": 1}));
+        }
+    }
+    Ok(json!({
+        "columns": [col("closing", "Closing", "data"), col("session", "Session", "data"), col("cashier", "Cashier", "data"), col("posting_date", "Date", "date"),
+            col("sales", "Sales", "int"), col("returns", "Returns", "int"), col("net_total", "Before Tax", "currency"), col("tax", "Tax", "currency"),
+            col("total", "Total", "currency"), col("paid_in", "Paid In", "currency"), col("paid_out", "Paid Out", "currency"),
+            col("safe_drops", "To the Safe", "currency"), col("difference", "Over / Short", "currency")],
+        "rows": rows_out,
+        "totals": {"total": money(total)},
+    }))
 }
 
 #[derive(sqlx::FromRow)]
@@ -196,7 +247,8 @@ async fn sales_summary(k: &Kernel, ctx: &Ctx, tx: &mut Tx, r: &Range, session: O
             Some(c) => rows(&get(k, ctx, tx, "PosClosingEntry", c).await?, "payments"),
             None => vec![],
         };
-        let lines = reconcile(k, ctx, tx, &doc, &counted, &[]).await?;
+        let register = get(k, ctx, tx, "PosProfile", ferrum_domain::util::id(&doc, "pos_profile").unwrap_or_default()).await?;
+        let lines = reconcile(k, ctx, tx, &doc, &counted, &[], ferrum_domain::util::b(&register, "blind_close")).await?;
         let names: HashMap<String, String> = sqlx::query_as::<_, (Uuid, String)>("select id, mode_name from e_mode_of_payment where tenant_id = $1")
             .bind(ctx.tenant)
             .fetch_all(&mut **tx)

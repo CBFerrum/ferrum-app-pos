@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_app_erp::pricing::{Side, calculate};
 use ferrum_app_erp::stock::{self, MoveIn, parse_serials};
-use ferrum_domain::util::{Company, b, company, d, date, get, id, money, posting_ts, rows, s, set, sys};
+use ferrum_domain::util::{Company, b, company, d, date, elevated, get, id, money, posting_ts, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -67,6 +67,7 @@ impl DocHook for PosInvoiceHook {
         if s(doc, "posting_time").is_none() {
             set(doc, "posting_time", now_time());
         }
+        let mut named = false;
         if b(doc, "is_return") && b(doc, "without_receipt") {
             prepare_unreceipted(hc, doc, &profile).await?;
         } else if b(doc, "is_return") {
@@ -78,6 +79,16 @@ impl DocHook for PosInvoiceHook {
                 let cust = get(hc.kernel, hc.ctx, hc.tx, "Customer", c).await?;
                 set(doc, "customer", c.to_string());
                 set(doc, "customer_name", cust.get("customer_name").cloned().unwrap_or(Value::Null));
+            }
+            // A buyer who gives a tax registration is that customer, and gets a tax invoice of their own.
+            let buyer = crate::buyer::resolve(hc, doc, &profile).await?;
+            set(doc, "tax_invoice", json!(buyer.as_ref().is_some_and(|b| b.tax_invoice)));
+            if buyer.as_ref().is_some_and(|b| b.tax_invoice) {
+                set(doc, "invoice_now", json!(true));
+            }
+            named = buyer.is_some();
+            if s(doc, "channel").is_none() {
+                set(doc, "channel", crate::snapshot::CHANNEL);
             }
             if let Some(pl) = id(&profile.doc, "price_list") {
                 set(doc, "price_list", pl.to_string());
@@ -99,6 +110,10 @@ impl DocHook for PosInvoiceHook {
         }
         crate::stored::prepare(hc, doc, &profile).await?;
         derive_payments(hc, doc, &profile, &co).await?;
+        // A sale above what the register takes without a named buyer (the rule on the sale says so).
+        let unnamed = !named && id(doc, "customer") == id(&profile.doc, "customer");
+        let needs = !b(doc, "is_return") && unnamed && opt_dec(&profile.doc, "named_buyer_above").is_some_and(|above| d(doc, "rounded_total") > above);
+        set(doc, "needs_buyer", json!(needs));
         if d(doc, "docstatus").is_zero() {
             set(doc, "status", "Draft");
         }
@@ -265,6 +280,14 @@ impl DocHook for PosInvoiceHook {
         let before = if reconcile { Some(on_hand(hc, doc, &co).await?) } else { None };
         co.allow_negative_stock |= reconcile;
         post_stock(hc, doc, &co).await?;
+        // The codes and promotions it used are counted once. A sale made offline was made on the till's
+        // word: a use that ran out meanwhile is not a reason to refuse what the buyer already paid.
+        if let Err(e) = ferrum_app_erp::promotion::count_uses(hc, doc, 1).await
+            && !b(doc, "sold_offline")
+        {
+            return Err(e);
+        }
+        record_difference(hc, doc).await?;
         if let Some(before) = before {
             record_shortfalls(hc, doc, &co, &before).await?;
         }
@@ -318,10 +341,31 @@ impl DocHook for PosInvoiceHook {
         stock::reverse_moves(hc.tx, hc.ctx, &co, "PosInvoice", iid, on, ts).await?;
         ledger::reverse(hc.tx, hc.ctx, "PosInvoice", iid, on, co.precision).await?;
         loyalty::on_cancel(hc, doc).await?;
+        ferrum_app_erp::promotion::count_uses(hc, doc, -1).await?;
         let mut v = Doc::new();
         v.insert("status".into(), json!("Cancelled"));
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PosInvoice", iid, v).await
     }
+}
+
+/// A sale made offline whose totals disagree: what the till showed, what the snapshot it used gives and what the
+/// sale was recorded at are not all the same (or the snapshot is no longer kept). The sale stands as the buyer paid
+/// it; a person looks at why (`PosPriceDifference`).
+async fn record_difference(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+    if !b(doc, "sold_offline") || (s(doc, "price_snapshot").is_none() && opt_dec(doc, "till_total").is_none()) {
+        return Ok(());
+    }
+    let (sale, till, replay) = (d(doc, "rounded_total"), opt_dec(doc, "till_total"), opt_dec(doc, "replay_total"));
+    let gone = s(doc, "price_snapshot").is_some() && replay.is_none();
+    if !gone && till.is_none_or(|t| t == sale) && replay.is_none_or(|r| r == sale) {
+        return Ok(());
+    }
+    let row = json!({
+        "pos_invoice": id(doc, "id"), "pos_profile": id(doc, "pos_profile"), "company": id(doc, "company"), "price_snapshot": s(doc, "price_snapshot"),
+        "till_total": till.map(money), "replay_total": replay.map(money), "sale_total": money(sale), "snapshot_kept": !gone,
+    });
+    hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "PosPriceDifference", row.as_object().cloned().unwrap_or_default()).await?;
+    Ok(())
 }
 
 /// Prices a sale. The first pass learns each line's list price and pricing-rule discount; the
@@ -331,6 +375,15 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
     let mut items = rows(doc, "items");
     let asked: Vec<(Option<Decimal>, Option<Decimal>)> =
         items.iter().map(|r| (opt_dec(r, "discount_percent"), opt_dec(r, "manual_rate").filter(|m| *m > Decimal::ZERO))).collect();
+    // A sale made offline is also priced with the snapshot its till used, to see that the two agree.
+    if b(doc, "sold_offline") && s(doc, "price_snapshot").is_some() {
+        let group = match id(doc, "customer") {
+            Some(c) => id(&get(hc.kernel, hc.ctx, hc.tx, "Customer", c).await?, "customer_group"),
+            None => None,
+        };
+        let total = crate::snapshot::replay_sale(hc, doc, profile.id, &asked, group).await?;
+        set(doc, "replay_total", total.map(money).unwrap_or(Value::Null));
+    }
     for r in items.iter_mut() {
         r.insert("price_list_rate".into(), Value::Null);
         r.insert("discount_percent".into(), Value::Null);
@@ -347,7 +400,8 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
     let mut asks = Vec::with_capacity(items.len());
     for (i, r) in items.iter_mut().enumerate() {
         let (list, rule) = (d(r, "price_list_rate"), d(r, "discount_percent"));
-        let (ask_discount, ask_rate) = asked[i];
+        // A free item a promotion added has no cashier's ask.
+        let (ask_discount, ask_rate) = asked.get(i).copied().unwrap_or_default();
         let price = ask_rate.unwrap_or(list);
         let discount = ask_discount.unwrap_or(rule);
         if price <= Decimal::ZERO {
@@ -499,6 +553,7 @@ async fn prepare_return(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) 
         };
         set(r, "original_line", line.get("id").cloned().unwrap_or(Value::Null));
         set(r, "price_list_rate", line.get("price_list_rate").cloned().unwrap_or(Value::Null));
+        set(r, "promotion_percent", line.get("promotion_percent").cloned().unwrap_or(Value::Null));
         set(r, "discount_percent", money(logic::with_fee(d(line, "discount_percent"), logic::restocking_fee(&fees, &condition))));
         r.insert("manual_rate".into(), Value::Null);
         if s(r, "batch_no").is_none() {
