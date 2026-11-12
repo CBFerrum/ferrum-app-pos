@@ -468,6 +468,42 @@ describe("the end of a shift", () => {
     expect(html).toContain("So far");
   });
 
+  it("offers a safe drop beside paid in and paid out, a slip for each movement, and what else moved", () => {
+    const html = draw(<ShiftPage />, seed);
+    expect(html).toContain("Drop to the safe");
+    expect(html).toContain("Print slip");
+    expect(html).toContain("What else moved");
+    expect(html).toContain("Dropped to the safe");
+    expect(html).toContain("Refunds and the tax by rate appear once the count is saved.");
+    // A saved closing brings the refunds and the tax by rate.
+    const closing = { id: "c1", version: 1, refund_total: "25.00", tax_rows: [{ id: "t1", description: "VAT", rate: "10", taxable_amount: "700.00", tax_amount: "70.00" }], payments: [] };
+    const withTax = draw(<ShiftPage />, (qc) => (seed(qc), qc.setQueryData(["pos", "closing", "s1"], closing)));
+    expect(withTax).toContain("Tax by rate");
+    expect(withTax).toMatch(/VAT 10\.00%.*on 700\.00.*70\.00/);
+    expect(withTax).toContain("25.00");
+    expect(html).toContain("Expected");
+    expect(html).toContain("774.45");
+  });
+
+  it("on a blind register shows no expected figure before the count is sent, and only the counted way's after", () => {
+    const blindProfile = { ...profile, blind_close: true };
+    const blindSeed = (qc: QueryClient) => (seed(qc), qc.setQueryData(["pos", "profile", "p1"], blindProfile));
+    const before = draw(<ShiftPage />, blindSeed);
+    expect(before).toContain("This register closes blind");
+    expect(before).toContain("Send the count");
+    expect(before).not.toContain("774.45");
+    expect(before).not.toContain("199.00");
+    expect(before).toContain("after the count is sent");
+    expect(before).toContain("2 ways of paying are not counted yet");
+    // The cash count was sent: the draft the server saved carries the cash's expected figure, and the card's stays hidden.
+    const sent = { id: "c1", version: 2, payments: [{ mode_of_payment: "cash", opening_amount: "500", expected_amount: "774.45", closing_amount: "770.00", difference: "-4.45" }, { mode_of_payment: "card", opening_amount: "0", expected_amount: null, closing_amount: null, difference: "0" }], tax_rows: [] };
+    const after = draw(<ShiftPage />, (qc) => (blindSeed(qc), qc.setQueryData(["pos", "closing", "s1"], sent)));
+    expect(after).toContain("774.45");
+    // (The count typed back into its box, and the short or over beside it, come from an effect a static render does not run.)
+    expect(after).not.toContain("199.00");
+    expect(after).toContain("ways of paying are not counted yet");
+  });
+
   it("holds the closing back while sales wait on the device", () => {
     localStorage.setItem("ferrum.pos.outbox", JSON.stringify([{ key: "q1", at: "2026-11-01T10:00:00Z", body: { pos_opening_entry: "s1" } }]));
     expect(draw(<ShiftPage />, seed)).toMatch(/A sale is\s+still waiting on this device/);

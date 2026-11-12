@@ -162,3 +162,55 @@ export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string
   `,
   );
 }
+
+// ── a blind close, and what moved besides sales ──
+
+/** What a saved closing says of a method that was counted. On a blind register the server gives a method's expected figure only
+ *  once it has a count (`reconcile`), so these are the only expected figures the till may show before the shift is closed. */
+export interface Sent {
+  expected: number | null;
+  counted: number;
+  difference: number;
+}
+
+export function sentOf(closing: Doc | null | undefined): Map<string, Sent> {
+  const out = new Map<string, Sent>();
+  for (const r of ((closing?.payments as Doc[] | undefined) ?? []).filter((x) => x.closing_amount != null && x.closing_amount !== "")) {
+    out.set(String(r.mode_of_payment), { expected: r.expected_amount == null || r.expected_amount === "" ? null : Number(r.expected_amount), counted: Number(r.closing_amount), difference: Number(r.difference ?? 0) || 0 });
+  }
+  return out;
+}
+
+/** The expected figure the screen may show for a method: always on a register that is not blind, and on a blind one only once that
+ *  method's count has been sent (or the shift is closed). Never read from the report before. */
+export function expectedShown(blind: boolean, closed: boolean, sent: Map<string, Sent>, mode: string, fromReport: number): number | null {
+  if (!blind) return fromReport;
+  return closed || sent.has(mode) ? (sent.get(mode)?.expected ?? (closed ? fromReport : null)) : null;
+}
+
+/** A blind register closes only once every method is counted (the server refuses otherwise). */
+export const uncounted = (counted: (number | null)[]): number => counted.filter((c) => c === null).length;
+
+/** A cash movement as the server takes it: a safe drop names no account (the register's safe account is the server's) and needs no reason;
+ *  paid in and paid out name the account they came from or went to, and why. */
+export function movementBody(o: { session: string; kind: "Cash In" | "Cash Out" | "Safe Drop"; amount: number; reason: string; account: string | null; date: string }): Doc {
+  return {
+    pos_opening_entry: o.session,
+    movement_type: o.kind,
+    amount: String(o.amount),
+    posting_date: o.date,
+    ...(o.reason.trim() ? { reason: o.reason.trim() } : {}),
+    ...(o.kind !== "Safe Drop" && o.account ? { account: o.account } : {}),
+  };
+}
+
+/** On a blind register a refused safe drop must not say what the drawer holds (the server's words give the figure, which is the expected one). */
+export function dropRefusal(blind: boolean, message: string): string {
+  return blind && /the drawer holds/i.test(message) ? tr("The drawer does not hold that much.") : message;
+}
+
+/** Totals of what moved in a shift, from the movements listed (a closing saved later keeps them too). */
+export function movedOf(moves: Doc[]): { paidIn: number; paidOut: number; dropped: number } {
+  const sum = (kind: string) => round(moves.filter((m) => m.movement_type === kind).reduce((s, m) => s + Number(m.amount ?? 0), 0), 6);
+  return { paidIn: sum("Cash In"), paidOut: sum("Cash Out"), dropped: sum("Safe Drop") };
+}
