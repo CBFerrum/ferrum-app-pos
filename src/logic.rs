@@ -192,10 +192,217 @@ pub fn exact_lines(qty: Decimal, net: Decimal, precision: u32, strategy: Roundin
     vec![(rest, price), (one, (net - amount(rest)) / one)]
 }
 
+/// Something a person at the till may do on their own only within their limits.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Discount,
+    PriceChange,
+    VoidLine,
+    VoidSale,
+    Refund,
+    ReturnWithoutReceipt,
+    NoSale,
+    Reprint,
+}
+
+// ponytail: names unused until approvals record them (next item).
+#[allow(dead_code)]
+impl Act {
+    pub const ALL: [Act; 8] =
+        [Act::Discount, Act::PriceChange, Act::VoidLine, Act::VoidSale, Act::Refund, Act::ReturnWithoutReceipt, Act::NoSale, Act::Reprint];
+
+    /// Its name on records (`PosApproval.action`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Act::Discount => "Discount",
+            Act::PriceChange => "Price Change",
+            Act::VoidLine => "Void Line",
+            Act::VoidSale => "Void Sale",
+            Act::Refund => "Refund",
+            Act::ReturnWithoutReceipt => "Return Without Receipt",
+            Act::NoSale => "No Sale",
+            Act::Reprint => "Reprint",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Act> {
+        Act::ALL.into_iter().find(|a| a.label() == s)
+    }
+}
+
+/// What one person may do at one register without someone else (`PosRoleLimit`): the most generous
+/// of their roles. `None` caps are no cap. The till gets the same record and checks the same way.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Limits {
+    /// The largest saving on a line against its list price, in percent, beyond what pricing rules gave.
+    pub discount_percent: Decimal,
+    /// The largest saving on a whole sale beyond what pricing rules gave.
+    pub discount_amount: Option<Decimal>,
+    pub change_price: bool,
+    pub void_line: bool,
+    pub void_sale: bool,
+    /// The largest return refunded.
+    pub refund: Option<Decimal>,
+    pub return_without_receipt: bool,
+    pub open_drawer: bool,
+    pub reprint: bool,
+}
+
+/// The larger cap, where no cap is the largest.
+fn wider(a: Option<Decimal>, b: Option<Decimal>) -> Option<Decimal> {
+    Some(a?.max(b?))
+}
+
+impl Limits {
+    /// No limit at all (a POS manager with no limits record).
+    pub fn unlimited() -> Limits {
+        Limits {
+            discount_percent: Decimal::ONE_HUNDRED,
+            discount_amount: None,
+            change_price: true,
+            void_line: true,
+            void_sale: true,
+            refund: None,
+            return_without_receipt: true,
+            open_drawer: true,
+            reprint: true,
+        }
+    }
+
+    /// The most generous of several roles' limits.
+    pub fn widest(all: impl IntoIterator<Item = Limits>) -> Option<Limits> {
+        all.into_iter().reduce(|a, b| Limits {
+            discount_percent: a.discount_percent.max(b.discount_percent),
+            discount_amount: wider(a.discount_amount, b.discount_amount),
+            change_price: a.change_price || b.change_price,
+            void_line: a.void_line || b.void_line,
+            void_sale: a.void_sale || b.void_sale,
+            refund: wider(a.refund, b.refund),
+            return_without_receipt: a.return_without_receipt || b.return_without_receipt,
+            open_drawer: a.open_drawer || b.open_drawer,
+            reprint: a.reprint || b.reprint,
+        })
+    }
+
+    /// Whether these limits let `act` through at `figure` (a saving percent or amount, a refund).
+    pub fn allows(&self, act: Act, figure: Decimal) -> bool {
+        match act {
+            Act::Discount => figure <= self.discount_percent,
+            Act::PriceChange => self.change_price,
+            Act::VoidLine => self.void_line,
+            Act::VoidSale => self.void_sale,
+            Act::Refund => self.refund.is_none_or(|r| figure <= r),
+            Act::ReturnWithoutReceipt => self.return_without_receipt,
+            Act::NoSale => self.open_drawer,
+            Act::Reprint => self.reprint,
+        }
+    }
+}
+
+/// A sale line as typed: the list price and pricing-rule discount the engine found, the price and
+/// discount the cashier asked for (`None`: not typed).
+#[derive(Debug, Clone, Copy)]
+pub struct LineAsk {
+    pub qty: Decimal,
+    pub list: Decimal,
+    pub rule: Decimal,
+    pub price: Option<Decimal>,
+    pub discount: Option<Decimal>,
+}
+
+/// What a sale asks beyond someone's limits: `(line, act, figure, why)`, the line `None` for the
+/// whole sale. `header` is the sale's own discount percent. A typed price, a line discount and the
+/// sale's discount count together as the saving against the list price.
+pub fn beyond(limits: &Limits, lines: &[LineAsk], header: Decimal) -> Vec<(Option<usize>, Act, Decimal, String)> {
+    let hundred = Decimal::ONE_HUNDRED;
+    let mut out = Vec::new();
+    let mut given = Decimal::ZERO;
+    for (i, l) in lines.iter().enumerate() {
+        let price = l.price.unwrap_or(l.list);
+        let discount = l.discount.unwrap_or(l.rule);
+        if l.price.is_some_and(|p| p != l.list) && !limits.change_price {
+            out.push((Some(i), Act::PriceChange, Decimal::ZERO, "you may not change prices".to_string()));
+        }
+        if l.list <= Decimal::ZERO {
+            continue;
+        }
+        let pays = price / l.list * (hundred - discount) / hundred * (hundred - header) / hundred;
+        let saving = ((Decimal::ONE - pays) * hundred).round_dp(4);
+        let allowed = l.rule.max(limits.discount_percent);
+        if saving > allowed {
+            out.push((Some(i), Act::Discount, saving, format!("a {}% discount exceeds the {}% allowed", saving.normalize(), allowed.normalize())));
+        }
+        // What the cashier gave beyond the pricing rules, in money.
+        let by_rule = l.qty * l.list * (hundred - l.rule) / hundred;
+        given += (by_rule - l.qty * l.list * pays).max(Decimal::ZERO);
+    }
+    let given = given.round_dp(2);
+    if let Some(cap) = limits.discount_amount.filter(|c| given > *c) {
+        out.push((None, Act::Discount, given, format!("discounts of {} on this sale exceed the {} allowed", given.normalize(), cap.normalize())));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    fn cashier() -> Limits {
+        Limits {
+            discount_percent: n("10"),
+            discount_amount: Some(n("50")),
+            change_price: false,
+            void_line: true,
+            void_sale: false,
+            refund: Some(n("200")),
+            return_without_receipt: false,
+            open_drawer: false,
+            reprint: true,
+        }
+    }
+
+    #[test]
+    fn limits_of_several_roles_take_the_most_generous() {
+        let senior = Limits { discount_percent: n("20"), discount_amount: None, refund: Some(n("100")), open_drawer: true, ..cashier() };
+        let both = Limits::widest([cashier(), senior]).unwrap();
+        assert_eq!(both.discount_percent, n("20"));
+        assert_eq!(both.discount_amount, None, "no cap is wider than any cap");
+        assert_eq!(both.refund, Some(n("200")));
+        assert!(both.open_drawer && !both.change_price && !both.void_sale);
+        assert_eq!(Limits::widest([]), None);
+        assert!(Limits::unlimited().allows(Act::Refund, n("1000000")));
+        assert!(!cashier().allows(Act::Refund, n("200.01")) && cashier().allows(Act::Refund, n("200")));
+        for a in Act::ALL {
+            assert_eq!(Act::parse(a.label()), Some(a));
+        }
+    }
+
+    #[test]
+    fn what_a_sale_asks_beyond_the_limits() {
+        let line = |list: &str, rule: &str, price: Option<&str>, discount: Option<&str>| LineAsk {
+            qty: Decimal::ONE,
+            list: n(list),
+            rule: n(rule),
+            price: price.map(n),
+            discount: discount.map(n),
+        };
+        assert!(beyond(&cashier(), &[line("100", "0", None, Some("10"))], Decimal::ZERO).is_empty());
+        let over = beyond(&cashier(), &[line("100", "0", None, Some("12"))], Decimal::ZERO);
+        assert_eq!((over[0].0, over[0].1, over[0].2), (Some(0), Act::Discount, n("12")));
+        // A pricing rule's own 15% stands; the cashier may not go beyond it.
+        assert!(beyond(&cashier(), &[line("100", "15", None, None)], Decimal::ZERO).is_empty());
+        // A typed price is a price change, and its saving counts with the line and sale discounts.
+        let typed = beyond(&cashier(), &[line("100", "0", Some("95"), Some("5"))], Decimal::ZERO);
+        assert_eq!(typed.iter().map(|x| x.1).collect::<Vec<_>>(), vec![Act::PriceChange]);
+        assert_eq!(beyond(&cashier(), &[line("100", "0", None, Some("5"))], n("6"))[0].1, Act::Discount, "5% then 6% is 10.7%");
+        // 10% on six lines of 100 is 60 given, over the 50 a sale may carry.
+        let six: Vec<LineAsk> = (0..6).map(|_| line("100", "0", None, Some("10"))).collect();
+        let sale = beyond(&cashier(), &six, Decimal::ZERO);
+        assert_eq!((sale.len(), sale[0].0, sale[0].2), (1, None, n("60")));
+        assert!(beyond(&Limits::unlimited(), &six, n("50")).is_empty());
+    }
 
     fn n(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
