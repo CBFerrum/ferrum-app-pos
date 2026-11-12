@@ -388,6 +388,30 @@ async fn scenario() {
     let paid = t.sell(&cashier, sale(json!([line(widget, "1")]), json!([by_card.clone()]))).await;
     assert_eq!(dec(&paid["payments"][0]["stored_value_balance"]), n("390"), "{paid:?}");
     assert!(paid["payments"][0]["stored_value_payment"].is_string());
+    // A card with a PIN: sold, its balance asked, taken; and never taken by naming its account alone.
+    let pinned = t
+        .sell(
+            &cashier,
+            sale(
+                json!([{"item": card_item.to_string(), "qty": "1", "stored_value_code": "GIFT-PIN0-0000-0002", "stored_value_pin": "Pq-card-77"}]),
+                json!([pay(&cash, "500")]),
+            ),
+        )
+        .await;
+    assert_eq!(pinned["items"][0]["stored_value_pin"], Value::Null);
+    let told = t
+        .site(&cashier, "POST", "/balance", Value::Null, json!({"mode": giftcard["id"], "code": "GIFT-PIN0-0000-0002", "pin": "Pq-card-77"}))
+        .await
+        .expect("balance");
+    let pinned_acc = told["account"].clone();
+    let mut with_pin = pay(&giftcard, "110");
+    with_pin["stored_value_code"] = json!("GIFT-PIN0-0000-0002");
+    with_pin["stored_value_pin"] = json!("Pq-card-77");
+    t.sell(&cashier, sale(json!([line(widget, "1")]), json!([with_pin]))).await;
+    let mut named = pay(&giftcard, "110");
+    named["stored_value_account"] = pinned_acc.clone();
+    let e = t.k.insert(&cashier, "PosInvoice", obj(sale(json!([line(widget, "1")]), json!([named])))).await.unwrap_err();
+    assert!(messages(&e).contains("scan or type the card's code"), "{e:?}");
     let mut wrong = by_card.clone();
     wrong["stored_value_code"] = json!("GIFT-0000-0000-0009");
     assert!(t.k.insert(&cashier, "PosInvoice", obj(sale(json!([line(widget, "1")]), json!([wrong])))).await.is_err(), "an unknown code");
@@ -445,4 +469,29 @@ async fn scenario() {
     after["id"] = json!(w5);
     after["approvals"] = json!([{"approval": kept_for_later["approval"]}]);
     assert!(messages(&t.refused(&cashier, after).await).contains("exceeds the 5% allowed"), "lapsed with its session");
+
+    // ───────────── neither a staff PIN nor a card's code or PIN comes to rest ─────────────
+    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "93718264055"})).await.expect("a new PIN");
+    t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "93718264055", "Discount", Some("15"), &new_id())).await.expect("approved");
+    let secrets = ["93718264055", "GIFT-0000-0000-0001", "GIFT000000000001", "GIFT-PIN0-0000-0002", "GIFTPIN000000002", "Pq-card-77"];
+    let like: Vec<String> = secrets.iter().map(|s| format!("%{s}%")).collect();
+    let mut tx = t.k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await.unwrap();
+    let tables: Vec<String> =
+        sqlx::query_scalar("select table_name::text from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by 1")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    let mut rests = Vec::new();
+    for table in tables {
+        let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from \"{table}\" x where x::text ilike any($1)")))
+            .bind(&like)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        if hits > 0 {
+            rests.push(format!("{table}: {hits}"));
+        }
+    }
+    assert_eq!(rests, Vec::<String>::new(), "a staff PIN or a card's code or PIN rests in these tables");
 }
