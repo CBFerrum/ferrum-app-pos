@@ -8,12 +8,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from "react-router";
-import { engineUrl } from "@ferrum/calc";
 import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
 import { ConfirmHost, StatePanel, Toaster } from "@ferrum/kit";
 import { Problem } from "./ui";
 import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import { keepToTheLease } from "./lib/offline";
+import { warmPricing } from "./lib/pricing";
 import { RegisterPage } from "./Register";
 import "./styles.css";
 
@@ -61,8 +61,9 @@ function TillPage() {
 // an old browser) leaves the till working online.
 if ("serviceWorker" in navigator) {
   void navigator.serviceWorker.register(`${routeBase("pos")}sw.js`, { scope: routeBase("pos") }).catch(() => {});
-  // The pricing engine, through the worker, so it is on this device before it is needed offline.
-  const warm = () => void fetch(engineUrl).catch(() => {});
+  // The pricing engine's two files (ERP's pricing crate in WebAssembly), through the worker, so they are on this device before they are needed
+  // offline: only fetched here, never run until a sale is priced offline.
+  const warm = () => void warmPricing();
   navigator.serviceWorker.addEventListener("controllerchange", warm);
   if (navigator.serviceWorker.controller) warm();
 }
