@@ -36,7 +36,7 @@ modules:
     label: POS
     icon: store
     order: 45
-    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval,
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
             report:pos_returns]
 
@@ -80,6 +80,8 @@ roles:
       - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosStockShortfall, read: true, write: true, export: true}
+      - {entity: PosPriceDifference, read: true, write: true, export: true}
+      - {entity: PosReceiptEvent, read: true, export: true}
       - {entity: PosProfile, read: true, write: true, create: true, delete: true}
       - {entity: ModeOfPayment, read: true, write: true, create: true, delete: true}
       - {entity: ItemBarcode, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -134,3 +136,141 @@ seed:
 personal_data:
   - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}
+
+# The till's papers and messages. A workspace edits them under Settings (a copy of a default, reset to it when it
+# wants); the till asks the server for the receipt (GET /receipt/{sale}, POST /reprint) and prints what comes back.
+# values: `pos.receipt_sent` reads company (the seller's name) and currency (its code).
+documents:
+  - key: pos.receipt
+    label: Receipt
+    entity: PosInvoice
+    output: page
+    default: true
+    languages:
+      en:
+        body: |-
+          {% set pf = links.pos_profile.print_format %}{% set narrow = pf != 'A4' %}
+          <style>@page {size: {{ 'A4' if pf == 'A4' else ('58mm 200mm' if pf == 'Thermal 58mm' else '80mm 200mm') }}; margin: 3mm}
+          .r {font: {{ '8pt' if pf == 'Thermal 58mm' else '9pt' }} sans-serif; color: #000} .r h1 {font-size: 12pt; margin: 0; text-align: center} .c {text-align: center}
+          .r table {width: 100%; border-collapse: collapse} .r td, .r th {padding: 1px 0; vertical-align: top} .n {text-align: right; white-space: nowrap}
+          .rule {border-top: 1px dashed #000; margin: 3px 0} .mark {font-weight: bold; text-align: center; border: 1px solid #000; margin: 2px 0}</style>
+          <div class="r">
+          {% set co = links.company %}
+          <h1 dir="auto">{{ co.company_name }}</h1>
+          {% if links.pos_profile.receipt_header %}<div class="c" dir="auto">{{ links.pos_profile.receipt_header }}</div>{% endif %}
+          {% set regs = doc.tax_registrations if doc.tax_registrations is mapping else {} %}{% set sellers = regs.seller if regs.seller is defined else [] %}{% set buyers = regs.buyer if regs.buyer is defined else [] %}
+          {% for t in sellers %}<div class="c">{{ t.label }} {{ t.value }}</div>{% else %}{% if co.tax_id %}<div class="c">Tax ID {{ co.tax_id }}</div>{% endif %}{% endfor %}
+          <div class="mark">{% if doc.is_return %}RETURN{% elif doc.tax_invoice %}TAX INVOICE{% else %}RECEIPT{% endif %}{% if doc.reprints|int > 0 %} · COPY {{ doc.reprints }}{% endif %}</div>
+          <table>
+          <tr><td>No. {{ doc.number }}</td><td class="n">{{ doc.posting_date|date('short') }} {{ (doc.posting_time or '')[:5] }}</td></tr>
+          {% if doc.tax_invoice and links.consolidated_invoice.number %}<tr><td colspan="2">Invoice {{ links.consolidated_invoice.number }}</td></tr>{% endif %}
+          {% if doc.cashier %}<tr><td colspan="2">Cashier {{ doc.cashier }}</td></tr>{% endif %}
+          {% if doc.buyer_tax_id or doc.tax_invoice %}<tr><td colspan="2" dir="auto">{{ doc.customer_name }}</td></tr>
+          {% for t in buyers %}<tr><td colspan="2">{{ t.label }} {{ t.value }}</td></tr>{% else %}{% if doc.buyer_tax_id %}<tr><td colspan="2">{{ doc.buyer_tax_id }}</td></tr>{% endif %}{% endfor %}{% endif %}
+          </table>
+          <div class="rule"></div>
+          <table>
+          {% for l in doc["items"] %}<tr><td dir="auto">{{ l.item_name }}{% if l.note %}<div>{{ l.note }}</div>{% endif %}<div>{{ l.qty|number }} × {{ l.rate|amount }}{% if l.discount_percent|float > 0 %} (−{{ l.discount_percent|number(0) }}%){% endif %}</div></td><td class="n">{{ l.amount|amount }}</td></tr>{% endfor %}
+          </table>
+          <div class="rule"></div>
+          <table>
+          {% if doc.discount_amount|float != 0 %}<tr><td>Subtotal</td><td class="n">{{ doc.total|amount }}</td></tr><tr><td>Discount</td><td class="n">−{{ doc.discount_amount|amount }}</td></tr>{% endif %}
+          {% if doc.taxes|selectattr("included_in_price")|list %}<tr><td colspan="2">Prices include tax</td></tr>{% else %}{% if doc.total_taxes|float != 0 %}<tr><td>Before tax</td><td class="n">{{ doc.net_total|amount }}</td></tr>{% endif %}{% endif %}
+          {% for t in doc.tax_breakdown or [] %}<tr><td>{{ t.description }}<div>{% if t.rate|float != 0 %}{{ t.rate|number }}% {% endif %}on {{ t.taxable_amount|amount }}</div></td><td class="n">{{ t.tax_amount|amount }}</td></tr>
+          {% else %}{% for t in doc.taxes or [] %}<tr><td>{{ t.description }}</td><td class="n">{{ t.tax_amount|amount }}</td></tr>{% endfor %}{% endfor %}
+          {% if doc.rounding_adjustment|float != 0 %}<tr><td>Rounding</td><td class="n">{{ doc.rounding_adjustment|amount }}</td></tr>{% endif %}
+          <tr><td><b>Total</b></td><td class="n"><b>{{ doc.rounded_total|amount }}</b></td></tr>
+          </table>
+          <div class="rule"></div>
+          <table>
+          {% for p in doc.payments or [] %}<tr><td>{{ (p._titles or {}).mode_of_payment }}{% if p.reference_no %} {{ p.reference_no }}{% endif %}{% if p.mode_type == 'Loyalty Points' %} ({{ p.loyalty_points }} pts){% endif %}</td><td class="n">{{ p.amount|amount }}</td></tr>
+          {% if p.mode_type == 'Stored Value' and p.stored_value_balance is not none %}<tr><td colspan="2">Left on the card {{ p.stored_value_balance|amount }}</td></tr>{% endif %}{% endfor %}
+          {% if doc.change_amount|float > 0 %}<tr><td>Change</td><td class="n">{{ doc.change_amount|amount }}</td></tr>{% endif %}
+          </table>
+          {% if doc.loyalty_points_earned|int > 0 %}<div class="c">Points earned {{ doc.loyalty_points_earned }}</div>{% endif %}
+          {% if doc.applied_promotions %}<div class="rule"></div>{% for a in doc.applied_promotions %}<div>{{ a.title }} −{{ a.amount|amount }}</div>{% endfor %}{% endif %}
+          <div class="rule"></div>
+          {% if links.pos_profile.receipt_footer %}<div class="c" dir="auto">{{ links.pos_profile.receipt_footer }}</div>{% endif %}
+          <div class="c">{{ barcode(doc.number, module=1, height=40, text=true) }}</div>
+          </div>
+  - key: pos.receipt_gift
+    label: Gift receipt
+    entity: PosInvoice
+    output: page
+    languages:
+      en:
+        body: |-
+          {% set pf = links.pos_profile.print_format %}
+          <style>@page {size: {{ 'A4' if pf == 'A4' else ('58mm 120mm' if pf == 'Thermal 58mm' else '80mm 120mm') }}; margin: 3mm}
+          .r {font: {{ '8pt' if pf == 'Thermal 58mm' else '9pt' }} sans-serif; color: #000} .r h1 {font-size: 12pt; margin: 0; text-align: center} .c {text-align: center}
+          .r table {width: 100%; border-collapse: collapse} .r td {padding: 1px 0; vertical-align: top} .n {text-align: right; white-space: nowrap}
+          .rule {border-top: 1px dashed #000; margin: 3px 0} .mark {font-weight: bold; text-align: center; border: 1px solid #000; margin: 2px 0}</style>
+          <div class="r">
+          <h1 dir="auto">{{ links.company.company_name }}</h1>
+          <div class="mark">GIFT RECEIPT</div>
+          <div>No. {{ doc.number }} · {{ doc.posting_date|date('short') }}</div>
+          <div class="rule"></div>
+          <table>{% for l in doc["items"] %}<tr><td dir="auto">{{ l.item_name }}</td><td class="n">× {{ l.qty|number }}</td></tr>{% endfor %}</table>
+          <div class="rule"></div>
+          {% if links.pos_profile.receipt_footer %}<div class="c" dir="auto">{{ links.pos_profile.receipt_footer }}</div>{% endif %}
+          <div class="c">{{ barcode(doc.number, module=1, height=40, text=true) }}</div>
+          </div>
+  - key: pos.shift_report
+    label: Shift report
+    entity: PosClosingEntry
+    output: page
+    default: true
+    languages:
+      en:
+        body: |-
+          {% set pf = links.pos_profile.print_format %}
+          <style>@page {size: {{ 'A4' if pf == 'A4' else ('58mm 250mm' if pf == 'Thermal 58mm' else '80mm 250mm') }}; margin: 3mm}
+          .r {font: {{ '8pt' if pf == 'Thermal 58mm' else '9pt' }} sans-serif; color: #000} .r h1 {font-size: 12pt; margin: 0; text-align: center}
+          .r table {width: 100%; border-collapse: collapse} .r td, .r th {padding: 1px 0; vertical-align: top} .n {text-align: right; white-space: nowrap}
+          .rule {border-top: 1px dashed #000; margin: 3px 0} .mark {font-weight: bold; text-align: center; border: 1px solid #000; margin: 2px 0}</style>
+          <div class="r">
+          <h1 dir="auto">{{ links.company.company_name }}</h1>
+          <div class="mark">SHIFT REPORT{% if doc.docstatus != 1 %} · NOT CLOSED{% endif %}</div>
+          <table>
+          <tr><td>Register</td><td class="n">{{ links.pos_profile.profile_name }}</td></tr>
+          <tr><td>Cashier</td><td class="n">{{ doc.user }}</td></tr>
+          <tr><td>Closed</td><td class="n">{{ doc.posting_date|date('short') }}</td></tr>
+          {% if doc.number %}<tr><td>No.</td><td class="n">{{ doc.number }}</td></tr>{% endif %}
+          </table>
+          <div class="rule"></div>
+          <table>
+          <tr><td>Sales</td><td class="n">{{ doc.invoice_count }}</td></tr>
+          <tr><td>Returns</td><td class="n">{{ doc.return_count }} · {{ doc.refund_total|amount }}</td></tr>
+          <tr><td>Before tax</td><td class="n">{{ doc.net_total|amount }}</td></tr>
+          {% for t in doc.tax_rows or [] %}<tr><td>{{ t.description }}<div>{% if t.rate|float != 0 %}{{ t.rate|number }}% {% endif %}on {{ t.taxable_amount|amount }}</div></td><td class="n">{{ t.tax_amount|amount }}</td></tr>{% endfor %}
+          <tr><td><b>Total</b></td><td class="n"><b>{{ doc.grand_total|amount }}</b></td></tr>
+          </table>
+          <div class="rule"></div>
+          <table>
+          <tr><td>Paid in</td><td class="n">{{ doc.paid_in|amount }}</td></tr>
+          <tr><td>Paid out</td><td class="n">{{ doc.paid_out|amount }}</td></tr>
+          <tr><td>Dropped to the safe</td><td class="n">{{ doc.safe_drops|amount }}</td></tr>
+          </table>
+          <div class="rule"></div>
+          <table>
+          <tr><th align="left">Method</th><th class="n">Float</th><th class="n">Expected</th><th class="n">Counted</th><th class="n">Over / short</th></tr>
+          {% for p in doc.payments or [] %}<tr><td>{{ (p._titles or {}).mode_of_payment }}</td><td class="n">{{ p.opening_amount|amount }}</td><td class="n">{% if p.expected_amount is not none %}{{ p.expected_amount|amount }}{% endif %}</td><td class="n">{% if p.closing_amount is not none %}{{ p.closing_amount|amount }}{% endif %}</td><td class="n">{% if p.expected_amount is not none and p.closing_amount is not none %}{{ p.difference|amount }}{% endif %}</td></tr>{% endfor %}
+          <tr><td><b>Over / short</b></td><td></td><td></td><td></td><td class="n"><b>{{ doc.total_difference|amount }}</b></td></tr>
+          </table>
+          {% if doc.remarks %}<div class="rule"></div><div dir="auto">{{ doc.remarks }}</div>{% endif %}
+          </div>
+
+messages:
+  - key: pos.receipt_sent
+    label: Receipt sent to the buyer
+    entity: PosInvoice
+    category: operational
+    channels: [email, text]
+    values: [company, currency]
+    languages:
+      en:
+        email:
+          subject: "Your receipt {{ doc.number }} from {{ values.company }}"
+          body: "<p>Thank you for shopping with {{ values.company }}.</p><table>{% for l in doc['items'] %}<tr><td>{{ l.item_name }} × {{ l.qty }}</td><td align=\"right\">{{ l.amount }}</td></tr>{% endfor %}</table><p>Tax {{ doc.total_taxes|amount(values.currency) }} · Total <b>{{ doc.rounded_total|amount(values.currency) }}</b> · Paid {{ doc.paid_amount|amount(values.currency) }}</p><p>Receipt {{ doc.number }} of {{ doc.posting_date }}.</p>"
+        text:
+          text: "{{ values.company }}: receipt {{ doc.number }}, total {{ doc.rounded_total|amount(values.currency) }} (tax {{ doc.total_taxes|amount(values.currency) }}), {{ doc.posting_date }}. Thank you."

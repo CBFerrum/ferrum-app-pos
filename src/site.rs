@@ -25,6 +25,7 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["pricebook"]) => Ok(SiteResponse::json(200, &price_book(k, ctx, &req).await?)),
+            ("GET", ["snapshot"]) => Ok(SiteResponse::json(200, &crate::snapshot::snapshot(k, ctx, &req).await?)),
             ("POST", ["pin"]) => {
                 crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
                 Ok(SiteResponse::json(200, &json!({"ok": true})))
@@ -36,6 +37,12 @@ impl Site for PosSite {
                 let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
                 Ok(SiteResponse::json(200, &crate::invoice::exchange(k, ctx, half("back")?, half("out")?).await?))
             }
+            ("GET", ["receipt", sale]) => {
+                let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
+                crate::receipt::first(k, ctx, &req, sale).await
+            }
+            ("POST", ["reprint"]) => crate::receipt::reprint(k, ctx, &req).await,
+            ("POST", ["send"]) => Ok(SiteResponse::json(200, &crate::receipt::send(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("GET", ["returns", sale]) => {
@@ -64,6 +71,11 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
         Some(a) => Some(a.parse().map_err(|_| Error::field("after", "is an item id"))?),
         None => None,
     };
+    book_page(k, ctx, profile_id, after).await
+}
+
+/// One page of the price book (`after`: the last item of the page before).
+pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<Value> {
     // Reading the register is the right to its prices.
     let profile = k.get(ctx, "PosProfile", profile_id, false).await?;
     let groups: Vec<String> = rows(&profile, "item_groups").iter().filter_map(|g| s(g, "item_group").map(str::to_string)).collect();
@@ -74,7 +86,7 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
     if let Some(a) = after {
         filters.push(Filter { field: "id".into(), op: Op::Gt, value: json!(a) });
     }
-    let fields = ["id", "item_code", "item_name", "barcode"].map(String::from).to_vec();
+    let fields = ["id", "item_code", "item_name", "barcode", "item_group"].map(String::from).to_vec();
     let query = ListQuery { filters, fields: Some(fields), sort: Some("id asc".into()), limit: Some(PAGE + 1), ..Default::default() };
     let mut items = k.list(ctx, "Item", &query).await?.rows;
     let more = items.len() > PAGE as usize;
@@ -137,8 +149,25 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
     let (code, precision) = currency(k, ctx, &mut tx, id(&priced, "currency").unwrap_or(co.currency_id)).await?;
     tx.commit().await?;
     let rate = Some(d(&priced, "conversion_rate")).filter(|r| *r > Decimal::ZERO).unwrap_or(Decimal::ONE);
-    let lines = rows(&priced, "items");
-    let input = calc_input(&lines, &rows(&priced, "taxes"), d(&priced, "discount_percent"), &co, precision, rate, true);
+    // Promotions are a basket's, not an item's: the book keeps each item as a sale of one prices it, and the
+    // snapshot carries the promotions beside it.
+    let lines: Vec<Doc> = rows(&priced, "items")
+        .into_iter()
+        .filter(|r| s(r, "added_by_promotion").is_none())
+        .map(|mut r| {
+            r.remove("promotion_percent");
+            r
+        })
+        .collect();
+    // Tax rows are keyed by position, not by the ids a preview gives them, so the same book is the same book twice.
+    let taxes: Vec<Doc> = rows(&priced, "taxes")
+        .into_iter()
+        .map(|mut t| {
+            t.remove("id");
+            t
+        })
+        .collect();
+    let input = calc_input(&lines, &taxes, d(&priced, "discount_percent"), &co, precision, rate, true);
     let mut engine = serde_json::to_value(&input).map_err(|e| Error::internal(e.to_string()))?;
     if let Value::Object(m) = &mut engine {
         m.remove("lines");
@@ -151,7 +180,7 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
             let item = id(row, "item")?;
             let own = items.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(&item.to_string()))?;
             Some(json!({
-                "id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"),
+                "id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"), "item_group": own.get("item_group"),
                 // `tax_qty`: one's stock quantity, which per-unit taxes count (the till scales it).
                 "line": {"price": line.price, "discount_percent": line.discount_percent, "tax_rates": line.tax_rates, "tax_qty": line.tax_qty},
             }))
