@@ -45,6 +45,10 @@ impl Site for PosSite {
             ("POST", ["send"]) => Ok(SiteResponse::json(200, &crate::receipt::send(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
+            ("POST", ["returns", sale, "plan"]) => {
+                let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
+                Ok(SiteResponse::json(200, &returns::plan(k, ctx, &req, sale).await?))
+            }
             ("GET", ["returns", sale]) => {
                 let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
                 Ok(SiteResponse::json(200, &returns::sheet(k, ctx, &req, sale).await?))

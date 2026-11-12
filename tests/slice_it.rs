@@ -92,6 +92,19 @@ impl T {
 }
 
 impl T {
+    /// Debit minus credit on an account (by name) across all postings.
+    async fn gl(&self, account: &str) -> Decimal {
+        let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+        sqlx::query_scalar(
+            "select coalesce(sum(l.debit - l.credit), 0) from journal_line l join e_account a on a.tenant_id = l.tenant_id and a.id = l.account_id \
+             where l.tenant_id = $1 and a.account_name = $2",
+        )
+        .bind(self.tenant)
+        .bind(account)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap()
+    }
     /// A request answered with a page (a receipt), as its text.
     async fn page(&self, ctx: &Ctx, method: &str, path: &str, query: Value, body: Value) -> Result<(String, Vec<(String, String)>), Error> {
         let req = SiteRequest {
@@ -533,8 +546,319 @@ async fn scenario() {
     // The upkeep forgets what is old, and copes with a workspace that has none yet.
     ferrum_app_pos::maintenance(&t.k).await.expect("upkeep");
     println!("item 4 ok");
+
+    // ───────────── 5. returns and exchanges ─────────────
+    let assets = uid(&t.find_one("Account", json!({"account_name": "Current Assets", "company": cid.to_string()})).await);
+    let clearing = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Exchange Clearing", "company": cid.to_string(), "parent_account": assets.to_string(), "root_type": "Asset"}),
+        )
+        .await;
+    let swap = t
+        .insert(
+            &a,
+            "ModeOfPayment",
+            json!({"mode_name": "Exchange", "mode_type": "General", "accounts": [{"company": cid.to_string(), "account": clearing["id"]}]}),
+        )
+        .await;
+    let policy = t.insert(&a, "PosReturnPolicy", json!({"policy_name": "Shop", "store_credit": giftcard["id"], "exchange_mode": swap["id"]})).await;
+    let modes = |card_refunds: bool| {
+        json!([{"mode_of_payment": cash["id"], "is_default": true, "allow_in_returns": true}, {"mode_of_payment": card["id"], "allow_in_returns": card_refunds},
+               {"mode_of_payment": giftcard["id"], "allow_in_returns": true}, {"mode_of_payment": swap["id"], "allow_in_returns": true}])
+    };
+    t.k.update(&a, "PosProfile", counter, obj(json!({"return_policy": policy["id"], "payments": modes(true)})), None).await.expect("a return policy");
+    let bought = t.sell(&cashier, sale(widgets("2"), json!([pay(&card, "264")]))).await;
+    let (bid, line_id) = (uid(&bought), bought["items"][0]["id"].clone());
+    let plan = |_: Option<&str>| plan_for(&t, &cashier, counter, bid, &line_id);
+    // One of the two widgets back: refunded to the card it was paid with.
+    let p = plan(None).await;
+    assert_eq!(
+        (dec(&p["total"]), p["refunds"].as_array().map(Vec::len), p["refunds"][0]["name"].clone(), dec(&p["refunds"][0]["amount"])),
+        (n("132"), Some(1), json!("Card"), n("132")),
+        "{p}"
+    );
+    // The register stops refunding to cards: the share goes onto store credit (the policy's default), or out as cash when it says so.
+    t.k.update(&a, "PosProfile", counter, obj(json!({"payments": modes(false)})), None).await.unwrap();
+    let p = plan(None).await;
+    assert_eq!((p["refunds"][0]["name"].clone(), dec(&p["refunds"][0]["amount"]), dec(&p["unplaced"])), (json!("Gift Card"), n("132"), n("0")), "{p}");
+    t.k.update(&a, "PosReturnPolicy", uid(&policy), obj(json!({"unrefundable_to": "Cash"})), None).await.unwrap();
+    let p = plan(None).await;
+    assert_eq!((p["refunds"][0]["name"].clone(), dec(&p["refunds"][0]["amount"])), (json!("Cash"), n("132")), "{p}");
+    // The plan is a proposal; the return follows it and is held to the same rules.
+    let one_back = |sale_id: Uuid, line: &Value, pays: Value| json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": sale_id.to_string(), "items": [{"item": widget.to_string(), "qty": "-1", "original_line": line}], "payments": pays});
+    let returned = t.sell(&cashier, one_back(bid, &line_id, json!([pay(&cash, "-132")]))).await;
+    assert_eq!(dec(&returned["rounded_total"]), n("-132"), "{returned:?}");
+    // Found by its receipt number, scanned whole; the register's window says until when it comes back.
+    let found = t.site(&cashier, "GET", "/returns", json!({"profile": counter.to_string(), "q": bought["number"]}), Value::Null).await.unwrap();
+    assert_eq!(
+        (found["rows"][0]["id"].clone(), found["rows"][0]["returns_until"].is_string(), found["window_days"].clone()),
+        (bought["id"].clone(), true, json!(30)),
+        "{found}"
+    );
+    // Past the window: the lookup says so, and the return is refused (the window is the register's policy, 30 days here).
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_pos_invoice set posting_date = current_date - 40 where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(bid)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let old = t.site(&cashier, "GET", "/returns", json!({"profile": counter.to_string(), "q": bought["number"]}), Value::Null).await.unwrap();
+    assert!(old["rows"][0]["blocked"].as_str().is_some_and(|b| b.contains("past the days")), "found by its number whatever its age: {old}");
+    let e = t.refused(&cashier, one_back(bid, &line_id, json!([pay(&cash, "-132")]))).await;
+    assert!(messages(&e).contains("older than the 30 days"), "{e:?}");
+    // Two tills return the last widget of a sale at once: one gets it, the other is told nothing is left (the sale is
+    // locked while a return is checked, and what earlier returns took is read after the lock).
+    t.k.update(&a, "PosProfile", counter, obj(json!({"payments": modes(true)})), None).await.unwrap();
+    let last = t.sell(&cashier, sale(widgets("1"), json!([pay(&card, "132")]))).await;
+    let (lid, lline) = (uid(&last), last["items"][0]["id"].clone());
+    let (r1, r2) = (
+        t.insert(&cashier, "PosInvoice", one_back(lid, &lline, json!([pay(&cash, "-132")]))).await,
+        t.insert(&cashier, "PosInvoice", one_back(lid, &lline, json!([pay(&cash, "-132")]))).await,
+    );
+    let (x, y) = tokio::join!(t.k.submit(&cashier, "PosInvoice", uid(&r1), None), t.k.submit(&cashier, "PosInvoice", uid(&r2), None));
+    let outcomes = [x, y];
+    assert_eq!(outcomes.iter().filter(|r| r.is_ok()).count(), 1, "one of two simultaneous returns of the same widget: {outcomes:?}");
+    let loser = outcomes.iter().find_map(|r| r.as_ref().err()).unwrap();
+    assert!(messages(loser).contains("can still come back"), "{loser:?}");
+    let sheet = t.site(&cashier, "GET", &format!("/returns/{lid}"), json!({"profile": counter.to_string()}), Value::Null).await.unwrap();
+    assert_eq!(dec(&sheet["lines"][0]["left"]), n("0"), "nothing left to return: {sheet}");
+    println!("item 5 ok");
+
+    // ───────────── 6. cash management ─────────────
+    let current_assets = uid(&t.find_one("Account", json!({"account_name": "Current Assets", "company": cid.to_string()})).await);
+    let expenses = uid(&t.find_one("Account", json!({"account_name": "Indirect Expenses", "company": cid.to_string()})).await);
+    let safe = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Shop Safe", "company": cid.to_string(), "parent_account": current_assets.to_string(), "root_type": "Asset"}),
+        )
+        .await;
+    let petty = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Petty Expenses", "company": cid.to_string(), "parent_account": expenses.to_string(), "root_type": "Expense"}),
+        )
+        .await;
+    let over_short = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Till Over and Short", "company": cid.to_string(), "parent_account": expenses.to_string(), "root_type": "Expense"}),
+        )
+        .await;
+    let kiosk = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Kiosk", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(), "invoice_prefix": "KS",
+                   "payments": [{"mode_of_payment": cash["id"], "is_default": true, "allow_in_returns": true}, {"mode_of_payment": card["id"], "allow_in_returns": true}],
+                   "blind_close": true, "safe_account": safe["id"], "cash_difference_account": over_short["id"]}),
+        )
+        .await);
+    let kiosk_cashier = t.user("kiosk@shop.test", &["Cashier"]).await;
+    let float = t
+        .insert(
+            &kiosk_cashier,
+            "PosOpeningEntry",
+            json!({"pos_profile": kiosk.to_string(), "balance_details": [{"mode_of_payment": cash["id"], "opening_amount": "500"}]}),
+        )
+        .await;
+    let session = uid(&t.k.submit(&kiosk_cashier, "PosOpeningEntry", uid(&float), None).await.expect("open with a float"));
+    t.sell(&kiosk_cashier, json!({"pos_profile": kiosk.to_string(), "items": [{"item": gadget.to_string(), "qty": "2"}, {"item": widget.to_string(), "qty": "1"}], "payments": [pay(&cash, "300")]})).await;
+    let movement = |kind: &str, amount: &str, extra: Value| {
+        let mut v = json!({"pos_opening_entry": session.to_string(), "movement_type": kind, "amount": amount});
+        v.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap());
+        v
+    };
+    // Paid in and paid out, with their reasons.
+    let e = t.k.insert(&kiosk_cashier, "PosCashMovement", obj(movement("Cash Out", "20", json!({"account": petty["id"]})))).await.unwrap_err();
+    assert!(format!("{e:?}").contains("reason"), "a reason is needed: {e:?}");
+    for (kind, amount, account, reason) in [("Cash In", "50", &safe["id"], "float top-up"), ("Cash Out", "20", &petty["id"], "milk")] {
+        let m = t.insert(&kiosk_cashier, "PosCashMovement", movement(kind, amount, json!({"account": account, "reason": reason}))).await;
+        t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&m), None).await.expect("moved");
+    }
+    // The drawer holds 500 + (the sale: 2 gadgets and a widget, 80 + 120 = 200 and 10% tax = 220) + 50 - 20 = 750.
+    // A drop goes to the register's safe, and never takes more than the drawer holds.
+    let e = t.k.insert(&kiosk_cashier, "PosCashMovement", obj(movement("Safe Drop", "5000", json!({})))).await;
+    let e = match e {
+        Ok(d) => t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&d), None).await.unwrap_err(),
+        Err(e) => e,
+    };
+    assert!(messages(&e).contains("the drawer holds 750"), "{e:?}");
+    let drop = t.insert(&kiosk_cashier, "PosCashMovement", movement("Safe Drop", "200", json!({}))).await;
+    assert_eq!(drop["account"], safe["id"], "to the register's safe: {drop:?}");
+    t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&drop), None).await.expect("dropped");
+    assert_eq!(t.gl("Shop Safe").await, n("200") - n("50"), "dropped in, and paid in out of it");
+    // A movement made before they kept a currency: the upkeep gives it the company's.
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_pos_cash_movement set currency = null where tenant_id = $1").bind(tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    ferrum_app_pos::maintenance(&t.k).await.expect("upkeep");
+    assert_eq!(t.k.get(&a, "PosCashMovement", uid(&drop), false).await.unwrap()["currency"], json!(inr["id"]), "backfilled");
+    let (slip, _) =
+        (String::from_utf8_lossy(&t.k.render_document(&manager, "pos.cash_slip", uid(&drop), None, false).await.expect("a slip").bytes).to_string(), ());
+    assert!(slip.contains("SAFE DROP") && slip.contains("200"), "{slip}");
+    // Counting blind: the closing does not say what the drawer was expected to hold until it is counted.
+    let close = t.insert(&kiosk_cashier, "PosClosingEntry", json!({"pos_opening_entry": session.to_string()})).await;
+    assert!(close["payments"].as_array().unwrap().iter().all(|r| r["expected_amount"].is_null()), "nothing to see before counting: {close:?}");
+    let e = t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.unwrap_err();
+    assert!(messages(&e).contains("count every payment method"), "{e:?}");
+    // The count: 545 where 550 was expected (500 + 220 + 50 - 20 - 200), and the card terminal's 0.
+    let rows = close["payments"].as_array().unwrap().clone();
+    let counted: Vec<Value> = rows
+        .iter()
+        .map(
+            |r| json!({"id": r["id"], "mode_of_payment": r["mode_of_payment"], "closing_amount": if r["mode_of_payment"] == cash["id"] { "545" } else { "0" }}),
+        )
+        .collect();
+    let close = t.k.update(&kiosk_cashier, "PosClosingEntry", uid(&close), obj(json!({"payments": counted})), None).await.expect("counted");
+    let cash_row = close["payments"].as_array().unwrap().iter().find(|r| r["mode_of_payment"] == cash["id"]).unwrap().clone();
+    assert_eq!((dec(&cash_row["expected_amount"]), dec(&cash_row["difference"])), (n("550"), n("-5")), "seen after the count: {cash_row}");
+    let closed = t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.expect("closed");
+    assert_eq!(
+        (dec(&closed["paid_in"]), dec(&closed["paid_out"]), dec(&closed["safe_drops"]), dec(&closed["total_difference"])),
+        (n("50"), n("20"), n("200"), n("-5")),
+        "{closed:?}"
+    );
+    assert_eq!(closed["blind"], json!(true));
+    let tax = closed["tax_rows"].as_array().unwrap();
+    assert_eq!((tax.len(), dec(&tax[0]["taxable_amount"]), dec(&tax[0]["tax_amount"])), (1, n("200"), n("20")), "the tax by rate: {tax:?}");
+    // The shortage is posted to the account the register names, through the ledger.
+    assert_eq!(t.gl("Till Over and Short").await, n("5"), "short by 5: an expense");
+    // The shift report, as a paper and as a report source.
+    let paper = String::from_utf8_lossy(&t.k.render_document(&manager, "pos.shift_report", uid(&closed), None, false).await.expect("the shift report").bytes)
+        .to_string();
+    for must in ["SHIFT REPORT", "Kiosk", "Dropped to the safe", "Paid in", "Over / short", "VAT 10%"] {
+        assert!(paper.contains(must), "the shift report says {must}: {paper}");
+    }
+    let params: std::collections::HashMap<String, String> = [("company".to_string(), cid.to_string()), ("pos_profile".to_string(), kiosk.to_string())].into();
+    let reports = ferrum_app_pos::reports();
+    let out = reports[0].run(&t.k, &manager, "pos_shift_report", &params).await.expect("the report");
+    let first = &out["rows"][0];
+    assert_eq!((dec(&first["safe_drops"]), dec(&first["difference"]), dec(&first["paid_out"])), (n("200"), n("-5"), n("20")), "{out}");
+    // A register that does not close blind, as every one did before: what was expected shows at once, and an empty count is as expected.
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_pos_profile set blind_close = false, safe_account = null where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(kiosk)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let again = t
+        .insert(
+            &kiosk_cashier,
+            "PosOpeningEntry",
+            json!({"pos_profile": kiosk.to_string(), "balance_details": [{"mode_of_payment": cash["id"], "opening_amount": "100"}]}),
+        )
+        .await;
+    let session2 = uid(&t.k.submit(&kiosk_cashier, "PosOpeningEntry", uid(&again), None).await.expect("open again"));
+    let open_close = t.insert(&kiosk_cashier, "PosClosingEntry", json!({"pos_opening_entry": session2.to_string()})).await;
+    assert!(open_close["payments"].as_array().unwrap().iter().any(|r| dec(&r["expected_amount"]) == n("100")), "{open_close:?}");
+    t.k.submit(&manager, "PosClosingEntry", uid(&open_close), None).await.expect("an uncounted close, as before");
+    println!("item 6 ok");
+}
+
+async fn plan_for(t: &T, who: &Ctx, profile: Uuid, sale: Uuid, line: &Value) -> Value {
+    let body = json!({"profile": profile.to_string(), "lines": [{"line": line, "qty": "1"}]});
+    t.site(who, "POST", &format!("/returns/{sale}/plan"), json!({"profile": profile.to_string()}), body).await.expect("a plan")
 }
 
 fn acme_id(c: &Doc) -> Uuid {
     uid(c)
+}
+
+/// A workspace Point of Sale 0.6.2 made, started on this build before an administrator updates the app (and after):
+/// what is new must work with no setting, no seeded row and no step taken. Runs on the workspace 0.6.2's `tier1` leaves
+/// behind (`FERRUM_POS_UPGRADE_DATABASE_URL`; skipped without it).
+#[test]
+fn upgrade_from_0_6_2() {
+    let Ok(url) = std::env::var("FERRUM_POS_UPGRADE_DATABASE_URL") else { return };
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(upgrade(url)).await.unwrap() });
+}
+
+async fn upgrade(url: String) {
+    ferrum_app_erp::localization::add(Arc::new(Testland));
+    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let mut packages = ferrum_domain::packages().expect("platform packages");
+    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
+    packages.extend(ferrum_app_pos::packages().expect("app packages"));
+    let catalog = Catalog::from_packages(packages).expect("catalog");
+    let mut hooks = HookRegistry::default();
+    ferrum_domain::register(&mut hooks);
+    ferrum_app_erp::register(&mut hooks);
+    ferrum_app_pos::register(&mut hooks);
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot on the 0.6.2 workspace");
+    let session = k.login("shop", "admin@shop.test", "Correct-Horse-9").await.expect("login");
+    let tenant = session.tenant;
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
+    let t = T { k: k.clone(), tenant, admin };
+    let a = t.admin.clone();
+    let login = |who: &'static str| {
+        let k = k.clone();
+        async move {
+            let s = k.login("shop", who, "Correct-Horse-9").await.expect("login");
+            k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.expect("ctx")
+        }
+    };
+    let (cashier, manager) = (login("cashier@shop.test").await, login("manager@shop.test").await);
+    let counter = uid(&t.find_one("PosProfile", json!({"profile_name": "Counter"})).await);
+    let widget = uid(&t.find_one("Item", json!({"item_code": "WIDGET"})).await);
+    let (cash, card) = (t.find_one("ModeOfPayment", json!({"mode_name": "Cash"})).await, t.find_one("ModeOfPayment", json!({"mode_name": "Card"})).await);
+    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"status": "Open", "user": "cashier@shop.test"})).unwrap(), ..Default::default() };
+    let open = t.k.list(&a, "PosOpeningEntry", &q).await.unwrap().rows;
+    let session_id = match open.first() {
+        Some(o) => uid(o),
+        None => {
+            let o = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
+            uid(&t.k.submit(&cashier, "PosOpeningEntry", uid(&o), None).await.expect("open the till"))
+        }
+    };
+    let sale = |pays: Value| json!({"pos_profile": counter.to_string(), "items": [{"item": widget.to_string(), "qty": "1"}], "payments": pays});
+    let at = |sale_id: Uuid| json!({"profile": counter.to_string(), "sale": sale_id.to_string()});
+    // Not updated: the new tables and columns are there, nothing else is, and the till does everything it did and more.
+    let before = t.sell(&cashier, sale(json!([pay(&card, "60"), pay(&cash, "60")]))).await;
+    assert_eq!(
+        (before["status"].clone(), before["needs_buyer"].clone(), before["tax_invoice"].clone()),
+        (json!("Paid"), json!(false), json!(false)),
+        "{before:?}"
+    );
+    let snap =
+        t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("a snapshot, with no key and no promotions");
+    assert!(snap["version"].is_string() && snap["signature"].is_null() && snap["promotions"] == json!([]), "{snap}");
+    let (paper, _) =
+        t.page(&cashier, "GET", &format!("/receipt/{}", uid(&before)), json!({"profile": counter.to_string()}), Value::Null).await.expect("a receipt");
+    assert!(paper.contains("RECEIPT") && paper.contains("VAT 10%"), "{paper}");
+    let reasons = t.k.list(&a, "PosReason", &ListQuery::default()).await.unwrap().rows;
+    let why = reasons.iter().find(|r| r["applies_to"] == json!("Reprint")).map(|r| r["reason"].clone()).unwrap_or(json!("because"));
+    let mut ask = at(uid(&before));
+    ask.as_object_mut().unwrap().extend([("reason".to_string(), why)]);
+    let (copy, _) = t.page(&cashier, "POST", "/reprint", Value::Null, ask).await.expect("a copy");
+    assert!(copy.contains("COPY 1"), "{copy}");
+    let mut buyer = sale(json!([pay(&card, "60"), pay(&cash, "60")]));
+    buyer["buyer_tax_id"] = json!("TL-4242");
+    let named = t.sell(&cashier, buyer).await;
+    assert_eq!(
+        (named["tax_invoice"].clone(), named["invoiced_at_sale"].clone()),
+        (json!(true), json!(true)),
+        "a register with no setting: the defaults: {named:?}"
+    );
+    ferrum_app_pos::maintenance(&k).await.expect("upkeep");
+    // Closing over sales made before the breakdown was kept: the tax rows come from the sales' own.
+    let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": session_id.to_string()})).await;
+    let tax = close["tax_rows"].as_array().unwrap();
+    assert!(!tax.is_empty() && dec(&tax[0]["tax_amount"]) > Decimal::ZERO, "{close:?}");
+    // Then the administrator updates the app, and the seeded records and templates are theirs to see.
+    k.install_packages(tenant, &["pos".to_string()]).await.expect("update the app");
+    let paper = k.render_document(&manager, "pos.shift_report", uid(&close), None, false).await.expect("a shift report of a draft closing");
+    assert!(String::from_utf8_lossy(&paper.bytes).contains("SHIFT REPORT"));
+    let after = t.sell(&cashier, sale(json!([pay(&cash, "60"), pay(&card, "60")]))).await;
+    assert_eq!(after["status"], json!("Paid"));
 }

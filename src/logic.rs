@@ -415,10 +415,119 @@ pub fn exchange(back: Decimal, out: Decimal) -> Exchange {
     Exchange { carried, due: out - carried, refund: back - carried }
 }
 
+/// A payment method of the register a return may refund through, as the return desk offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Way<M> {
+    pub mode: M,
+    pub kind: Kind,
+    /// What the original sale took in through it, less what its other returns paid back (0 when it was not used).
+    pub room: Decimal,
+    /// The register refunds through it (`allow_in_returns`).
+    pub usable: bool,
+}
+
+/// What a return of `total` is refunded to, as a proposal the cashier may change: what the customer still owes
+/// on account is cancelled first (`credit`); then each method the sale was paid with, in the order it was used,
+/// where the register allows and its room lasts; what those cannot take back goes onto store credit when the
+/// register has it (`credit_to`), else out through `cash_to`. Never more than the sale took in as money
+/// (`money_left`) plus what it took as stored value (`stored_left`), which is what `check_refunds` holds the refund to.
+/// Returns the refunds in order and what could not be placed.
+pub fn plan_refund<M: Copy + PartialEq>(
+    total: Decimal,
+    ways: &[Way<M>],
+    credit_owed: Decimal,
+    store_credit: Option<M>,
+    cash_to: Option<M>,
+    prefer_store_credit: bool,
+) -> (Vec<(M, Decimal)>, Decimal) {
+    let mut out: Vec<(M, Decimal)> = Vec::new();
+    let mut left = total;
+    let push = |out: &mut Vec<(M, Decimal)>, mode: M, amount: Decimal| {
+        if amount > Decimal::ZERO {
+            match out.iter_mut().find(|(m, _)| *m == mode) {
+                Some(row) => row.1 += amount,
+                None => out.push((mode, amount)),
+            }
+        }
+    };
+    // What the customer owes on the original is cancelled before anything goes back to them.
+    let mut owed = credit_owed.min(left);
+    for w in ways.iter().filter(|w| w.kind == Kind::Credit) {
+        let take = owed.min(w.room);
+        push(&mut out, w.mode, take);
+        owed -= take;
+        left -= take;
+    }
+    let mut money = Decimal::ZERO;
+    let mut stored = Decimal::ZERO;
+    let (money_left, stored_left) = ways.iter().fold((Decimal::ZERO, Decimal::ZERO), |(m, s), w| match w.kind {
+        Kind::StoredValue => (m, s + w.room),
+        Kind::Credit | Kind::Loyalty => (m, s),
+        _ => (m + w.room, s),
+    });
+    for w in ways.iter().filter(|w| w.usable && w.room > Decimal::ZERO && !matches!(w.kind, Kind::Credit | Kind::Loyalty)) {
+        let take = left.min(w.room);
+        push(&mut out, w.mode, take);
+        left -= take;
+        if w.kind == Kind::StoredValue {
+            stored += take;
+        } else {
+            money += take;
+        }
+    }
+    // Money the original methods could not take back may become store credit; stored value never becomes money.
+    let capacity = money_left + stored_left - money - stored;
+    if left > Decimal::ZERO {
+        let route = if prefer_store_credit { store_credit.or(cash_to) } else { cash_to.or(store_credit) };
+        if let Some(m) = route {
+            let take = left.min(capacity.max(Decimal::ZERO));
+            push(&mut out, m, take);
+            left -= take;
+        }
+    }
+    (out, left)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    fn way(mode: u8, kind: Kind, room: &str, usable: bool) -> Way<u8> {
+        Way { mode, kind, room: n(room), usable }
+    }
+
+    #[test]
+    fn plans_a_refund_back_through_the_methods_the_sale_was_paid_with() {
+        let (cash, card, credit, store) = (1u8, 2u8, 3u8, 4u8);
+        // Paid 60 cash and 40 card: both go back where they came from.
+        let ways = [way(cash, Kind::Cash, "60", true), way(card, Kind::Bank, "40", true)];
+        assert_eq!(plan_refund(n("100"), &ways, Decimal::ZERO, Some(store), Some(cash), true), (vec![(cash, n("60")), (card, n("40"))], Decimal::ZERO));
+        // Part of it: the first method used first.
+        assert_eq!(plan_refund(n("30"), &ways, Decimal::ZERO, Some(store), Some(cash), true).0, vec![(cash, n("30"))]);
+        // The register does not refund to cards: that share goes onto store credit, or out as cash, as it is set.
+        let no_card = [way(cash, Kind::Cash, "60", true), way(card, Kind::Bank, "40", false)];
+        assert_eq!(plan_refund(n("100"), &no_card, Decimal::ZERO, Some(store), Some(cash), true).0, vec![(cash, n("60")), (store, n("40"))]);
+        assert_eq!(
+            plan_refund(n("100"), &no_card, Decimal::ZERO, Some(store), Some(cash), false).0,
+            vec![(cash, n("100"))],
+            "cash as the fallback: cash method already used, topped up"
+        );
+        // Nothing to put it on: it is left unplaced, never invented.
+        assert_eq!(plan_refund(n("100"), &no_card, Decimal::ZERO, None, None, true), (vec![(cash, n("60"))], n("40")));
+        // What the customer still owes comes off first, and is not refunded.
+        let owing = [way(cash, Kind::Cash, "30", true), way(credit, Kind::Credit, "70", true)];
+        assert_eq!(plan_refund(n("100"), &owing, n("70"), Some(store), Some(cash), true), (vec![(credit, n("70")), (cash, n("30"))], Decimal::ZERO));
+        // Stored value goes back onto the card; paid in points, it never becomes cash.
+        let paid_by_points = [way(cash, Kind::Cash, "50", true), way(9, Kind::Loyalty, "50", true)];
+        assert_eq!(
+            plan_refund(n("100"), &paid_by_points, Decimal::ZERO, Some(store), Some(cash), true),
+            (vec![(cash, n("50"))], n("50")),
+            "the points' share is not money"
+        );
+        let gift = [way(8, Kind::StoredValue, "100", true)];
+        assert_eq!(plan_refund(n("100"), &gift, Decimal::ZERO, Some(store), Some(cash), true).0, vec![(8, n("100"))]);
+    }
 
     #[test]
     fn returns_without_a_receipt_and_exchanges() {

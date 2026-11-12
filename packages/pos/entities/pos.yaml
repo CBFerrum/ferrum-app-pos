@@ -310,6 +310,7 @@
   fields:
     - {name: pos_opening_entry, type: link, to: PosOpeningEntry, required: true, label: Session, in_list: true, in_filter: true}
     - {name: company, type: link, to: Company, required: true, fetch_from: pos_opening_entry.company, read_only: true, in_filter: true}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true, hidden: true}
     - {name: cashier, type: data, fetch_from: pos_opening_entry.user, read_only: true, in_list: true}
     - {name: movement_type, type: select, options: [Cash In, Cash Out, Safe Drop], required: true, default: Cash In, in_list: true, in_filter: true,
        description: "Cash In: paid in. Cash Out: paid out, with its reason. Safe Drop: cash taken out of the drawer to the register's safe account"}
@@ -319,7 +320,6 @@
     - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true}
     - {name: reason, type: text, required_if: "doc.movement_type != 'Safe Drop'"}
-    - {name: slip, type: data, read_only: true, no_copy: true, label: Slip, description: "A drop's slip: the session, the number and the amount, to put in the bag"}
   list: {columns: [number, movement_type, amount, posting_date], sort: created_at desc}
 
 - name: PosClosingPayment
@@ -366,6 +366,7 @@
     - {name: pos_profile, type: link, to: PosProfile, fetch_from: pos_opening_entry.pos_profile, read_only: true, in_filter: true}
     - {name: company, type: link, to: Company, required: true, fetch_from: pos_opening_entry.company, read_only: true, in_filter: true}
     - {name: user, type: email, fetch_from: pos_opening_entry.user, read_only: true, label: Cashier, in_list: true, in_filter: true}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true, hidden: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
     - {name: period_start, type: datetime, fetch_from: pos_opening_entry.period_start, read_only: true}
     - {name: period_end, type: datetime, read_only: true, no_copy: true}
