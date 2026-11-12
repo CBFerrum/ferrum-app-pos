@@ -92,8 +92,10 @@ pub(crate) async fn rows_for(tx: &mut Tx, tenant: Uuid, profile: Uuid) -> Result
 // without the cashier signing out. The PIN is kept only as an argon2id hash (`pos_staff_pin`), five
 // wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's
 // audited parameters: it travels only in the body of the register's own endpoints. An approval is a
-// record (`PosApproval`) for one act in one session, used once: by one sale that names it, or by one
-// void, drawer opening or reprint. Offline there is no approval: a till cannot check a PIN without
+// record (`PosApproval`) for one act on one sale (or draft, by the id the till gives it; none for
+// opening the drawer) in one session, at most the amount approved, used once, and only within the
+// register's Approval Lasts minutes and while that session is open: handing the till over is closing
+// one session and opening another, so it lapses then too. Offline there is no approval: a till cannot check a PIN without
 // keeping something on the device that a short PIN's few thousand values would give away to
 // whoever holds it, so an act beyond the cashier's own limits waits for the connection.
 
@@ -189,6 +191,8 @@ pub(crate) struct Ask<'a> {
     pub act: Act,
     pub amount: Option<Decimal>,
     pub reason: &'a str,
+    /// The sale or draft it is for; none only for opening the drawer.
+    pub sale: Option<Uuid>,
 }
 
 /// Approves one act for the signed-in cashier in their open session at the register, by another
@@ -196,6 +200,9 @@ pub(crate) struct Ask<'a> {
 pub(crate) async fn approve(k: &Kernel, ctx: &Ctx, ask: Ask<'_>) -> Result<Value> {
     if ask.reason.trim().is_empty() {
         return Err(Error::field("reason", "say why"));
+    }
+    if ask.sale.is_none() && ask.act != Act::NoSale {
+        return Err(Error::field("sale", "name the sale (or draft) it is for"));
     }
     if ask.approver.trim().eq_ignore_ascii_case(&ctx.email) {
         return Err(Error::field("approver", "someone else approves what is beyond your own limits"));
@@ -214,16 +221,23 @@ pub(crate) async fn approve(k: &Kernel, ctx: &Ctx, ask: Ask<'_>) -> Result<Value
     let row = json!({
         "pos_profile": profile.id, "pos_opening_entry": session, "cashier": ctx.email.to_lowercase(), "approver": approver.email.to_lowercase(),
         "action": ask.act.label(), "amount": ask.amount.map(|a| a.normalize().to_string()), "reason": ask.reason.trim(),
-        "limits": theirs, "approved_at": chrono::Utc::now().to_rfc3339(),
+        "limits": theirs, "approved_at": chrono::Utc::now().to_rfc3339(), "sale": ask.sale.map(|s| s.to_string()),
+        "expires_at": (chrono::Utc::now() + chrono::Duration::minutes(minutes(&profile.doc))).to_rfc3339(),
     });
     let made = k.insert_tx(&elevated(ctx), &mut tx, "PosApproval", row.as_object().cloned().unwrap_or_default()).await?;
     tx.commit().await?;
     Ok(json!({"approval": made.get("id"), "approver": approver.email, "action": ask.act.label()}))
 }
 
+/// How long an approval lasts at a register (its setting; five minutes when unset).
+fn minutes(profile: &Doc) -> i64 {
+    profile.get("approval_minutes").and_then(serde_json::Value::as_i64).filter(|m| *m > 0).unwrap_or(5)
+}
+
 /// Whether approval `approval` covers `act` at `figure` for the act or sale `used_for`, by
-/// `cashier` in `session`: the approver's limits as they approved and the amount approved. `money`
-/// says a discount's figure is the sale's amount rather than a line's percent.
+/// `cashier` in `session`: given for that sale, not lapsed, the session still open, the approver's
+/// limits as they approved and the amount approved. `money` says a discount's figure is the sale's
+/// amount rather than a line's percent.
 pub(crate) async fn covers(
     tx: &mut Tx,
     tenant: Uuid,
@@ -235,14 +249,22 @@ pub(crate) async fn covers(
     used_for: Uuid,
 ) -> Result<bool> {
     let (cashier, session) = at;
-    let found: Option<(Option<String>, Option<Uuid>, Option<String>, Option<Decimal>, Option<Value>, Option<String>)> =
-        sqlx::query_as("select cashier, pos_opening_entry, action, amount, limits, used_for from e_pos_approval where tenant_id = $1 and id = $2")
-            .bind(tenant)
-            .bind(approval)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let Some((who, sess, action, amount, limits, used)) = found else { return Ok(false) };
-    if !who.is_some_and(|w| w.eq_ignore_ascii_case(cashier)) || sess != Some(session) || action.as_deref() != Some(act.label()) {
+    type Row = (Option<String>, Option<Uuid>, Option<String>, Option<Decimal>, Option<Value>, Option<String>, Option<String>, bool);
+    let found: Option<Row> = sqlx::query_as(
+        "select a.cashier, a.pos_opening_entry, a.action, a.amount, a.limits, a.used_for, a.sale, \
+         coalesce(a.expires_at > now(), false) and coalesce(o.status = 'Open', false) \
+         from e_pos_approval a left join e_pos_opening_entry o on o.tenant_id = a.tenant_id and o.id = a.pos_opening_entry \
+         where a.tenant_id = $1 and a.id = $2",
+    )
+    .bind(tenant)
+    .bind(approval)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((who, sess, action, amount, limits, used, sale, live)) = found else { return Ok(false) };
+    if !live || !who.is_some_and(|w| w.eq_ignore_ascii_case(cashier)) || sess != Some(session) || action.as_deref() != Some(act.label()) {
+        return Ok(false);
+    }
+    if sale.is_some_and(|s| s != used_for.to_string()) {
         return Ok(false);
     }
     if used.is_some_and(|u| u != used_for.to_string()) {
@@ -255,13 +277,15 @@ pub(crate) async fn covers(
 /// Marks approvals used by `used_for`, refusing one another act took meanwhile (the rows locked).
 pub(crate) async fn use_approvals(tx: &mut Tx, tenant: Uuid, approvals: &[Uuid], used_for: Uuid) -> Result<()> {
     for a in approvals {
-        let taken: Option<Option<String>> = sqlx::query_scalar("select used_for from e_pos_approval where tenant_id = $1 and id = $2 for update")
-            .bind(tenant)
-            .bind(a)
-            .fetch_optional(&mut **tx)
-            .await?;
+        let taken: Option<(Option<String>, bool)> =
+            sqlx::query_as("select used_for, coalesce(expires_at > now(), false) from e_pos_approval where tenant_id = $1 and id = $2 for update")
+                .bind(tenant)
+                .bind(a)
+                .fetch_optional(&mut **tx)
+                .await?;
         match taken {
-            Some(Some(u)) if u != used_for.to_string() => return Err(Error::invalid("that approval was already used; ask again")),
+            Some((Some(u), _)) if u != used_for.to_string() => return Err(Error::invalid("that approval was already used; ask again")),
+            Some((None, false)) => return Err(Error::invalid("that approval has lapsed; ask again")),
             Some(_) => {}
             None => return Err(Error::invalid("no such approval")),
         }

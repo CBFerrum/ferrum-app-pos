@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use ferrum_domain::util::{b, get, id, rows, s, set};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use std::collections::HashSet;
+use uuid::Uuid;
 
 /// Accounts on another company's books can never be posted to (the journal refuses them), so
 /// catch the mistake when the master is saved instead of at the first closing.
@@ -135,6 +136,35 @@ impl DocHook for PointEntryHook {
 
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
         engine_only(hc)
+    }
+}
+
+/// One row per role for every register, and one per role and register, so which applies is never
+/// in doubt.
+pub struct RoleLimitHook;
+
+#[async_trait]
+impl DocHook for RoleLimitHook {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let role = s(doc, "role").unwrap_or_default().trim().to_string();
+        let register = id(doc, "pos_profile");
+        let twin: Option<Uuid> = sqlx::query_scalar(
+            "select id from e_pos_role_limit where tenant_id = $1 and lower(trim(role)) = lower($2) and pos_profile is not distinct from $3 and id <> $4 limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(&role)
+        .bind(register)
+        .bind(id(doc, "id"))
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if twin.is_none() {
+            return Ok(());
+        }
+        let place = match register {
+            Some(p) => format!("register {}", s(&get(hc.kernel, hc.ctx, hc.tx, "PosProfile", p).await?, "profile_name").unwrap_or_default()),
+            None => "every register".to_string(),
+        };
+        Err(Error::field("role", format!("{role} already has limits for {place}: change that row instead of adding another")))
     }
 }
 

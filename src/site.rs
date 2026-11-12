@@ -193,8 +193,9 @@ fn body_str(req: &SiteRequest, key: &str) -> Result<Option<String>> {
     Ok(v.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string))
 }
 
-/// `POST /approve` `{profile, approver, pin, action, amount?, reason}`: another person's PIN approves
-/// one act beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
+/// `POST /approve` `{profile, approver, pin, action, amount?, reason, sale}`: another person's PIN
+/// approves one act on one sale (`sale`: the id the till gives it; none for opening the drawer)
+/// beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
 async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let need = |f: &str| -> Result<String> { body_str(req, f)?.ok_or_else(|| Error::field(f.to_string(), "is required")) };
     let profile: Uuid = need("profile")?.parse().map_err(|_| Error::field("profile", "is a register's id"))?;
@@ -204,7 +205,8 @@ async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
         None => None,
     };
     let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
-    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason };
+    let sale = body_str(req, "sale")?.map(|s| s.parse::<Uuid>().map_err(|_| Error::field("sale", "is the sale's id"))).transpose()?;
+    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason, sale };
     crate::limits::approve(k, ctx, ask).await
 }
 
