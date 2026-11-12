@@ -13,6 +13,8 @@ pub enum Kind {
     General,
     Credit,
     Loyalty,
+    /// A gift card, store credit or other stored value (ERP's `StoredValueKind`).
+    StoredValue,
 }
 
 impl Kind {
@@ -23,6 +25,7 @@ impl Kind {
             "General" => Kind::General,
             "Credit" => Kind::Credit,
             "Loyalty Points" => Kind::Loyalty,
+            "Stored Value" => Kind::StoredValue,
             _ => return None,
         })
     }
@@ -88,6 +91,8 @@ pub struct Refundable {
     pub credit: Decimal,
     /// Paid with loyalty points (their value).
     pub loyalty: Decimal,
+    /// Paid with stored value: it goes back onto stored value, never out as money.
+    pub stored: Decimal,
 }
 
 /// What a sale can still pay back, from what it took in and what its returns refunded so far,
@@ -101,6 +106,7 @@ pub fn refundable(taken: &[(Kind, Decimal, Decimal)], write_off: Decimal) -> Ref
         match kind {
             Kind::Credit => left.credit += room,
             Kind::Loyalty => left.loyalty += room,
+            Kind::StoredValue => left.stored += room,
             _ => left.money += room,
         }
     }
@@ -136,6 +142,11 @@ pub fn check_refunds(total: Decimal, refunds: &[Tender], left: &Refundable) -> R
     let money = sum(&|k| k.is_money());
     if money > left.money {
         return Err(format!("at most {} can be refunded in cash or to cards: that is what the original sale was paid with", left.money.normalize()));
+    }
+    // Money may go back as stored value (store credit); stored value never comes back as money.
+    let stored = sum(&|k| k == Kind::StoredValue);
+    if money + stored > left.money + left.stored {
+        return Err(format!("at most {} can go back onto stored value", (left.money + left.stored - money).normalize()));
     }
     Ok(())
 }
@@ -443,13 +454,20 @@ mod tests {
         assert!(check_refunds(n("40"), &[t(Kind::Cash, "40")], &paid_cash).is_ok());
         assert!(check_refunds(n("40"), &[t(Kind::Cash, "30")], &paid_cash).unwrap_err().contains("must equal"));
         assert!(check_refunds(n("40"), &[t(Kind::Credit, "40")], &paid_cash).unwrap_err().contains("paid in full"));
-        let points = Refundable { money: n("50"), loyalty: n("50"), credit: Decimal::ZERO };
+        let points = Refundable { money: n("50"), loyalty: n("50"), ..Default::default() };
         assert!(check_refunds(n("100"), &[t(Kind::Cash, "100")], &points).unwrap_err().contains("at most 50"), "points never come back as cash");
         assert!(check_refunds(n("100"), &[t(Kind::Cash, "50"), t(Kind::Loyalty, "50")], &points).is_ok());
-        let on_credit = Refundable { money: n("60"), credit: n("40"), loyalty: Decimal::ZERO };
+        let on_credit = Refundable { money: n("60"), credit: n("40"), ..Default::default() };
         assert!(check_refunds(n("50"), &[t(Kind::Cash, "50")], &on_credit).unwrap_err().contains("40 of this refund must go to Credit"));
         assert!(check_refunds(n("50"), &[t(Kind::Credit, "40"), t(Kind::Cash, "10")], &on_credit).is_ok());
         assert!(check_refunds(n("30"), &[t(Kind::Credit, "30")], &on_credit).is_ok());
+        // A gift card's part comes back onto stored value only; cash may go back as store credit.
+        let card = refundable(&[(Kind::StoredValue, n("70"), Decimal::ZERO), (Kind::Cash, n("30"), Decimal::ZERO)], Decimal::ZERO);
+        assert_eq!((card.money, card.stored), (n("30"), n("70")));
+        assert!(check_refunds(n("100"), &[t(Kind::Cash, "100")], &card).unwrap_err().contains("at most 30"));
+        assert!(check_refunds(n("100"), &[t(Kind::Cash, "30"), t(Kind::StoredValue, "70")], &card).is_ok());
+        assert!(check_refunds(n("100"), &[t(Kind::StoredValue, "100")], &card).is_ok(), "the cash part as store credit");
+        assert!(settle_sale(n("80"), &[t(Kind::StoredValue, "100")], Decimal::ZERO).unwrap_err().contains("only cash"), "a card gives no change");
     }
 
     #[test]
@@ -461,7 +479,7 @@ mod tests {
         assert_eq!(refundable(&taken, Decimal::ZERO), Refundable { money: n("92.50"), ..Default::default() });
         // An earlier return gave 20 back in cash; points and what is owed stay apart from money.
         let mixed = [(Kind::Cash, n("9"), n("2")), (Kind::Loyalty, n("2"), Decimal::ZERO), (Kind::Credit, n("40"), n("15"))];
-        assert_eq!(refundable(&mixed, Decimal::ZERO), Refundable { money: n("7"), loyalty: n("2"), credit: n("25") });
+        assert_eq!(refundable(&mixed, Decimal::ZERO), Refundable { money: n("7"), loyalty: n("2"), credit: n("25"), ..Default::default() });
         // Refunding cash for a card sale uses the same room: the card's 100 less the 100 handed back.
         assert_eq!(refundable(&[(Kind::Bank, n("100"), Decimal::ZERO), (Kind::Cash, Decimal::ZERO, n("100"))], Decimal::ZERO).money, Decimal::ZERO);
         // A bill written off by 0.05 (10.95 paid of 11.00) comes back whole.

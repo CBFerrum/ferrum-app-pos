@@ -285,4 +285,108 @@ async fn scenario() {
     .unwrap();
     assert!(hash.starts_with("$argon2id$") && !leaked, "{hash}");
     drop(tx);
+
+    // ───────────── 4. stored value at the till ─────────────
+    let current = uid(&t.find_one("Account", json!({"account_name": "Current Liabilities", "company": cid.to_string()})).await);
+    let owed = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Gift Cards", "company": cid.to_string(), "parent_account": current.to_string(), "root_type": "Liability"}),
+        )
+        .await;
+    let gift = t
+        .insert(
+            &a,
+            "StoredValueKind",
+            json!({"kind_name": "Gift Card", "company": cid.to_string(), "liability_account": owed["id"], "tax_charged": "When Redeemed"}),
+        )
+        .await;
+    let mut card_item = item("GIFT");
+    card_item["is_stock_item"] = json!(false);
+    card_item["stored_value_kind"] = gift["id"].clone();
+    let card_item = uid(&t.insert(&a, "Item", card_item).await);
+    t.insert(&a, "ItemPrice", json!({"item": card_item.to_string(), "price_list": selling["id"], "rate": "500", "valid_from": "2020-01-01"})).await;
+    let giftcard = t
+        .insert(&a, "ModeOfPayment", json!({"mode_name": "Gift Card", "mode_type": "Stored Value", "stored_value_kind": gift["id"], "offline_limit": "20"}))
+        .await;
+    t.k.update(
+        &a,
+        "PosProfile",
+        counter,
+        obj(json!({"payments": [{"mode_of_payment": cash["id"], "is_default": true, "allow_in_returns": true}, {"mode_of_payment": card["id"], "allow_in_returns": true},
+                                {"mode_of_payment": giftcard["id"], "allow_in_returns": true}]})),
+        None,
+    )
+    .await
+    .expect("the register takes gift cards");
+    let balance = |code: &'static str| {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            let sec = ferrum_app_erp::stored_value::secret(t.tenant, code, None).unwrap();
+            let b: Decimal = sqlx::query_scalar("select coalesce(balance, 0) from e_stored_value_account where tenant_id = $1 and code_hash = $2")
+                .bind(t.tenant)
+                .bind(sec.hash)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            b
+        }
+    };
+    // Sold at the till: the card is loaded when the sale is submitted, through its own invoice.
+    let sold = t
+        .sell(&cashier, sale(json!([{"item": card_item.to_string(), "qty": "1", "stored_value_code": "GIFT-0000-0000-0001"}]), json!([pay(&cash, "500")])))
+        .await;
+    assert_eq!((sold["invoiced_at_sale"].clone(), sold["items"][0]["stored_value_code"].clone()), (json!(true), json!("••••0001")), "{sold:?}");
+    assert!(sold["consolidated_invoice"].is_string());
+    assert_eq!(balance("GIFT-0000-0000-0001").await, n("500"), "spendable at once");
+    let told = t.site(&cashier, "POST", "/balance", Value::Null, json!({"mode": giftcard["id"], "code": "GIFT-0000-0000-0001"})).await.expect("balance");
+    assert_eq!((dec(&told["balance"]), told["state"].clone()), (n("500"), json!("Active")), "{told}");
+    // Taken as a tender, in part: the balance left is on the payment row.
+    let mut by_card = pay(&giftcard, "110");
+    by_card["stored_value_code"] = json!("gift 0000 0000 0001");
+    let paid = t.sell(&cashier, sale(json!([line(widget, "1")]), json!([by_card.clone()]))).await;
+    assert_eq!(dec(&paid["payments"][0]["stored_value_balance"]), n("390"), "{paid:?}");
+    assert!(paid["payments"][0]["stored_value_payment"].is_string());
+    let mut wrong = by_card.clone();
+    wrong["stored_value_code"] = json!("GIFT-0000-0000-0009");
+    assert!(t.k.insert(&cashier, "PosInvoice", obj(sale(json!([line(widget, "1")]), json!([wrong])))).await.is_err(), "an unknown code");
+    // The rest of it, then an offline sale it no longer covers: written off and recorded.
+    let mut rest = by_card.clone();
+    rest["amount"] = json!("390");
+    t.sell(&cashier, sale(json!([line(widget, "4")]), json!([rest, pay(&cash, "50")]))).await;
+    assert_eq!(balance("GIFT-0000-0000-0001").await, Decimal::ZERO);
+    let mut offline_card = by_card.clone();
+    offline_card["amount"] = json!("30");
+    let mut late = sale(json!([line(widget, "1")]), json!([offline_card, pay(&cash, "80")]));
+    late["sold_offline"] = json!(true);
+    assert!(messages(&t.refused(&cashier, late.clone()).await).contains("offline up to 20"));
+    late["payments"][0]["amount"] = json!("20");
+    late["payments"][1]["amount"] = json!("90");
+    let late = t.sell(&cashier, late).await;
+    assert_eq!(dec(&late["write_off_amount"]), n("20"), "{late:?}");
+    let short = t.find_one("PosStockShortfall", json!({"pos_invoice": late["id"]})).await;
+    assert_eq!(dec(&short["amount_short"]), n("20"));
+    // Refunded onto the card it was paid with (a manager, in their own session; the sale is invoiced).
+    let mopen = t.insert(&manager, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
+    t.k.submit(&manager, "PosOpeningEntry", uid(&mopen), None).await.expect("manager's session");
+    let mut onto = pay(&giftcard, "-110");
+    onto["stored_value_code"] = json!("GIFT-0000-0000-0001");
+    let cash_back = json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": paid["id"], "items": [line(widget, "-1")], "payments": [pay(&cash, "-110")]});
+    assert!(messages(&t.refused(&manager, cash_back).await).contains("cash or to cards"), "a card's money never comes back as cash");
+    let back = t
+        .sell(
+            &manager,
+            json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": paid["id"], "items": [line(widget, "-1")], "payments": [onto]}),
+        )
+        .await;
+    assert_eq!(back["invoiced_at_sale"], json!(true));
+    assert_eq!(balance("GIFT-0000-0000-0001").await, n("110"));
+    // The day closes: invoiced sales are only settled, and the cards agree with the books.
+    let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": open["id"]})).await;
+    t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.expect("close the day");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    assert_eq!(ferrum_app_erp::stored_value::check(&a, &mut tx).await.unwrap(), Vec::<String>::new());
+    drop(tx);
 }

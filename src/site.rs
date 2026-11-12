@@ -29,6 +29,7 @@ impl Site for PosSite {
                 crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
                 Ok(SiteResponse::json(200, &json!({"ok": true})))
             }
+            ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
             ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
@@ -205,4 +206,17 @@ async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
     let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason };
     crate::limits::approve(k, ctx, ask).await
+}
+
+/// `POST /balance` `{mode, code, pin?}`: what a card of a stored value payment method holds, its
+/// state and expiry, for the cashier before taking it (ERP's guessing limits apply; online only).
+async fn card_balance(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let mode: Uuid = body_str(req, "mode")?.and_then(|m| m.parse().ok()).ok_or_else(|| Error::field("mode", "is a payment method's id"))?;
+    let code = body_str(req, "code")?.ok_or_else(|| Error::field("code", "is required"))?;
+    let m = k.get(ctx, "ModeOfPayment", mode, false).await?;
+    let kind = id(&m, "stored_value_kind").ok_or_else(|| Error::field("mode", "is not a stored value payment method"))?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let out = ferrum_app_erp::stored_value::balance(k, ctx, &mut tx, kind, &code, body_str(req, "pin")?.as_deref()).await?;
+    tx.commit().await?;
+    Ok(out)
 }

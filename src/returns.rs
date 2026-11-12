@@ -211,7 +211,7 @@ pub async fn sheet(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Resu
         "lines": lines,
         "paid_with": paid_with,
         "methods": methods,
-        "refundable": {"money": money(left.money), "loyalty": money(left.loyalty), "credit": money(left.credit)},
+        "refundable": {"money": money(left.money), "loyalty": money(left.loyalty), "credit": money(left.credit), "stored_value": money(left.stored)},
         "loyalty": loyalty,
         "receipt": receipt,
     }))
