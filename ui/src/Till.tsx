@@ -26,7 +26,7 @@ import { useCalc, useOutbox } from "./hooks";
 import { loadCart, loadHeld, ownerOf, putAside, saveCart, saveHeld, takeOut, totalOf, type Customer, type HeldSale } from "./lib/held";
 import { scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
 import { tally } from "./lib/pay";
-import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, parseScan, setQty, withMethodNames, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
+import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
 import { allows, asksFor, beyond, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
 import { denominations } from "./lib/shift";
 
@@ -103,6 +103,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const saleKey = useRef(restored?.key ?? newKey());
   const [approvals, setApprovals] = useState<Approval[]>(restored?.approvals ?? []);
   const [voided, setVoided] = useState<Voided[]>(restored?.voided ?? []);
+  // The registration the buyer gave and the promotion codes: the server finds the buyer and checks the codes when it prices the sale.
+  const [buyer, setBuyer] = useState<Buyer | null>(restored?.buyer ?? null);
+  const [codes, setCodes] = useState<string[]>(restored?.codes ?? []);
   // A card's code and PIN: in memory for this sale only, never saved, held or queued.
   const [cards, setCards] = useState<LineCards>({});
   const [held, setHeld] = useState<HeldSale[]>(() => loadHeld(owner));
@@ -116,8 +119,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   // Whether a card's code is on a line: kept aside or reloaded, the sale says the card is to be asked for again, never the code.
   const cardOn = Object.values(cards).some((c) => !!c.code);
   useEffect(() => {
-    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) });
-  }, [owner, lines, customer, approvals, voided, cardOn]);
+    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) });
+  }, [owner, lines, customer, approvals, voided, buyer, codes, cardOn]);
   useEffect(() => {
     if (restored?.cardAgain) toast(cardAgain(), "error");
   }, [restored]);
@@ -170,9 +173,11 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             tenders: [],
             approvals: approvals.map((a) => a.id),
             cards,
+            buyer,
+            codes,
           })
         : null,
-    [lines, customer.id, profileId, session.id, approvals, cards],
+    [lines, customer.id, profileId, session.id, approvals, cards, buyer, codes],
   );
   const calc = useCalc(body, lines, book);
   const priced = useMemo(() => (calc.doc?.items as Doc[] | undefined) ?? [], [calc.doc]);
@@ -181,7 +186,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   // A line that sells or tops up a card needs the card's code before the sale can be paid.
   const noCard = lines.find((l, i) => priced[i]?.item === l.item && str(priced[i].stored_value_kind) && !cards[l.key]?.code);
   const ready = lines.length > 0 && !calc.pending && !calc.error && !!calc.doc && !noCard;
-  const walkIn = !customer.id || customer.id === str(profile.customer);
+  // A buyer the server found for their registration is a named customer, whoever the till had picked.
+  const found = buyer && calc.doc && !calc.error && str(calc.doc.customer) && str(calc.doc.customer) !== str(profile.customer) ? str(calc.doc.customer) : null;
+  const walkIn = !found && (!customer.id || customer.id === str(profile.customer));
   const away = offline || !!calc.offline;
   const asker = useAsk(profileId, () => away || serverDown());
   const anyOpen = dialog !== null || receipt !== null || asker.open;
@@ -233,6 +240,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     setApprovals([]);
     setVoided([]);
     setCards({});
+    setBuyer(null);
+    setCodes([]);
     saleKey.current = newKey();
   }, []);
   const changeQty = (key: string, qty: number) => setLines((l) => setQty(l, key, qty));
@@ -302,7 +311,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const now = () => new Date().toISOString();
   const hold = () => {
     if (!lines.length) return;
-    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
@@ -321,13 +330,15 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
-      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     }
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
     setHeld(next);
     setLines(sale.lines);
     setApprovals(sale.approvals ?? []);
     setVoided(sale.voided ?? []);
+    setBuyer(sale.buyer ?? null);
+    setCodes(sale.codes ?? []);
     setCards({});
     setCustomer(sale.customer);
     setSelected(sale.lines.at(-1)?.key ?? null);
@@ -349,7 +360,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     const at = new Date();
     // When it was sold, not when it reaches the server. The sale has its own id, made when it began.
     const sale: Doc = {
-      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards }),
+      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes }),
       posting_date: localDate(at),
       posting_time: at.toTimeString().slice(0, 8),
     };
@@ -359,7 +370,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       if (approvals.length) return tr("This sale carries another person's approval, which only the server can check and which lapses. Wait for the connection to sell it, or take away what was approved.");
       if (carriesCard(sale)) return tr("A card's code goes only to the server and is never kept on this device. This sale needs the connection.");
       // Sold without the server: when it arrives, the register's policy says what happens if it took more than the warehouse holds.
-      const queued: QueuedSale = { key, body: { ...sale, sold_offline: true }, at: at.toISOString(), by: email, total: String(due) };
+      // It names the snapshot it was priced with (when this device priced it) and the total it took payment for: the server prices it again
+      // with exactly that snapshot, and a Price Difference is recorded for a person to look at when the totals do not agree.
+      const queued: QueuedSale = { key, body: offlineSale(sale, { total: due, snapshot: calc.offline ? book?.version : undefined }), at: at.toISOString(), by: email, total: String(due) };
       // The sale is the device's only copy: if the device would not keep it, it stays on screen.
       if (!outbox.add(queued)) return tr("This device could not keep the sale: its storage is full or blocked. Connect to send it now, or free some space and try again.");
       const paid = tenders.map((t) => ({ kind: str(modes.find((m) => m.id === t.mode_of_payment)?.mode_type), amount: num(t.amount) }));
@@ -616,10 +629,18 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           due={due}
           grand={grand}
           walkIn={walkIn}
-          customer={customer.id}
+          customer={found ?? customer.id}
           program={str(calc.doc?.loyalty_program) || null}
           offline={away || serverDown()}
           steps={steps}
+          buyer={buyer}
+          onBuyer={setBuyer}
+          codes={codes}
+          onCodes={setCodes}
+          doc={calc.doc}
+          problem={calc.error ?? null}
+          pricing={calc.pending}
+          namedAbove={book?.buyer?.named_above ?? null}
           onClose={() => setDialog(null)}
           onComplete={complete}
         />

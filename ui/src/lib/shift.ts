@@ -131,8 +131,10 @@ export function reasonOf(remarks: string | null | undefined): string {
   return new RegExp(`(?:${off.join("|")})\\.?$`).test(first) ? rest.join("\n") : (remarks ?? "");
 }
 
-/** The X report (a shift still open) or the Z report (once it is closed), ready to print. */
-export function zReportHtml(profile: Doc, report: Report, remarks?: string | null): string {
+/** The till's own X report (a shift still open) or Z report (closed), for when the server's template (`pos.shift_report`
+ *  on the closing) cannot be had: it says so on its face. On a blind register what was expected is left out of a method
+ *  until it is counted, as the server leaves it out. */
+export function fallbackShiftHtml(profile: Doc, report: Report, remarks?: string | null, blind = false): string {
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const s = report.meta.session;
   const at = (v: string | null | undefined) => formatMoment(v, { dateStyle: "medium", timeStyle: "medium" });
@@ -140,7 +142,7 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
   const drawer = (s?.reconciliation ?? [])
     .map(
       (r) =>
-        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${esc(money(r.expected))}</td></tr>` +
+        `<tr><td>${esc(r.mode_of_payment)}</td><td class="r">${blind && r.counted == null ? "" : esc(money(r.expected))}</td></tr>` +
         (r.counted == null ? "" : `<tr><td><small>${esc(tr("counted"))}</small></td><td class="r">${esc(money(r.counted))}</td></tr><tr><td><small>${esc(Number(r.difference) < 0 ? tr("short") : Number(r.difference) > 0 ? tr("over") : tr("difference"))}</small></td><td class="r">${esc(money(r.difference))}</td></tr>`),
     )
     .join("");
@@ -148,6 +150,7 @@ export function zReportHtml(profile: Doc, report: Report, remarks?: string | nul
     profile,
     tr("{value} report {value2}", { value: s?.report ?? "X", value2: s?.number ?? "" }),
     `
+    <p><b>${esc(tr("Printed on this device: not the register's report"))}</b></p>
     <h1>${esc(profile.profile_name)}</h1>
     <p><b>${esc(s?.report === "Z" ? tr("Z REPORT") : tr("X REPORT"))}</b><br>${esc(tr("Session {number} · {cashier}", { number: String(s?.number ?? ""), cashier: String(s?.cashier ?? "") }))}<br>${esc(tr("Opened {at}", { at: at(s?.opened_at) }))}${s?.closed_at ? `<br>${esc(tr("Closed {at}", { at: at(s.closed_at) }))}` : ""}</p><hr>
     <table><tr><td>${esc(tr("Sales"))}</td><td class="r">${esc(report.meta.sales)}</td></tr><tr><td>${esc(tr("Returns"))}</td><td class="r">${esc(report.meta.returns)}</td></tr>

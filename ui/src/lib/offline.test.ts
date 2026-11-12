@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { engineUrl, loadEngine } from "@ferrum/calc";
-import { downloadBook, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, times, unreachable, type PriceBook } from "./offline";
+import { downloadSnapshot, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, times, unreachable, type PriceBook } from "./offline";
 
 const book: PriceBook = {
   profile: "p1",
@@ -67,13 +67,13 @@ describe("selling offline", () => {
     expect(searchBook(book, "").map((i) => i.id)).toEqual(["i-tea", "i-cake"]);
   });
 
-  it("downloads every page of the book", async () => {
-    const pages: Record<string, { items: PriceBook["items"]; barcodes: PriceBook["barcodes"]; next: string | null; engine?: PriceBook["engine"] }> = {
-      start: { engine: book.engine, items: [book.items[0]], barcodes: [], next: "i-tea" },
-      "i-tea": { engine: book.engine, items: [book.items[1]], barcodes: book.barcodes, next: null },
-    };
-    const got = await downloadBook("p1", async (after) => pages[after ?? "start"]);
-    expect([got.items.map((i) => i.id), got.barcodes.length, got.engine.round_total_to]).toEqual([["i-tea", "i-cake"], 1, "1"]);
+  it("keeps the whole snapshot the server gave: its version, signature, promotions and buyer rule", async () => {
+    const answer = { engine: book.engine, items: book.items, barcodes: book.barcodes, currency: "INR", customer: "walkin", version: "ab12", signature: "sig", promotions: [{ id: "promo" }], buyer: { named_above: "5000", walk_in: "walkin" }, truncated: false, built_at: "2026-11-13T09:00:00Z" };
+    const got = await downloadSnapshot("p1", async () => answer);
+    expect([got.items.map((i) => i.id), got.barcodes.length, got.engine.round_total_to, got.version, got.signature, got.promotions?.length, got.buyer?.named_above, got.truncated]).toEqual([["i-tea", "i-cake"], 1, "1", "ab12", "sig", 1, "5000", false]);
+    // One from a server that signs nothing, and a book older than snapshots: no version, nothing invented.
+    const bare = await downloadSnapshot("p1", async () => ({ items: [], barcodes: [] }));
+    expect([bare.version, bare.signature, bare.promotions, bare.truncated]).toEqual([undefined, null, [], false]);
   });
 
   it("does not wait again for a server that has just failed to answer", () => {

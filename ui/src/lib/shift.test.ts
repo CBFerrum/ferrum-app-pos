@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, zReportHtml, type Report } from "./shift";
+import { cashCounted, closingBody, countsOf, denominations, difference, reasonOf, remarksOf, standing, typedAmount, fallbackShiftHtml, type Report } from "./shift";
 
 describe("counting the drawer", () => {
   it("adds notes and coins, and anything odd, exactly", () => {
@@ -99,7 +99,7 @@ describe("the Z report", () => {
   };
 
   it("prints what was sold, taken and counted, with everything escaped", () => {
-    const html = zReportHtml({ profile_name: "Front <Counter>", print_format: "Thermal 80mm" }, report, "Cash short by 2.00");
+    const html = fallbackShiftHtml({ profile_name: "Front <Counter>", print_format: "Thermal 80mm" }, report, "Cash short by 2.00");
     expect(html).toContain("Z REPORT");
     expect(html).toContain("Front &#60;Counter&#62;");
     expect(html).toContain("Cash &#60;b&#62;");
@@ -109,9 +109,16 @@ describe("the Z report", () => {
     expect(html).toContain("Cash short by 2.00");
   });
 
+  it("leaves out what a blind register expected until that method is counted", () => {
+    const blind = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, reconciliation: [{ ...report.meta.session!.reconciliation[0], expected: "777.00", counted: null }] } } };
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, true)).not.toContain("777.00");
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind, null, false)).toContain("777.00");
+    expect(fallbackShiftHtml({ profile_name: "Counter" }, blind)).toContain("not the register&#39;s report");
+  });
+
   it("is an X report while the shift is open and leaves out a count that was not made", () => {
     const open = { ...report, meta: { ...report.meta, session: { ...report.meta.session!, report: "X" as const, closed_at: null, reconciliation: [{ ...report.meta.session!.reconciliation[0], counted: null }] } } };
-    const html = zReportHtml({ profile_name: "Counter" }, open);
+    const html = fallbackShiftHtml({ profile_name: "Counter" }, open);
     expect(html).toContain("X REPORT");
     expect(html).not.toContain("counted");
     expect(html).not.toContain("Closed");

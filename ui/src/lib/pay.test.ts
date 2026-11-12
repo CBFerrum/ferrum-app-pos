@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally } from "./pay";
+import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally } from "./pay";
 
 const cash = (amount: number) => ({ kind: "Cash", amount });
 const card = (amount: number) => ({ kind: "Bank", amount });
@@ -54,5 +54,22 @@ describe("taking payment", () => {
     ];
     expect(pointsAvailable(entries, "2026-11-01")).toBe(11 + 10 - 6 - 4);
     expect(pointsAvailable([], "2026-11-01")).toBe(0);
+  });
+});
+
+describe("what each way of paying came to", () => {
+  it("hands the change back out of the last cash tender, and takes the rest of the bill from the others", () => {
+    expect(perTender(70, [{ kind: "Bank", amount: 20 }, { kind: "Cash", amount: 100 }])).toEqual([
+      { tendered: 20, taken: 20, change: 0 },
+      { tendered: 100, taken: 50, change: 50 },
+    ]);
+    expect(perTender(70, [{ kind: "Cash", amount: 40 }, { kind: "Cash", amount: 40 }]).map((r) => r.change)).toEqual([0, 10]);
+    expect(perTender(70, [{ kind: "Bank", amount: 70 }])).toEqual([{ tendered: 70, taken: 70, change: 0 }]);
+  });
+
+  it("says what is left on a card, never below nothing", () => {
+    expect(leftOnCard(500, 110)).toBe(390);
+    expect(leftOnCard(50, 50)).toBe(0);
+    expect(leftOnCard(0.3, 0.1)).toBe(0.2);
   });
 });

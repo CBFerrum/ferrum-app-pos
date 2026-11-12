@@ -83,6 +83,19 @@ export function paymentRows(tenders: Tender[]): Doc[] {
   });
 }
 
+/** A sale the till could not send, as it is kept and sent later: marked sold offline, with the total it took payment for and, when this device
+ *  priced it from its snapshot, that snapshot's version (the server prices it again with exactly it). A sale the server priced before the connection
+ *  was lost names no snapshot: only the total is checked. */
+export function offlineSale(sale: Doc, o: { total: number | string; snapshot?: string | null }): Doc {
+  return { ...sale, sold_offline: true, till_total: String(o.total), ...(o.snapshot ? { price_snapshot: o.snapshot } : {}) };
+}
+
+/** The registration a buyer gave: its number and, for a customer made from it, their name. */
+export interface Buyer {
+  taxId: string;
+  name?: string;
+}
+
 /** A line taken off the sale after it was rung (`voided_lines`): what, how many, its amount, and the reason (a `PosReason`). */
 export interface Voided {
   item: string;
@@ -131,6 +144,10 @@ export function invoiceBody(o: {
   voided?: Voided[];
   invoiceNow?: boolean;
   cards?: LineCards;
+  /** A buyer who gave a tax registration (`buyer_tax_id`, with a name for a customer made from it): the server finds or makes the customer. */
+  buyer?: Buyer | null;
+  /** Promotion codes the buyer gave (`promotion_codes`, space separated): the server checks them. */
+  codes?: string[];
 }): Doc {
   return {
     ...(o.id ? { id: o.id } : {}),
@@ -149,6 +166,8 @@ export function invoiceBody(o: {
     ...(o.approvals?.length ? { approvals: o.approvals.map((approval) => ({ approval })) } : {}),
     ...(o.voided?.length ? { voided_lines: o.voided.map((v) => ({ item: v.item, qty: String(v.qty), amount: v.amount, reason: v.reason })) } : {}),
     ...(o.invoiceNow ? { invoice_now: true } : {}),
+    ...(o.buyer?.taxId.trim() ? { buyer_tax_id: o.buyer.taxId.trim(), ...(o.buyer.name?.trim() ? { buyer_name: o.buyer.name.trim() } : {}) } : {}),
+    ...(o.codes?.length ? { promotion_codes: o.codes.join(" ") } : {}),
   };
 }
 
@@ -268,8 +287,10 @@ export function printPage(profile: Doc, title: string, body: string): string {
   </style></head><body>${body}</body></html>`;
 }
 
-/** A receipt to print; every value is escaped. */
-export function receiptHtml(profile: Doc, sale: Doc): string {
+/** The till's own receipt, for when the server's cannot be had (no connection, or a sale not yet sent): it says so
+ *  on its face, because it is not the register's numbered receipt (its template, tax by rate, registrations);
+ *  every value is escaped. The server's template is the receipt (`GET /receipt/{sale}`, `POST /reprint`). */
+export function fallbackReceiptHtml(profile: Doc, sale: Doc): string {
   const num = (v: unknown) => Number(v ?? 0) || 0;
   const money = (v: unknown) => formatDecimal(v ?? 0, 2);
   const titleOf = (d: Doc | undefined, field: string) => str((d?._titles as Record<string, unknown> | undefined)?.[field]) || str(d?.[field]);
@@ -287,6 +308,7 @@ export function receiptHtml(profile: Doc, sale: Doc): string {
     profile,
     str(sale.number),
     `
+    <p><b>${esc(tr("Printed on this device: not the register's receipt"))}</b></p>
     <h1>${esc(profile.profile_name)}</h1>${profile.receipt_header ? `<p>${esc(profile.receipt_header)}</p>` : ""}
     <p>${sale.is_return ? `<b>${esc(tr("RETURN"))}</b>${sale.against ? tr(" of {value}", { value: esc(sale.against) }) : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
     <table>${rows}</table><hr>

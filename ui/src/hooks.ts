@@ -7,14 +7,15 @@ import { useDebounced } from "@ferrum/kit";
 import type { Doc, Me } from "@ferrum/records";
 import { errorMessage } from "@ferrum/client";
 import { myEmail } from "./fmt";
-import { downloadBook, loadBook, priceOffline, saveBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
+import { downloadSnapshot, loadBook, priceOffline, saveBook, serverDown, SNAPSHOT_PATIENCE_MS, till, unreachable, type PriceBook } from "./lib/offline";
 import { carriesCard, flushOutbox, loadOutbox, saveOutbox, type CartLine, type QueuedSale } from "./lib/pos";
 
 /** How old a price book may get before the till fetches it again (while online). */
 const BOOK_AGE_MS = 30 * 60_000;
 
-/** The register's price book: from this device at once, then fetched again while online when it
- *  is older than half an hour or the session changed. */
+/** The register's snapshot (prices, taxes, promotions, the buyer rule), kept under the offline lease: from this
+ *  device at once, then fetched again while online when it is older than half an hour, the session changed, or
+ *  what is kept is from before snapshots (no version: an offline sale could not name it). */
 export function usePriceBook(profileId: string, session: string | null) {
   const [book, setBook] = useState<PriceBook | null>(null);
   useEffect(() => {
@@ -22,9 +23,9 @@ export function usePriceBook(profileId: string, session: string | null) {
     void (async () => {
       const kept = await loadBook(profileId).catch(() => null);
       if (live && kept) setBook(kept);
-      if (!session || (kept && Date.now() - Date.parse(kept.built_at) < BOOK_AGE_MS)) return;
+      if (!session || (kept?.version && Date.now() - Date.parse(kept.built_at) < BOOK_AGE_MS)) return;
       try {
-        const fresh = await downloadBook(profileId, (after) => till(`/api/app/pos/pricebook`, { query: { profile: profileId, after: after ?? undefined } }));
+        const fresh = await downloadSnapshot(profileId, () => till(`/api/app/pos/snapshot`, { query: { profile: profileId }, patience: SNAPSHOT_PATIENCE_MS }));
         if (!live) return;
         setBook(fresh);
         await saveBook(fresh).catch(() => {});
