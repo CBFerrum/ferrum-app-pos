@@ -3,17 +3,24 @@
 // payment; what is still due after each one is already in the next. Enter adds the payment, or
 // completes the sale once the bill is covered. The server settles it the same way (`settle_sale`):
 // only cash can come to more than the bill, a shortfall inside the register's write-off limit is
-// forgiven, a sale on account and points need a named customer.
+// forgiven, a sale on account and points need a named customer. A card (stored value) is read first:
+// its balance and expiry are shown before it is taken, and what it cannot cover goes to another way
+// of paying; its code and PIN live in this window and the one request, never in storage or the queue.
+// With a customer on the sale, the tax invoice can be issued at once.
 
 import { useQuery } from "@tanstack/react-query";
 import { useContext, useMemo, useState, type FormEvent } from "react";
-import { docPath, t as tr, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, placed } from "@ferrum/kit";
+import { docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
+import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, placed, toast } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
+import { AskDialog } from "./Approval";
+import { CardInputs } from "./Card";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { quickCash, receiptHtml, type Tender } from "./lib/pos";
 import { till, tillAll } from "./lib/offline";
+import { allows, type Limits } from "./lib/rights";
+import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
 import { printHtml } from "./print";
 
 interface Method {
@@ -21,6 +28,8 @@ interface Method {
   name: string;
   kind: string;
   isDefault: boolean;
+  /** What the server takes of a card offline (0: none). */
+  offlineLimit: number;
 }
 
 export interface PayProps {
@@ -42,7 +51,7 @@ export interface PayProps {
   steps: number[];
   onClose: () => void;
   /** Sells; the answer is what went wrong, or null once it is done. */
-  onComplete: (tenders: Tender[]) => Promise<string | null>;
+  onComplete: (tenders: Tender[], o: { invoiceNow: boolean }) => Promise<string | null>;
 }
 
 export function PayDialog({ profile, modes, due, grand, walkIn, customer, program, offline, steps, onClose, onComplete }: PayProps) {
@@ -52,7 +61,8 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
     () =>
       ((profile.payments as Doc[] | undefined) ?? []).map((r) => {
         const id = str(r.mode_of_payment);
-        return { id, name: titleOf(r, "mode_of_payment"), kind: str(modes.find((m) => m.id === id)?.mode_type) || "General", isDefault: r.is_default === true };
+        const mode = modes.find((m) => m.id === id);
+        return { id, name: titleOf(r, "mode_of_payment"), kind: str(mode?.mode_type) || "General", isDefault: r.is_default === true, offlineLimit: num(mode?.offline_limit) };
       }),
     [profile, modes],
   );
@@ -82,6 +92,11 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   /** Why a way of paying cannot be used for this sale, if it cannot. */
   const whyNot = (m: Method): string | null => {
     if (m.kind === "Credit" && !named) return tr("Paying later needs a named customer: pick one on the sale first.");
+    if (m.kind === "Stored Value" && offline) {
+      return m.offlineLimit > 0
+        ? tr("The server takes this offline up to {limit}, but the till never keeps a card's code on this device. Take it when the connection is back.", { limit: money(m.offlineLimit) })
+        : tr("Cards need a connection: the balance is the server's.");
+    }
     if (m.kind === "Loyalty Points") {
       if (!named) return tr("Points need a named customer: pick one on the sale first.");
       if (offline) return tr("Points need a connection to read the customer's balance.");
@@ -98,6 +113,11 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const [amount, setAmount] = useState(String(due));
   const [reference, setReference] = useState("");
   const [points, setPoints] = useState("");
+  const [code, setCode] = useState("");
+  const [pin, setPin] = useState("");
+  const [card, setCard] = useState<CardBalance | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [invoiceNow, setInvoiceNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -105,10 +125,20 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const paidOf = (list: Tender[]): Paid[] => list.map((t) => ({ kind: kindOf(t.mode_of_payment), amount: num(t.amount) }));
   const current = methods.find((m) => m.id === method);
   const usingPoints = current?.kind === "Loyalty Points";
+  const usingCard = current?.kind === "Stored Value";
   const typed = usingPoints ? pointsValue(Math.floor(num(points)), factor, precision) : num(amount);
+  const cardWhy = usingCard && card ? cardProblem(card, typed, localDate(new Date())) : null;
+  // A card is taken only once its balance has been read and covers what is typed.
+  const cardReady = !usingCard || (!!card && !cardWhy);
   const pending: Tender | null =
-    current && typed > 0
-      ? { mode_of_payment: current.id, amount: String(typed), ...(reference.trim() ? { reference_no: reference } : {}), ...(usingPoints ? { loyalty_points: Math.floor(num(points)) } : {}) }
+    current && typed > 0 && cardReady
+      ? {
+          mode_of_payment: current.id,
+          amount: String(typed),
+          ...(reference.trim() ? { reference_no: reference } : {}),
+          ...(usingPoints ? { loyalty_points: Math.floor(num(points)) } : {}),
+          ...(usingCard ? { stored_value_code: code.trim(), ...(pin.trim() ? { stored_value_pin: pin.trim() } : {}) } : {}),
+        }
       : null;
   const everything = pending ? [...added, pending] : added;
   const t = tally(due, paidOf(everything), writeOff, precision);
@@ -116,12 +146,33 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   const covered = t.left === 0 && !t.problem;
   const rounding = round(due - grand, precision);
 
+  const forgetCard = () => {
+    setCode("");
+    setPin("");
+    setCard(null);
+  };
   const choose = (id: string) => {
     setMethod(id);
     setAmount(String(before));
     setReference("");
     setPoints("");
+    forgetCard();
     setError(null);
+  };
+  // The card's balance, expiry and state before it is taken; what it holds caps what is typed.
+  const check = async () => {
+    if (!current || !codeOk(code) || checking) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const found = await till<CardBalance>("/api/app/pos/balance", { method: "POST", body: { mode: current.id, code: code.trim(), ...(pin.trim() ? { pin: pin.trim() } : {}) } });
+      setCard(found);
+      if (found.holds === "Money" && Number(found.balance) < before) setAmount(String(Number(found.balance)));
+    } catch (e) {
+      setCard(null);
+      setError(errorMessage(e));
+    }
+    setChecking(false);
   };
   const add = () => {
     if (!pending) return;
@@ -132,6 +183,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
     setAmount(String(stillDue(due, paidOf(list), precision)));
     setReference("");
     setPoints("");
+    forgetCard();
     setError(null);
   };
   // A stray tap outside the window must not forget payments already added.
@@ -142,7 +194,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   };
   const complete = async () => {
     setBusy(true);
-    setError(await onComplete(everything));
+    setError(await onComplete(everything, { invoiceNow: named && invoiceNow }));
     setBusy(false);
   };
   const submit = (e: FormEvent) => {
@@ -210,6 +262,29 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           </p>
         ))}
 
+        {usingCard && (
+          <div className="pos-card">
+            <CardInputs
+              id="pay-card"
+              code={code}
+              pin={pin}
+              onCode={(v) => (setCode(v), setCard(null))}
+              onPin={(v) => (setPin(v), setCard(null))}
+              onEnter={() => void check()}
+            />
+            <Button className="pos-btn" loading={checking} disabled={!codeOk(code)} onClick={() => void check()}>
+              {tr("Check balance")}
+            </Button>
+            {card && (
+              <p className="pos-hint" role="status">
+                {card.holds === "Money" ? tr("Balance {balance}", { balance: money(card.balance) }) : tr("{balance} units left", { balance: card.balance })}
+                {card.expires_on ? tr(" · valid until {date}", { date: card.expires_on }) : tr(" · does not expire")}
+              </p>
+            )}
+            {cardWhy && <Alert tone="warning">{isolate(cardWhy)}</Alert>}
+          </div>
+        )}
+
         {current && !usingPoints && (
           <>
             <Field label={tr("{name} amount", { name: current.name })} htmlFor="pay-amount">
@@ -273,6 +348,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
                   {isolate(methods.find((m) => m.id === p.mode_of_payment)?.name ?? "")}
                   {p.loyalty_points ? tr(" · {loyalty_points} points", { loyalty_points: p.loyalty_points }) : ""}
                   {p.reference_no ? ` · ${p.reference_no}` : ""}
+                  {p.stored_value_code ? tr(" · card ending {last}", { last: lastFour(p.stored_value_code) }) : ""}
                 </span>
                 <strong>{isolate(money(p.amount))}</strong>
                 <button type="button" className="icon-btn" aria-label={tr("Remove the {name} payment", { name: String(methods.find((m) => m.id === p.mode_of_payment)?.name) })} disabled={busy} onClick={() => setAdded(added.filter((_, j) => j !== i))}>
@@ -283,6 +359,16 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           </ul>
         )}
 
+        {named && (
+          <label className="pos-check">
+            <input type="checkbox" checked={invoiceNow} disabled={busy} onChange={(e) => setInvoiceNow(e.target.checked)} />
+            <span>
+              {tr("Issue the tax invoice now")}
+              <span className="faint pos-hint"> {tr("The customer's own sales invoice is made when the sale is saved, not at closing.")}</span>
+            </span>
+          </label>
+        )}
+
         <div aria-live="polite">{status}</div>
         {error && <Alert tone="error">{isolate(error)}</Alert>}
         <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
@@ -291,38 +377,72 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   );
 }
 
-/** What is shown once a sale is done: the change to hand back, the receipt to print, the next sale. */
-export function ReceiptDialog({ profile, sale, onClose }: { profile: Doc; sale: Doc; onClose: () => void }) {
+/** What is shown once a sale is done: the change to hand back, the receipt to print, the next sale.
+ *  A sale not yet closed into the books can be voided here, with a reason, by someone who may or
+ *  with another person's approval (online only: the sale is the server's). */
+export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = false, onClose }: { profile: Doc; sale: Doc; limits?: Limits; reasons?: Doc[]; offline?: boolean; onClose: () => void }) {
   const money = useMoney();
   const change = num(sale.change_amount);
   const kept = sale.pending === true;
+  const voidReasons = reasons.filter((r) => r.applies_to === "Void" && r.disabled !== true);
+  const [asking, setAsking] = useState(false);
+  const voidable = !kept && !sale.is_return && !sale.exchange && !!sale.id && !!limits && voidReasons.length > 0;
+  const voidIt = async (approval: string | undefined, reason: string | undefined) => {
+    setAsking(false);
+    try {
+      await till(docPath("PosInvoice", str(sale.id), "actions", "void"), { method: "POST", body: { reason, ...(approval ? { approval } : {}) } });
+      toast(tr("Sale {number} voided", { number: str(sale.number) }));
+      onClose();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={kept ? tr("Sale kept on this device") : sale.is_return ? tr("Return done") : tr("Sale complete")}
-      footer={
-        <>
-          <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, sale))}>
-            {tr("Print receipt")}
-          </Button>
-          <Button variant="primary" className="pos-btn" data-autofocus onClick={onClose}>
-            {sale.is_return ? tr("Done") : tr("Next sale")}
-          </Button>
-        </>
-      }
-    >
-      <div className="pos-done">
-        {change > 0 && (
-          <p className="pos-status pos-status-change">
-            {tr("Change")} <strong>{isolate(money(change))}</strong>
+    <>
+      <Dialog
+        open
+        onClose={onClose}
+        title={kept ? tr("Sale kept on this device") : sale.is_return ? tr("Return done") : tr("Sale complete")}
+        footer={
+          <>
+            <Button icon="printer" onClick={() => printHtml(receiptHtml(profile, sale))}>
+              {tr("Print receipt")}
+            </Button>
+            {voidable && (
+              <Button variant="danger" disabled={offline} title={offline ? tr("Voiding a sale needs a connection.") : undefined} onClick={() => setAsking(true)}>
+                {tr("Void this sale")}
+              </Button>
+            )}
+            <Button variant="primary" className="pos-btn" data-autofocus onClick={onClose}>
+              {sale.is_return ? tr("Done") : tr("Next sale")}
+            </Button>
+          </>
+        }
+      >
+        <div className="pos-done">
+          {change > 0 && (
+            <p className="pos-status pos-status-change">
+              {tr("Change")} <strong>{isolate(money(change))}</strong>
+            </p>
+          )}
+          <p>
+            {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{isolate(str(sale.number))}</strong>} · {isolate(money(sale.rounded_total ?? sale.grand_total))}
           </p>
-        )}
-        <p>
-          {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{isolate(str(sale.number))}</strong>} · {isolate(money(sale.rounded_total ?? sale.grand_total))}
-        </p>
-        {kept && <p className="muted">{tr("It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.")}</p>}
-      </div>
-    </Dialog>
+          {kept && <p className="muted">{tr("It is sent, and numbered, as soon as the connection is back. The till keeps selling meanwhile.")}</p>}
+        </div>
+      </Dialog>
+      {asking && limits && (
+        <AskDialog
+          profile={str(profile.id)}
+          sale={str(sale.id)}
+          title={tr("Void sale {number}", { number: str(sale.number) })}
+          steps={allows(limits, "Void Sale") ? [] : [{ act: "Void Sale", figure: 0, why: tr("you may not void sales") }]}
+          reasons={voidReasons}
+          offline={offline}
+          onClose={() => setAsking(false)}
+          onDone={(ap, reason) => void voidIt(ap[0]?.id, reason)}
+        />
+      )}
+    </>
   );
 }

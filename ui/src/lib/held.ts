@@ -6,7 +6,8 @@
 
 import { t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
-import type { CartLine } from "./pos";
+import type { Approval } from "./rights";
+import type { CartLine, Voided } from "./pos";
 
 export interface Customer {
   id: string | null;
@@ -19,6 +20,10 @@ export interface Cart {
   customer: Customer;
   /** The sale's own id, made on the device when it began. */
   key: string;
+  /** Another person's approvals for this sale (ids only; the PIN that gave them is never kept). */
+  approvals?: Approval[];
+  /** Lines taken off after they were rung, with why. */
+  voided?: Voided[];
 }
 
 export interface HeldSale extends Cart {

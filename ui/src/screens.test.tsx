@@ -12,13 +12,16 @@ import type { Doc } from "@ferrum/records";
 import { fakeBootstrap } from "@ferrum/testing";
 import { CartLines, Totals } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
+import { AskDialog, SetPinDialog } from "./Approval";
+import { CardLine } from "./Card";
 import { PayDialog, ReceiptDialog } from "./Pay";
 import ReturnDesk, { Sale } from "./Returns";
+import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
 import { Till } from "./Till";
 import { Currency } from "./fmt";
 import { ownerOf, saveCart } from "./lib/held";
-import { rightsOf } from "./lib/rights";
+import { rightsOf, UNLIMITED } from "./lib/rights";
 import type { Report } from "./lib/shift";
 import type { Sheet } from "./lib/returns";
 
@@ -84,6 +87,26 @@ describe("taking payment", () => {
     expect(draw(<PayDialog {...props} walkIn={false} customer="c1" offline />)).toContain("Points need a connection");
   });
 
+  it("takes a card with its balance read first, offers the invoice at once to a named customer, and refuses cards offline", () => {
+    const withCard = [...modes, { ...mode("gift", "Gift card", "Stored Value"), offline_limit: "25" }];
+    const p = { ...profile, payments: [...(profile.payments as Doc[]), { mode_of_payment: "gift", is_default: false, _titles: { mode_of_payment: "Gift card" } }] };
+    const online = draw(<PayDialog {...props} profile={p} modes={withCard} walkIn={false} customer="c1" />);
+    expect(online).toContain("Gift card");
+    expect(online).toContain("Issue the tax invoice now");
+    expect(draw(<PayDialog {...props} profile={p} modes={withCard} />)).not.toContain("Issue the tax invoice now");
+    const away = draw(<PayDialog {...props} profile={p} modes={withCard} offline />);
+    expect(away).toMatch(/Gift card: The server takes this offline up to 25.00, but the till never keeps a card/);
+    expect(draw(<PayDialog {...props} profile={p} modes={[...modes, mode("gift", "Gift card", "Stored Value")]} offline />)).toMatch(/Cards need a connection/);
+  });
+
+  it("offers to void a finished sale, with a reason, but not a kept one, a return or an exchange", () => {
+    const sale = { id: "s1", number: "C1-9", rounded_total: "20", payments: [] };
+    const reasons = [{ id: "r1", reason: "Wrong item rung", applies_to: "Void" }];
+    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
+    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
+    for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
+  });
+
   it("shows a receipt with the change, and a kept sale as not yet sent", () => {
     const sale = { number: "C1-9", rounded_total: "252.95", change_amount: "47.05", payments: [] };
     expect(draw(<ReceiptDialog profile={profile} sale={sale} onClose={() => {}} />)).toMatch(/Change.*47\.05/);
@@ -102,7 +125,8 @@ describe("the sale on screen", () => {
     { item: "tea", rate: "20.00", amount: "40.00", discount_percent: "0" },
     { item: "cake", rate: "40.50", amount: "40.50", discount_percent: "5" },
   ];
-  const show = (rights: ReturnType<typeof rightsOf>, editing: string | null) =>
+  const spare = { approvals: [], profile, cards: {}, away: false, onAsk: () => {}, onCard: () => {} };
+  const show = (limits: ReturnType<typeof rightsOf>, editing: string | null, extra: Partial<typeof spare> = {}) =>
     draw(
       <CartLines
         lines={lines}
@@ -110,7 +134,9 @@ describe("the sale on screen", () => {
         pending={false}
         selected="cake"
         editing={editing}
-        rights={rights}
+        limits={limits}
+        {...spare}
+        {...extra}
         baseOf={() => ({ list: 45, rule: 0 })}
         onSelect={() => {}}
         onEdit={() => {}}
@@ -130,7 +156,7 @@ describe("the sale on screen", () => {
 
   it("shows a price only on the line it was worked out for", () => {
     const html = draw(
-      <CartLines lines={lines} priced={[priced[1], priced[0]]} pending selected={null} editing={null} rights={rightsOf(profile, false)} baseOf={() => null} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onRemove={() => {}} />,
+      <CartLines lines={lines} priced={[priced[1], priced[0]]} pending selected={null} editing={null} limits={rightsOf(profile, false)} approvals={[]} profile={profile} cards={{}} away={false} baseOf={() => null} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onAsk={() => {}} onCard={() => {}} onRemove={() => {}} />,
     );
     expect(html).not.toContain("40.50");
     expect(html).toContain("Pricing…");
@@ -138,13 +164,25 @@ describe("the sale on screen", () => {
 
   it("opens a line's editor with the cap before typing, as far as the role allows", () => {
     const cashier = show(rightsOf(profile, false), "cake");
-    expect(cashier).toContain("You can give up to 10%.");
+    expect(cashier).toContain("You can give up to 10% yourself.");
     expect(cashier).toContain("List price 45.00");
-    expect(cashier).not.toContain(">Price<");
-    const priceToo = show(rightsOf({ ...profile, allow_rate_change: true }, false), "cake");
-    expect(priceToo).toContain(">Price<");
-    expect(show(rightsOf({ allow_discount_change: false }, false), "cake")).toContain("does not let cashiers give discounts");
-    expect(show(rightsOf({}, true), "cake")).toContain("No limit for you.");
+    expect(show(rightsOf({ allow_discount_change: false }, false), "cake")).toContain("You can give up to 0% yourself.");
+    expect(show(UNLIMITED, "cake")).toContain("No limit for you.");
+  });
+
+  it("asks for approval, offline says it needs a connection, and a card line takes the card's code", () => {
+    const over = [{ ...lines[0] }, { ...lines[1], discount: "" }];
+    const html = draw(
+      <CartLines lines={over} priced={priced} pending={false} selected="cake" editing="cake" limits={{ ...rightsOf(profile, false), discount_percent: 2 }} approvals={[]} profile={profile} cards={{}} away baseOf={() => ({ list: 45, rule: 0 })} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onAsk={() => {}} onCard={() => {}} onRemove={() => {}} />,
+    );
+    expect(html).not.toContain("Ask for approval"); // nothing typed yet
+    const card = draw(
+      <CartLines lines={over} priced={[priced[0], { ...priced[1], stored_value_kind: "gift" }]} pending={false} selected="cake" editing="cake" limits={UNLIMITED} approvals={[]} profile={profile} cards={{ cake: { code: "7KQ2-M9XD" } }} away={false} baseOf={() => ({ list: 45, rule: 0 })} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onAsk={() => {}} onCard={() => {}} onRemove={() => {}} />,
+    );
+    expect(card).toContain("Card ending M9XD is set");
+    expect(card).toContain("Make a new code");
+    expect(card).toContain("PIN, if the card has one");
+    expect(card).not.toContain("7KQ2");
   });
 
   it("adds up the sale, with the rounding the currency needs", () => {
@@ -213,14 +251,38 @@ const sheet: Sheet = {
 };
 
 describe("the return desk", () => {
+  const desk = { profile, session: "s1", modes, limits: rightsOf(profile, false), reasons: [] as Doc[] };
   it("asks which sale, with today's sales waiting for the server", () => {
-    const html = draw(<ReturnDesk profile={profile} session="s1" onClose={() => {}} onDone={() => {}} />);
+    const html = draw(<ReturnDesk {...desk} onClose={() => {}} onDone={() => {}} />);
     expect(html).toContain("Return goods");
     expect(html).toContain("Receipt number or customer");
   });
 
+  it("offers a return without a receipt and an exchange only where the register has a return policy", () => {
+    expect(draw(<ReturnDesk {...desk} onClose={() => {}} onDone={() => {}} />)).toContain("This register has no return policy.");
+    const withPolicy = draw(<ReturnDesk {...desk} profile={{ ...profile, return_policy: "pol" }} onClose={() => {}} onDone={() => {}} />);
+    expect(withPolicy).toContain("Return without a receipt");
+    expect(withPolicy).toContain("Exchange");
+    expect(withPolicy).not.toContain("no return policy");
+  });
+
+  it("draws a return that names no sale, and an exchange with its two halves", () => {
+    const policy = { price_basis: "Entered", fees: [{ condition: "Damaged", fee_percent: "15" }], store_credit: "credit", refund_modes: [], window_days: 30 };
+    const seed = (qc: QueryClient) => qc.setQueryData(["pos", "policy", "pol"], policy);
+    const reasons = [{ id: "r1", reason: "Faulty", applies_to: "Return" }];
+    const p = { ...profile, return_policy: "pol" };
+    const none = draw(<Unreceipted {...desk} profile={p} reasons={reasons} mode="return" onBack={() => {}} onDone={() => {}} />, seed);
+    expect(none).toContain("Item coming back");
+    expect(none).toContain("Why are they coming back?");
+    expect(none).toContain("Faulty");
+    expect(none).not.toContain("Item going out");
+    const swap = draw(<Unreceipted {...desk} profile={p} reasons={reasons} mode="exchange" onBack={() => {}} onDone={() => {}} />, seed);
+    expect(swap).toContain("Item going out");
+    expect(swap).toContain("Complete the exchange");
+  });
+
   it("shows a sale's lines, the reason and where the refund goes", () => {
-    const html = draw(<Sale profile={profile} session="s1" sale="sale1" onBack={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "return-sheet", "p1", "sale1"], sheet));
+    const html = draw(<Sale {...desk} sale="sale1" onBack={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "return-sheet", "p1", "sale1"], sheet));
     expect(html).toContain("C1-2026-27-000004");
     expect(html).toContain("Pen");
     expect(html).toContain("1 already returned");
@@ -230,8 +292,52 @@ describe("the return desk", () => {
   });
 
   it("says why a sale cannot come back yet", () => {
-    const html = draw(<Sale profile={profile} session="s1" sale="sale1" onBack={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "return-sheet", "p1", "sale1"], { ...sheet, blocked: "it is still in another open session" }));
+    const html = draw(<Sale {...desk} sale="sale1" onBack={() => {}} onDone={() => {}} />, (qc) => qc.setQueryData(["pos", "return-sheet", "p1", "sale1"], { ...sheet, blocked: "it is still in another open session" }));
     expect(html).toContain("Cannot be returned yet: it is still in another open session.");
+  });
+});
+
+describe("approval at the till", () => {
+  const step = { act: "Discount" as const, figure: 12.5, why: "a 12.5% discount exceeds the 10% allowed" };
+  const ask = (over: Partial<Parameters<typeof AskDialog>[0]> = {}) => (
+    <AskDialog profile="p1" sale="sale-1" title="Approval for this line" steps={[step]} offline={false} onDone={() => {}} onClose={() => {}} {...over} />
+  );
+
+  it("asks who approves, their PIN (masked) and why, and says what is being approved", () => {
+    const html = draw(ask());
+    expect(html).toContain("A discount beyond your limit.");
+    expect(html).toContain("a 12.5% discount exceeds the 10% allowed");
+    expect(html).toContain("Who approves");
+    expect(html).toMatch(/type="password"[^>]*/);
+    expect(html).toContain("Their PIN");
+    expect(html).toContain("Why");
+  });
+
+  it("says approvals need a connection when the till is offline, and numbers the approvals when there are two", () => {
+    expect(draw(ask({ offline: true }))).toContain("Approvals need a connection");
+    expect(draw(ask({ steps: [step, { act: "Price Change", figure: 0, why: "you may not change prices" }] }))).toContain("Approval 1 of 2");
+  });
+
+  it("asks only for a reason when no approval is needed, from the business's list", () => {
+    const html = draw(ask({ title: "Take Tea off the sale", steps: [], reasons: [{ id: "r1", reason: "Scanned twice" }, { id: "r2", reason: "Customer changed their mind" }] }));
+    expect(html).toContain("Scanned twice");
+    expect(html).toContain("Customer changed their mind");
+    expect(html).not.toContain("Their PIN");
+    expect(html).toContain("Confirm");
+  });
+
+  it("sets one's own PIN, twice, online only", () => {
+    const html = draw(<SetPinDialog offline={false} onClose={() => {}} />);
+    expect(html).toContain("Set my PIN");
+    expect(html).toContain("Type it again");
+    expect(draw(<SetPinDialog offline onClose={() => {}} />)).toContain("Setting a PIN needs a connection.");
+  });
+
+  it("takes a card's code for a card line, offering to make one only online", () => {
+    const line = (away: boolean) => draw(<CardLine profile={profile} line="gift" kind="gift" set={null} away={away} onUse={() => {}} />);
+    expect(line(false)).toContain("Scan or type the card&#x27;s code before paying.");
+    expect(line(false)).not.toMatch(/disabled="" title="[^"]*">Make a new code/);
+    expect(line(true)).toMatch(/disabled="" title="[^"]*">Make a new code/);
   });
 });
 

@@ -2,38 +2,66 @@
 // customer: any cashier's, since the customer comes to whichever till is free), pick the lines and
 // how many come back, say why, and refund the way the sale was paid. The server's rules are shown
 // before it would refuse them: what is left on each line, what the customer still owes (cancelled
-// first), points going back as points, and only what came in as money going back as money. Loaded
-// when first asked for, and needing the server: the sale being returned is read from it.
+// first), points going back as points, and only what came in as money going back as money; what a
+// card paid goes back onto stored value (a card's code, or a new store credit the server makes). A
+// refund beyond the cashier's limit asks another person's approval first. Returns without a receipt
+// and exchanges are Unreceipted.tsx. Loaded when first asked for, and needing the server: the sale
+// being returned is read from it.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Minus, Plus } from "lucide-react";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { docPath, errorMessage, newKey, t, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, Field, useDebounced, placed, FormSkeleton, ListSkeleton, StatePanel } from "@ferrum/kit";
 import { Problem } from "./ui";
 import type { Doc } from "@ferrum/records";
+import { useAsk } from "./Approval";
+import { CardInputs, CodeOnce, makeCode } from "./Card";
 import { Currency, num, str, useMoney } from "./fmt";
 import { till } from "./lib/offline";
 import { pointsValue } from "./lib/pay";
 import { receiptHtml, withMethodNames } from "./lib/pos";
-import { checkRefund, REASONS, refundPayments, refundPlan, returnBody, returnItems, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
+import { checkRefund, REASONS, refundPayments, refundPlan, returnBody, returnItems, type CardProof, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
+import { allows, asksFor, type Approval, type Limits } from "./lib/rights";
+import { codeOk } from "./lib/stored";
 import { printHtml } from "./print";
+
+// Returns without a receipt and exchanges load only when chosen.
+const Unreceipted = lazy(() => import("./Unreceipted"));
+
+export interface DeskProps {
+  profile: Doc;
+  session: string;
+  modes: Doc[];
+  limits: Limits;
+  reasons: Doc[];
+}
 
 const when = (day: string, time: string | null) => {
   const d = new Date(`${day}T${time && /^\d\d:\d\d/.test(time) ? time.slice(0, 8) : "00:00:00"}`);
   return Number.isNaN(d.getTime()) ? day : d.toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 };
 
-export default function ReturnDesk({ profile, session, onClose, onDone }: { profile: Doc; session: string; onClose: () => void; onDone: (receipt: Doc) => void }) {
+export default function ReturnDesk({ onClose, onDone, ...desk }: DeskProps & { onClose: () => void; onDone: (receipt: Doc) => void }) {
   const [sale, setSale] = useState<string | null>(null);
+  const [other, setOther] = useState<"return" | "exchange" | null>(null);
+  const back = () => (setSale(null), setOther(null));
   return (
-    <Dialog open wide onClose={onClose} title={t("Return goods")}>
-      {sale ? <Sale profile={profile} session={session} sale={sale} onBack={() => setSale(null)} onDone={onDone} /> : <Find profile={profile} onPick={setSale} onClose={onClose} />}
+    <Dialog open wide onClose={onClose} title={other === "exchange" ? t("Exchange goods") : other ? t("Return without a receipt") : t("Return goods")}>
+      {other ? (
+        <Suspense fallback={<ListSkeleton rows={4} />}>
+          <Unreceipted {...desk} mode={other} onBack={back} onDone={onDone} />
+        </Suspense>
+      ) : sale ? (
+        <Sale {...desk} sale={sale} onBack={back} onDone={onDone} />
+      ) : (
+        <Find profile={desk.profile} onPick={setSale} onOther={setOther} onClose={onClose} />
+      )}
     </Dialog>
   );
 }
 
-function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string) => void; onClose: () => void }) {
+function Find({ profile, onPick, onOther, onClose }: { profile: Doc; onPick: (id: string) => void; onOther: (m: "return" | "exchange") => void; onClose: () => void }) {
   const money = useMoney();
   const [text, setText] = useState("");
   const q = useDebounced(text.trim(), 300);
@@ -75,6 +103,13 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
         </ul>
       )}
       <div className="pos-sticky">
+        <Button disabled={!profile.return_policy} onClick={() => onOther("return")}>
+          {t("Return without a receipt")}
+        </Button>
+        <Button disabled={!profile.return_policy} onClick={() => onOther("exchange")}>
+          {t("Exchange")}
+        </Button>
+        {!profile.return_policy && <span className="faint">{t("This register has no return policy.")}</span>}
         <span className="spacer" />
         <Button onClick={onClose}>{t("Close")}</Button>
       </div>
@@ -82,7 +117,7 @@ function Find({ profile, onPick, onClose }: { profile: Doc; onPick: (id: string)
   );
 }
 
-export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc; session: string; sale: string; onBack: () => void; onDone: (receipt: Doc) => void }) {
+export function Sale({ profile, session, modes, limits, sale, onBack, onDone }: DeskProps & { sale: string; onBack: () => void; onDone: (receipt: Doc) => void }) {
   const qc = useQueryClient();
   const money = useMoney();
   const { precision } = useContext(Currency);
@@ -97,9 +132,14 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [points, setPoints] = useState("");
   const [refs, setRefs] = useState<Record<string, string>>({});
+  // A card's code and PIN, for the refund onto it: in memory, sent with the return, never kept.
+  const [cards, setCards] = useState<Record<string, CardProof>>({});
+  const [made, setMade] = useState<string | null>(null);
+  const [approved, setApproved] = useState<{ key: string; list: Approval[] }>({ key: "", list: [] });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const attempt = useRef<{ json: string; key: string } | null>(null);
+  const asker = useAsk(profileId, () => false);
 
   const data = sheet.data;
   const items = useMemo(() => (data ? returnItems(data, picks) : []), [data, picks]);
@@ -130,7 +170,8 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
   }
   const problem = data && total > 0 ? checkRefund(total, rows, data, precision) : null;
   const why = data?.blocked ? t("Cannot be returned yet: {blocked}.", { blocked: data.blocked }) : null;
-  const ready = !!data && !data.blocked && settled && total > 0 && !problem && !plan.problem && reason.trim() !== "" && !busy;
+  const cardless = rows.some((r) => methods.find((m) => m.mode === r.mode)?.kind === "Stored Value" && !codeOk(cards[r.mode]?.code ?? ""));
+  const ready = !!data && !data.blocked && settled && total > 0 && !problem && !plan.problem && reason.trim() !== "" && !cardless && !busy;
 
   const setQty = (id: string, qty: number, left: number) => setPicks((p) => ({ ...p, [id]: { qty: Math.max(0, Math.min(left, qty)), serials: [] } }));
   const toggleSerial = (id: string, serial: string, all: string[]) =>
@@ -140,17 +181,34 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
       return { ...p, [id]: { qty: serials.length, serials } };
     });
 
-  const refund = async () => {
+  const refund = () => {
     if (!data) return;
-    setBusy(true);
-    setError(null);
-    const base = returnBody({ profile: profileId, session, sale, reason, items, payments: refundPayments(rows, refs) });
+    const base = returnBody({ profile: profileId, session, sale, reason, items, payments: refundPayments(rows, refs, cards) });
     // The same return sent again is the same return; a changed one is a new one.
     const json = JSON.stringify(base);
     if (attempt.current?.json !== json) attempt.current = { json, key: newKey() };
     const key = attempt.current.key;
+    const have = approved.key === key ? approved.list : [];
+    // A refund beyond the cashier's limit needs another person's approval, for this return's own id.
+    const need = allows(limits, "Refund", total) ? [] : asksFor([{ line: 0, act: "Refund", figure: total, why: t("a refund of {total} is more than you may give", { total: money(total) }) }], have);
+    if (!need.length) return void send(base, key, have);
+    asker.ask({
+      title: t("Approval for this refund"),
+      sale: key,
+      steps: need,
+      done: (got) => {
+        setApproved({ key, list: [...have, ...got] });
+        void send(base, key, [...have, ...got]);
+      },
+    });
+  };
+  const send = async (base: Doc, key: string, ap: Approval[]) => {
+    if (!data) return;
+    setBusy(true);
+    setError(null);
     try {
-      const done = await till<Doc>(docPath("PosInvoice"), { method: "POST", body: { ...base, id: key }, query: { submit: true }, idempotencyKey: key });
+      const body = { ...base, id: key, ...(ap.length ? { approvals: ap.map((a) => ({ approval: a.id })) } : {}) };
+      const done = await till<Doc>(docPath("PosInvoice"), { method: "POST", body, query: { submit: true }, idempotencyKey: key });
       void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
       onDone(withMethodNames(profile, { ...done, is_return: true, against: data.sale.number }));
     } catch (e) {
@@ -265,7 +323,32 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
                     {isolate(m.name)}
                     {!m.usable && <span className="faint"> · {m.why ?? t("not at this register")}</span>}
                   </label>
-                  {!m.usable ? null : m.kind === "Credit" ? (
+                  {!m.usable ? null : m.kind === "Stored Value" ? (
+                    <span className="pos-refund-in">
+                      <input id={`refund-${m.mode}`} className="input" inputMode="decimal" value={amounts[m.mode] ?? ""} placeholder="0" onChange={(e) => setAmounts((a) => ({ ...a, [m.mode]: e.target.value }))} />
+                      {num(amounts[m.mode]) > 0 && (
+                        <span className="pos-card">
+                          <CardInputs
+                            id={`refund-card-${m.mode}`}
+                            code={cards[m.mode]?.code ?? ""}
+                            pin={cards[m.mode]?.pin ?? ""}
+                            onCode={(code) => setCards((c) => ({ ...c, [m.mode]: { ...c[m.mode], code } }))}
+                            onPin={(pin) => setCards((c) => ({ ...c, [m.mode]: { code: c[m.mode]?.code ?? "", pin } }))}
+                          />
+                          <Button
+                            disabled={!modes.find((x) => x.id === m.mode)?.stored_value_kind}
+                            onClick={() =>
+                              void makeCode(str(modes.find((x) => x.id === m.mode)?.stored_value_kind))
+                                .then((code) => (setCards((c) => ({ ...c, [m.mode]: { ...c[m.mode], code } })), setMade(code)))
+                                .catch((e: unknown) => setError(errorMessage(e)))
+                            }
+                          >
+                            {t("New store credit")}
+                          </Button>
+                        </span>
+                      )}
+                    </span>
+                  ) : m.kind === "Credit" ? (
                     <span className="pos-refund-fixed">{isolate(money(amounts[m.mode] ?? 0))}</span>
                   ) : m.kind === "Loyalty Points" ? (
                     data.loyalty ? (
@@ -308,10 +391,12 @@ export function Sale({ profile, session, sale, onBack, onDone }: { profile: Doc;
         <Button onClick={onBack} disabled={busy}>
           {t("Back")}
         </Button>
-        <Button variant="primary" className="pos-btn" disabled={!ready} loading={busy} onClick={() => void refund()}>
+        <Button variant="primary" className="pos-btn" disabled={!ready} loading={busy} onClick={refund}>
           {total > 0 ? t("Refund {total}", { total: money(total) }) : t("Refund")}
         </Button>
       </div>
+      {asker.node}
+      {made && <CodeOnce profile={profile} code={made} onClose={() => setMade(null)} />}
     </div>
   );
 }
