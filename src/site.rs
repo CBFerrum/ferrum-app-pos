@@ -80,6 +80,11 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
 
 /// One page of the price book (`after`: the last item of the page before).
 pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<Value> {
+    Ok(book_sale(k, ctx, profile_id, after).await?.0)
+}
+
+/// [`book_page`], and the sale of one of each of its items the register priced (none when no item of the page sells).
+pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<(Value, Option<Doc>)> {
     // Reading the register is the right to its prices.
     let profile = k.get(ctx, "PosProfile", profile_id, false).await?;
     let groups: Vec<String> = rows(&profile, "item_groups").iter().filter_map(|g| s(g, "item_group").map(str::to_string)).collect();
@@ -125,7 +130,7 @@ pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     // priced again: each round drops at least one, so it ends.
     let priced = loop {
         if items.is_empty() {
-            return Ok(json!({"profile": profile_id, "items": [], "barcodes": [], "unpriced": unpriced, "next": next}));
+            return Ok((json!({"profile": profile_id, "items": [], "barcodes": [], "unpriced": unpriced, "next": next}), None));
         }
         let sale: Doc = json!({"pos_profile": profile_id, "items": items.iter().map(|i| json!({"item": i.get("id"), "qty": "1"})).collect::<Vec<_>>()})
             .as_object()
@@ -200,7 +205,7 @@ pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     };
     // Pack barcodes are an extra: a person who may not read them still gets prices.
     let barcodes = k.list(ctx, "ItemBarcode", &packs).await.map(|p| p.rows).unwrap_or_default();
-    Ok(json!({
+    let page = json!({
         "profile": profile_id,
         "currency": code,
         "customer": priced.get("customer"),
@@ -210,7 +215,8 @@ pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
         "unpriced": unpriced,
         "next": next,
         "built_at": chrono::Utc::now().to_rfc3339(),
-    }))
+    });
+    Ok((page, Some(priced)))
 }
 
 /// `GET /limits?profile=`: what the signed-in person may do at the register on their own, for the
