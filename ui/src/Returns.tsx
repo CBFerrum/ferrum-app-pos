@@ -21,7 +21,7 @@ import { Currency, num, str, useMoney } from "./fmt";
 import { till } from "./lib/offline";
 import { pointsValue } from "./lib/pay";
 import { addItem, invoiceBody, paymentRows, setQty as setCartQty, withMethodNames, type CartLine } from "./lib/pos";
-import { checkRefund, exchange as netOf, REASONS, refundPayments, refundPlan, refundsFromProposal, returnBody, returnItems, type CardProof, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
+import { checkRefund, REASONS, refundPayments, refundsFromProposal, returnBody, returnItems, type CardProof, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
 import { exchange as sendExchange, returnPlan } from "./lib/server";
 import { Finder, Qty } from "./Pick";
 import { allows, asksFor, type Approval, type Limits } from "./lib/rights";
@@ -203,27 +203,28 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
     staleTime: 0,
   });
   const outSettled = !exchanging || (!!outBody && !outCalc.isFetching && !!outCalc.data);
-  const outTotal = exchanging && outSettled ? num(outCalc.data?.rounded_total ?? outCalc.data?.grand_total) : 0;
-  const split = exchanging ? netOf(backTotal, outTotal, precision) : { carried: 0, due: 0, refund: backTotal };
-  const total = split.refund;
 
-  // The register's own proposal for the refund (`POST /returns/{sale}/plan`): the lines and quantities coming back, answered with how it would
-  // refund them: through the ways the sale was paid, the rest onto store credit or out as cash as its return policy says.
+  // The register's own plan (`POST /returns/{sale}/plan`): the lines and quantities coming back, answered with how it would refund them (through the
+  // ways the sale was paid, the rest onto store credit or out as cash as its return policy says). With the goods going out it is an exchange: the register
+  // prices them as a sale and says what they come to, what the return carries over, what the customer still pays and what is refunded. The till adds nothing up.
   const planLines = useMemo(() => items.map((i) => ({ line: str(i.original_line), qty: String(-num(i.qty)) })), [items]);
+  const planOut = exchanging ? ((outBody?.items as Doc[] | undefined) ?? []) : [];
   const proposal = useQuery({
-    queryKey: ["pos", "return-plan", profileId, sale, JSON.stringify(planLines)],
-    enabled: !!data && !exchanging && planLines.length > 0,
-    queryFn: ({ signal }) => returnPlan(profileId, sale, planLines, signal),
+    queryKey: ["pos", "return-plan", profileId, sale, JSON.stringify(planLines), JSON.stringify(planOut)],
+    enabled: !!data && planLines.length > 0 && (!exchanging || planOut.length > 0),
+    queryFn: ({ signal }) => returnPlan(profileId, sale, planLines, planOut, signal),
     staleTime: 0,
   });
-  // The refunds start where the proposal puts them each time what is returned changes; the cashier may then change them. A net refund (an exchange) is split by the same rules here.
+  const given = proposal.data;
+  const split = { due: num(given?.exchange?.due), refund: num(given?.exchange ? given.exchange.refund : given?.total) };
+  const total = split.refund;
+  const outTotal = num(given?.exchange?.out_total);
+  // The refunds start where the plan puts them each time what is returned or what goes out changes; the cashier may then change them.
   const plan = useMemo(() => {
-    if (!data || !(total > 0)) return { rows: [] as RefundRow[], problem: null as string | null, ready: true };
-    if (exchanging) return { ...refundPlan(total, data, precision), ready: true };
-    const p = proposal.data;
-    if (!p) return { rows: [] as RefundRow[], problem: null as string | null, ready: false };
-    return { ...refundsFromProposal(p, data, precision), ready: true };
-  }, [data, total, exchanging, proposal.data, precision]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!data || !given) return { rows: [] as RefundRow[], problem: null as string | null, ready: false };
+    if (!(total > 0)) return { rows: [] as RefundRow[], problem: null as string | null, ready: true };
+    return { ...refundsFromProposal(given, data, precision), ready: true };
+  }, [data, total, given, precision]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setAmounts(Object.fromEntries(plan.rows.filter((r) => !r.points).map((r) => [r.mode, String(r.amount)])));
     setPoints(String(plan.rows.find((r) => r.points)?.points ?? ""));
@@ -245,7 +246,7 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
   const payWith = payMode || payable.find((m) => m.kind === "Cash")?.mode || payable[0]?.mode || "";
   const refunded = total > 0;
   const ready =
-    !!data && !data.blocked && settled && backTotal > 0 && !(refunded && (problem || plan.problem || !plan.ready)) && reason.trim() !== "" && !cardless && !busy &&
+    !!data && !data.blocked && settled && backTotal > 0 && !!given && !(refunded && (problem || plan.problem || !plan.ready)) && reason.trim() !== "" && !cardless && !busy &&
     (!exchanging || (out.length > 0 && outSettled && !outCalc.error && (split.due <= 0 || !!payWith))) && !proposal.error;
 
   const setQty = (id: string, qty: number, left: number) => setPicks((p) => ({ ...p, [id]: { qty: Math.max(0, Math.min(left, qty)), serials: [] } }));
@@ -418,7 +419,7 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
         <p className="muted">{t("Choose what comes back to see the refund.")}</p>
       ) : preview.error ? (
         <Alert tone="error">{isolate(errorMessage(preview.error))}</Alert>
-      ) : !settled || (!exchanging && !proposal.data && !proposal.error) ? (
+      ) : !settled || (proposal.isFetching && !given && !proposal.error) ? (
         <p className="muted">{t("Working out the refund…")}</p>
       ) : (
         <>
@@ -427,7 +428,7 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
             <>
               <p className="pos-due">
                 <span className="muted">{t("Coming back is worth")}</span>
-                <strong>{isolate(money(backTotal))}</strong>
+                <strong>{isolate(money(given?.total ?? backTotal))}</strong>
               </p>
               <p className="pos-due">
                 <span className="muted">{t("Going out is worth")}</span>

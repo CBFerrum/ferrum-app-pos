@@ -120,9 +120,10 @@ describe("taking payment", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
   });
 
-  it("says plainly offline that promotions come when the sale is sent, and holds a sale the buyer rule would refuse", () => {
-    const html = draw(<PayDialog {...props} offline namedAbove="200" />);
-    expect(html).toContain("this till does not work out promotions");
+  it("lists the promotions an offline sale took, as the till priced them, and holds a sale the buyer rule would refuse", () => {
+    const html = draw(<PayDialog {...props} offline namedAbove="200" doc={{ offline: true, applied_promotions: [{ promotion: "p1", title: "Tea week", amount: "5.00", code: null }] }} />);
+    expect(html).toMatch(/Tea week.*−5\.00/);
+    expect(html).not.toContain("does not work out promotions");
     expect(html).toMatch(/This register asks for a named buyer on a sale this size/);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
     // Under the rule, or a named customer: nothing held back.
@@ -486,23 +487,33 @@ describe("the end of a shift", () => {
     expect(html).toContain("774.45");
   });
 
-  it("on a blind register shows no expected figure before the count is sent, and only the counted way's after", () => {
+  it("on a blind register shows the expected figures only as the server sends them: none before the count, the counted way's after", () => {
     const blindProfile = { ...profile, blind_close: true };
-    const blindSeed = (qc: QueryClient) => (seed(qc), qc.setQueryData(["pos", "profile", "p1"], blindProfile));
+    // As the server answers a blind register's report before any count: no expected figure, and for a cashier no sales of the open shift.
+    const blindReport = { ...report, rows: [], totals: { amount: "0.00" }, meta: { ...report.meta, sales: 0, returns: 0, net_total: "0.00", total_taxes: "0.00", grand_total: "0.00", session: { ...report.meta.session!, reconciliation: report.meta.session!.reconciliation.map((r) => ({ ...r, expected: null })) } } };
+    const blindSeed = (qc: QueryClient) => (seed(qc), qc.setQueryData(["pos", "profile", "p1"], blindProfile), qc.setQueryData(["pos", "report", "s1"], blindReport));
     const before = draw(<ShiftPage />, blindSeed);
     expect(before).toContain("This register closes blind");
     expect(before).toContain("Send the count");
     expect(before).not.toContain("774.45");
-    expect(before).not.toContain("199.00");
     expect(before).toContain("after the count is sent");
     expect(before).toContain("2 ways of paying are not counted yet");
-    // The cash count was sent: the draft the server saved carries the cash's expected figure, and the card's stays hidden.
+    // Not a zero for sales the server left out of a cashier's report.
+    expect(before).toContain("the shift&#x27;s sales and takings are shown once every way of paying is counted");
+    expect(before).not.toContain("Net sales");
+    // The cash count was sent: the draft the server saved carries the cash's expected figure, and the card's is still null.
     const sent = { id: "c1", version: 2, payments: [{ mode_of_payment: "cash", opening_amount: "500", expected_amount: "774.45", closing_amount: "770.00", difference: "-4.45" }, { mode_of_payment: "card", opening_amount: "0", expected_amount: null, closing_amount: null, difference: "0" }], tax_rows: [] };
     const after = draw(<ShiftPage />, (qc) => (blindSeed(qc), qc.setQueryData(["pos", "closing", "s1"], sent)));
     expect(after).toContain("774.45");
     // (The count typed back into its box, and the short or over beside it, come from an effect a static render does not run.)
     expect(after).not.toContain("199.00");
     expect(after).toContain("ways of paying are not counted yet");
+    // Every way counted: the closing carries its figures, and they are shown as sent.
+    const all = { ...sent, payments: [sent.payments[0], { mode_of_payment: "card", opening_amount: "0", expected_amount: "199.00", closing_amount: "199.00", difference: "0" }], invoice_count: 8, return_count: 1, net_total: "700.00", total_taxes: "70.00", grand_total: "770.00", refund_total: "12.00" };
+    const done = draw(<ShiftPage />, (qc) => (blindSeed(qc), qc.setQueryData(["pos", "closing", "s1"], all)));
+    expect(done).toContain("199.00");
+    expect(done).toContain("Net sales");
+    expect(done).toContain("700.00");
   });
 
   it("holds the closing back while sales wait on the device", () => {
@@ -516,13 +527,23 @@ describe("the end of a shift", () => {
 });
 
 describe("prices offline", () => {
-  it("says plainly that promotions come when the sale is sent, and which snapshot priced it", () => {
-    const doc = { total: "100.00", total_taxes: "10.00", rounded_total: "110.00", offline: true };
-    const html = draw(<Totals doc={doc} due={110} offline builtAt="2026-11-13T09:00:00Z" version="ab12cd34ef56" />);
+  it("says which snapshot priced it, and shows the tax by rate when more than one rate is charged, as the server's does", () => {
+    const rows = [{ description: "Standard", rate: "8", taxable_amount: "100.00", tax_amount: "8.00" }, { description: "Reduced", rate: "10", taxable_amount: "20.00", tax_amount: "2.00" }];
+    const doc = { total: "120.00", total_taxes: "10.00", rounded_total: "130.00", offline: true, tax_breakdown: rows };
+    const html = draw(<Totals doc={doc} due={130} offline builtAt="2026-11-13T09:00:00Z" version="ab12cd34ef56" />);
     expect(html).toContain("Priced on this device");
     expect(html).toContain("Snapshot ab12cd34.");
-    expect(html).toContain("this till does not work out promotions");
-    expect(draw(<Totals doc={doc} due={110} />)).not.toContain("promotions");
+    expect(html).toMatch(/Standard 8% on 100\.00.*8\.00.*Reduced 10% on 20\.00.*2\.00/);
+    expect(html).not.toContain("does not work out promotions");
+    // One rate: the Taxes line says it; nothing repeated.
+    expect(draw(<Totals doc={{ ...doc, tax_breakdown: rows.slice(0, 1) }} due={130} />)).not.toContain("Standard");
+  });
+
+  it("shows a promotional price on its line", () => {
+    const lines = [{ key: "k1", item: "i1", item_name: "Plum cake", qty: 2 }];
+    const html = draw(<CartLines lines={lines} priced={[{ item: "i1", rate: "36.00", amount: "72.00", discount_percent: "0", promotion_percent: "20" }]} pending={false} selected={null} editing={null} limits={rightsOf(profile, false)} approvals={[]} profile={profile} cards={{}} away baseOf={() => null} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onAsk={() => {}} onCard={() => {}} onRemove={() => {}} />);
+    expect(html).toContain("36.00 each");
+    expect(html).toContain("promotion −20%");
   });
 
   it("lists the sales whose offline price the register could not agree with, and lets a reviewer write what was found", () => {

@@ -24,7 +24,8 @@ import { PayDialog, ReceiptDialog } from "./Pay";
 import { Currency, fine, localDate, myEmail, num, str, titleOf, useMoney } from "./fmt";
 import { useCalc, useOutbox } from "./hooks";
 import { loadCart, loadHeld, ownerOf, putAside, saveCart, saveHeld, takeOut, totalOf, type Customer, type HeldSale } from "./lib/held";
-import { scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
+import { listPrices, scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
+import { notAvailable } from "./lib/pricing";
 import { tally } from "./lib/pay";
 import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
 import { allows, asksFor, beyond, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
@@ -90,7 +91,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const email = myEmail();
   const profileId = str(profile.id);
   const owner = ownerOf(profileId, email);
-  const precision = book?.engine.precision ?? 2;
+  const precision = book?.precision ?? 2;
   const code = book?.currency || titleOf(profile, "currency");
   const money = useMemo(() => (v: unknown) => formatDecimal(v ?? 0, precision), [precision]);
   const limits = useMemo(() => known ?? rightsOf(profile, manager), [known, profile, manager]);
@@ -157,8 +158,6 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     staleTime: 60_000,
     retry: false,
   });
-  const priceOf = useMemo(() => new Map((book?.items ?? []).map((i) => [i.id, i.line.price] as const)), [book]);
-
   // ── totals ──
   // With an approval the preview is the sale itself (the approval is for this sale's own id).
   const body = useMemo(
@@ -190,6 +189,19 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const found = buyer && calc.doc && !calc.error && str(calc.doc.customer) && str(calc.doc.customer) !== str(profile.customer) ? str(calc.doc.customer) : null;
   const walkIn = !found && (!customer.id || customer.id === str(profile.customer));
   const away = offline || !!calc.offline;
+  // What the snapshot lists the items shown and the lines rung at, and the discount their pricing rule gives (asked of the pricing engine): only where the server's prices are not at hand, so the engine is not loaded for nothing.
+  const [listed, setListed] = useState(new Map<string, { list: string; rule: string }>());
+  const wanted = [...(items.data?.rows ?? []).map((r) => str(r.id)), ...lines.map((l) => l.item)].sort().join(",");
+  const needed = !!book && (away || serverDown() || !!calc.error);
+  useEffect(() => {
+    if (!book || !wanted || !needed) return setListed(new Map());
+    let live = true;
+    void listPrices(book, wanted.split(",")).then((m) => live && setListed(m));
+    return () => {
+      live = false;
+    };
+  }, [book, wanted, needed]);
+
   const asker = useAsk(profileId, () => away || serverDown());
   const anyOpen = dialog !== null || receipt !== null || asker.open;
   useEffect(() => {
@@ -209,8 +221,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const baseOf = (l: CartLine): Base | null => {
     const known = learned.current.get(l.item);
     if (known && known.list > 0) return known;
-    const b = book?.items.find((i) => i.id === l.item);
-    return b ? { list: num(b.line.price), rule: num(b.line.discount_percent) } : null;
+    const b = listed.get(l.item);
+    return b ? { list: num(b.list), rule: num(b.rule) } : null;
   };
 
   // When the server refuses the sale as beyond the person's limits (the whole sale's discount, a
@@ -284,7 +296,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       return;
     }
     if (serverDown()) {
-      toast(book ? tr("Nothing on this device matches “{text}”", { text }) : tr("No connection, and no prices on this device yet."), "error");
+      toast(book ? tr("Nothing on this device matches “{text}”", { text }) : notAvailable(), "error");
       return;
     }
     try {
@@ -542,7 +554,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
                   <span className="pos-tile-name">{str(r.item_name) || str(r.item_code)}</span>
                   <span className="pos-tile-meta">
                     <span className="faint">{isolate(str(r.item_code))}</span>
-                    {priceOf.has(str(r.id)) && <strong>{isolate(money(priceOf.get(str(r.id))))}</strong>}
+                    {listed.has(str(r.id)) && <strong>{isolate(money(listed.get(str(r.id))?.list))}</strong>}
                   </span>
                 </button>
               </li>

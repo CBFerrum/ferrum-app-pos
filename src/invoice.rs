@@ -373,16 +373,41 @@ async fn record_difference(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
 /// manager may always), and a second pass computes the totals with them.
 async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> Result<()> {
     let mut items = rows(doc, "items");
-    let asked: Vec<(Option<Decimal>, Option<Decimal>)> =
-        items.iter().map(|r| (opt_dec(r, "discount_percent"), opt_dec(r, "manual_rate").filter(|m| *m > Decimal::ZERO))).collect();
-    // A sale made offline is also priced with the snapshot its till used, to see that the two agree.
+    let ask_of = |r: &Doc| (opt_dec(r, "discount_percent"), opt_dec(r, "manual_rate").filter(|m| *m > Decimal::ZERO));
+    let mut asked: Vec<(Option<Decimal>, Option<Decimal>)> = items.iter().map(ask_of).collect();
+    // A sale made offline is priced again with the snapshot its till used, by the same crate the till ran: its total
+    // is compared, and the promotions it gave are the sale's (ERP checks them against its records, keeps them for the
+    // report and counts their use once); the server does not look for others the till did not give.
     if b(doc, "sold_offline") && s(doc, "price_snapshot").is_some() {
         let group = match id(doc, "customer") {
             Some(c) => id(&get(hc.kernel, hc.ctx, hc.tx, "Customer", c).await?, "customer_group"),
             None => None,
         };
-        let total = crate::snapshot::replay_sale(hc, doc, profile.id, &asked, group).await?;
-        set(doc, "replay_total", total.map(money).unwrap_or(Value::Null));
+        items.retain(|r| s(r, "added_by_promotion").is_none());
+        asked = items.iter().map(ask_of).collect();
+        let priced = crate::snapshot::reprice(hc, doc, profile.id, &asked, group).await?;
+        set(doc, "replay_total", priced.as_ref().map(|p| money(p.totals.rounded_total)).unwrap_or(Value::Null));
+        if let Some(p) = priced {
+            for line in p.lines.iter().skip(items.len()) {
+                let free = json!({"item": line.item, "qty": money(line.qty), "added_by_promotion": line.added_by_promotion});
+                items.push(free.as_object().cloned().unwrap_or_default());
+            }
+            for (r, line) in items.iter_mut().zip(&p.lines) {
+                set(r, "promotion_percent", if line.promotion_percent.is_zero() { Value::Null } else { json!(line.promotion_percent.to_string()) });
+            }
+            let applied: Vec<Value> = p
+                .applied
+                .iter()
+                .map(|a| json!({"promotion": a.promotion, "line": a.line.parse::<usize>().unwrap_or_default(), "amount": money(a.amount), "code": a.code}))
+                .collect();
+            let time = s(doc, "posting_time").unwrap_or_default();
+            set(
+                doc,
+                "given_promotions",
+                json!({"snapshot": s(doc, "price_snapshot"), "source": format!("pos:{}", id(doc, "id").map(|i| i.to_string()).unwrap_or_default()), "counted": false,
+                       "at": format!("{} {}", s(doc, "posting_date").unwrap_or_default(), time.get(..5).unwrap_or(time)), "applied": applied}),
+            );
+        }
     }
     for r in items.iter_mut() {
         r.insert("price_list_rate".into(), Value::Null);
@@ -390,7 +415,26 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
         set(r, "warehouse", profile.warehouse.to_string());
     }
     set(doc, "items", rows_value(items));
-    calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await?;
+    let before = doc.clone();
+    match calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await {
+        // The promotions records changed since the till's snapshot so that ERP no longer takes what it gave (one
+        // removed, its dates moved): a paid sale is not refused for it. It is priced as ERP prices it now, and the
+        // totals' difference waits for a person.
+        Err(Error::Validation(e)) if e.iter().any(|f| f.field == "given_promotions") => {
+            *doc = before;
+            doc.remove("given_promotions");
+            let mut items = rows(doc, "items");
+            items.retain(|r| s(r, "added_by_promotion").is_none());
+            for r in items.iter_mut() {
+                r.remove("promotion_percent");
+            }
+            set(doc, "items", rows_value(items));
+            calculate(hc.kernel, hc.ctx, hc.tx, hc.entity, doc, Side::Selling).await?;
+        }
+        other => {
+            other?;
+        }
+    }
 
     let limits = crate::limits::of(hc.ctx, hc.tx, profile).await?;
     let header = d(doc, "discount_percent");

@@ -153,7 +153,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
           {t("Open the register while connected; it then keeps selling offline.")}
         </StatePanel>
       ) : (
-        <Currency.Provider value={{ precision: book?.engine.precision ?? 2, code: book?.currency || titleOf(profileDoc, "currency") }}>
+        <Currency.Provider value={{ precision: book?.precision ?? 2, code: book?.currency || titleOf(profileDoc, "currency") }}>
           {modes.isLoading && !modeRows.length ? (
             <FormSkeleton fields={3} />
           ) : (

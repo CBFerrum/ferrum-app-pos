@@ -13,7 +13,7 @@ ferrum-meta = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
 ferrum-domain = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
 ferrum-app-erp = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 ferrum-calc = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
-ferrum-erp-promotions = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
+ferrum-erp-pricing = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 hex = "0.4"
 sha2 = "0.10"
 async-trait = "0.1"
