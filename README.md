@@ -19,8 +19,8 @@
 
 Ferrum Point of Sale is the till at `/pos/`: full screen, installable on its own, and able to
 sell offline. Its worker keeps the till's page and files, the register's price book stays on the
-device, and the till prices sales with the server's own engine compiled to WebAssembly, so offline
-totals are the server's totals. Sales made offline wait on the device and go when the connection,
+device, and the till prices sales, promotions and taxes included, with ERP's pricing engine compiled to
+WebAssembly, so offline totals are the server's totals. Sales made offline wait on the device and go when the connection,
 or the cashier's session, is back; at closing they consolidate into invoices and payments. A sale
 made offline that takes more than the warehouse holds when it arrives follows the register's policy:
 recorded, with a Stock Shortfall a manager puts right, or refused.
@@ -51,7 +51,7 @@ The page, files and price book stay on the device; queued sales go when the conn
 <td width="50%" valign="top">
 
 ### 🧮 The server's own engine
-Offline totals come from the platform's pricing engine in WebAssembly (<code>@ferrum/calc</code>).
+Offline totals, promotions and the tax by rate come from ERP's pricing crate in WebAssembly, the code the server prices the sale again with.
 
 </td>
 </tr>
@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.7.3** | The till for 0.7.2: ERP's pricing crate vendored as WebAssembly (loaded only to price a sale offline, kept by the worker) prices offline sales from the schema 1 snapshot with promotions, free items and the tax by rate, and a 0.7.1 snapshot is let go; returns and exchanges show the server's plan; the blind close shows only the figures the server sends. |
 | **0.7.2** | Server only, needs ERP 0.26: offline prices from ERP's one pricing crate (the snapshot is its schema 1; an offline sale priced again with it, its promotions recorded and counted once, in the Promotions Given report); blind close reveals no expected figure before the count; the returns plan covers exchanges; a shift's tax rows exact across the upgrade; buyer erasure tested. |
 | **0.7.1** | The till's screens for 0.7.0: a buyer's registration and promotion codes at payment, the server's receipt printed once with copies, gift receipts and receipts by message, returns found by scanning a receipt with the register's refund plan and exchanges against a receipt, safe drops, a blind close and the shift report through the server's template, the snapshot kept for selling offline with the totals sent for the register to check, and the reviewer's list of Price Differences. |
 | **0.7.0** | A buyer's tax registration gets a tax invoice at the sale; the receipt is a template the workspace edits, with the tax by rate, registrations, tenders and a barcode, and its copies and gift receipts are counted; receipts by message; ERP's promotions on POS sales; one signed snapshot of prices, taxes and promotions for the till offline, with each offline sale priced again against it; a refund plan and a window on returns; safe drops, blind close and a shift report. |
