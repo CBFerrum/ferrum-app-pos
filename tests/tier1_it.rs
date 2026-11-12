@@ -204,48 +204,84 @@ async fn scenario() {
     assert!(messages(&e).contains("discounts of 45 on this sale exceed the 30 allowed"), "{e:?}");
     // The register's own row wins over the row for every register.
     t.insert(&a, "PosRoleLimit", json!({"role": "Cashier", "pos_profile": counter.to_string(), "discount_percent": "5", "refund_limit": "50"})).await;
+    // Two rows that would both apply are refused when saved, in plain words.
+    let twice = t.k.insert(&a, "PosRoleLimit", obj(json!({"role": "cashier", "discount_percent": "50"}))).await.unwrap_err();
+    assert!(messages(&twice).contains("cashier already has limits for every register"), "{twice:?}");
+    let twice = t.k.insert(&a, "PosRoleLimit", obj(json!({"role": "Cashier", "pos_profile": counter.to_string()}))).await.unwrap_err();
+    assert!(messages(&twice).contains("already has limits for register Counter"), "{twice:?}");
     let e = t.refused(&cashier, sale(off("10", "1"), json!([pay(&card, "99")]))).await;
     assert!(messages(&e).contains("exceeds the 5% allowed"), "{e:?}");
     // A return worth more than the refund limit.
-    let back = json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": fifteen["id"],
+    let back_id = Uuid::now_v7().to_string();
+    let back = json!({"id": back_id, "pos_profile": counter.to_string(), "is_return": true, "return_against": fifteen["id"],
                       "items": [line(widget, "-1")], "payments": [pay(&card, "-93.50")]});
     let e = t.refused(&cashier, back.clone()).await;
     assert!(messages(&e).contains("more than the 50 you may give"), "{e:?}");
 
     // ───────────── 2. approval by another person's PIN, voids with reasons ─────────────
     let profile = counter.to_string();
-    let ask = |who: &str, pin: &str, action: &str, amount: Option<&str>| json!({"profile": profile, "approver": who, "pin": pin, "action": action, "amount": amount, "reason": "regular customer"});
-    let no_pin = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    let ask = |who: &str, pin: &str, action: &str, amount: Option<&str>, sale: &str| json!({"profile": profile, "approver": who, "pin": pin, "action": action, "amount": amount, "reason": "regular customer", "sale": sale});
+    let new_id = || Uuid::now_v7().to_string();
+    let (w1, w2, w3) = (new_id(), new_id(), new_id());
+    let no_pin = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
     assert!(no_pin.is_err(), "no PIN set yet");
     t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "12"})).await.expect_err("a PIN is four to twelve digits");
     t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("set a PIN");
-    let wrong = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "1111", "Discount", Some("15"))).await;
+    let wrong = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "1111", "Discount", Some("15"), &w1)).await;
     assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m.contains("does not match")), "{wrong:?}");
-    let own = t.site(&manager, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    let own = t.site(&manager, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
     assert!(own.is_err(), "nobody approves their own act");
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await.expect("approved");
+    let unbound = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), "")).await;
+    assert!(messages(&unbound.unwrap_err()).contains("name the sale"), "an approval is for one sale");
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await.expect("approved");
     let approval = ok["approval"].as_str().unwrap().to_string();
     let mut with = sale(off("15", "1"), json!([pay(&card, "93.50")]));
     with["approvals"] = json!([{"approval": approval}]);
+    // Bound to the sale it was given for: another sale naming it is refused.
+    let mut other = with.clone();
+    other["id"] = json!(w2);
+    assert!(messages(&t.refused(&cashier, other.clone()).await).contains("exceeds the 5% allowed"), "for one sale");
+    with["id"] = json!(w1);
     let approved = t.sell(&cashier, with.clone()).await;
     assert_eq!(approved["approvals"][0]["approver"], json!("manager@shop.test"), "the sale keeps who approved it");
     let used = t.find_one("PosApproval", json!({"id": approval})).await;
     assert_eq!(used["used_for"], approved["id"]);
-    let again = t.refused(&cashier, with).await;
+    other["id"] = json!(new_id());
+    let again = t.refused(&cashier, other).await;
     assert!(messages(&again).contains("exceeds the 5% allowed") || messages(&again).contains("already used"), "used once: {again:?}");
     let mut more = sale(off("20", "1"), json!([pay(&card, "88")]));
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await.expect("approved");
+    more["id"] = json!(w3);
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w3)).await.expect("approved");
     more["approvals"] = json!([{"approval": ok["approval"]}]);
-    assert!(messages(&t.refused(&cashier, more).await).contains("exceeds"), "approved for 15%, not 20%");
+    assert!(messages(&t.refused(&cashier, more.clone()).await).contains("exceeds"), "approved for 15%, not 20%: a sale changed beyond it needs a new one");
+    // Lapsed: unused after the register's minutes, it covers nothing.
+    let w4 = new_id();
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w4)).await.expect("approved");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_pos_approval set expires_at = now() - interval '1 second' where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(ok["approval"].as_str().unwrap().parse::<Uuid>().unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut late = sale(off("15", "1"), json!([pay(&card, "93.50")]));
+    late["id"] = json!(w4);
+    late["approvals"] = json!([{"approval": ok["approval"]}]);
+    assert!(messages(&t.refused(&cashier, late).await).contains("exceeds the 5% allowed"), "lapsed");
+    // Approved now for a sale made after the session closes: it lapses with the session.
+    let w5 = new_id();
+    let kept_for_later =
+        t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w5)).await.expect("approved");
     // The refund over the cashier's 50, approved for up to 100.
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("100"))).await.expect("approved");
+    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("100"), &back_id)).await.expect("approved");
     let mut back = back;
     back["approvals"] = json!([{"approval": ok["approval"]}]);
     t.sell(&cashier, back).await;
     // Someone whose own limits do not reach cannot approve.
     let colleague = t.user("colleague@shop.test", &["Cashier"]).await;
     t.site(&colleague, "POST", "/pin", Value::Null, json!({"pin": "2468"})).await.expect("PIN");
-    let weak = t.site(&cashier, "POST", "/approve", Value::Null, ask("colleague@shop.test", "2468", "Void Sale", None)).await;
+    let weak = t.site(&cashier, "POST", "/approve", Value::Null, ask("colleague@shop.test", "2468", "Void Sale", None, &w1)).await;
     assert!(matches!(weak, Err(Error::Forbidden(ref m)) if m.contains("may not approve")), "{weak:?}");
     // Voided lines carry one of the business's reasons.
     let scanned = t.find_one("PosReason", json!({"reason": "Scanned in error"})).await;
@@ -260,7 +296,10 @@ async fn scenario() {
     let params = json!({"reason": scanned["id"]});
     let alone = t.k.run_action(&cashier, "PosInvoice", uid(&kept), "void", params.clone()).await;
     assert!(matches!(alone, Err(Error::Forbidden(_))), "{alone:?}");
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Void Sale", None)).await.expect("approved");
+    let ok = t
+        .site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Void Sale", None, kept["id"].as_str().unwrap()))
+        .await
+        .expect("approved");
     let mut params = params;
     params["approval"] = ok["approval"].clone();
     t.k.run_action(&cashier, "PosInvoice", uid(&kept), "void", params).await.expect("voided");
@@ -271,9 +310,9 @@ async fn scenario() {
     );
     // Five wrong tries lock the PIN, the right one included, for a while; nothing keeps the PIN itself.
     for _ in 0..5 {
-        let _ = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "0000", "Discount", Some("15"))).await;
+        let _ = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "0000", "Discount", Some("15"), &w1)).await;
     }
-    let locked = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"))).await;
+    let locked = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
     assert!(matches!(locked, Err(Error::TooManyRequests(_))), "{locked:?}");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     let (hash, leaked): (String, bool) = sqlx::query_as(
@@ -399,4 +438,11 @@ async fn scenario() {
     assert_eq!((settled["consolidated_invoice"].clone(), settled["status"].clone()), (si.clone(), json!("Consolidated")), "settled, not invoiced twice");
     let inv = t.find_one("SalesInvoice", json!({"id": si})).await;
     assert_eq!(dec(&inv["outstanding_amount"]), Decimal::ZERO, "the closing paid it");
+    // The approval given in the closed session covers nothing in the next one.
+    let reopen = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
+    t.k.submit(&cashier, "PosOpeningEntry", uid(&reopen), None).await.expect("a new session");
+    let mut after = sale(off("15", "1"), json!([pay(&card, "93.50")]));
+    after["id"] = json!(w5);
+    after["approvals"] = json!([{"approval": kept_for_later["approval"]}]);
+    assert!(messages(&t.refused(&cashier, after).await).contains("exceeds the 5% allowed"), "lapsed with its session");
 }

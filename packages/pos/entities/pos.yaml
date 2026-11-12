@@ -96,6 +96,8 @@
     - {name: allow_discount_change, type: check, description: Cashiers may give discounts up to Max Discount %}
     - {name: max_discount, type: percent, min: "0", max: "100", label: Max Discount %}
     - {name: allow_rate_change, type: check, description: Cashiers may type a different price}
+    - {name: approval_minutes, type: int, default: 5, min: "1", label: Approval Lasts (Minutes),
+       description: "An approval by another person's PIN is for one sale and act, used once, within this many minutes and while the cashier's session is open"}
     - {name: item_groups, type: table, of: PosItemGroup, label: Item Groups Shown, description: Empty = all}
     - {name: customer_groups, type: table, of: PosCustomerGroup, label: Customer Groups Allowed, description: Empty = all}
     - {name: print_format, type: select, options: [Thermal 80mm, Thermal 58mm, A4], default: Thermal 80mm}
@@ -105,7 +107,7 @@
   form:
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
     - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
-    - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change]}
+    - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
     - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
@@ -484,6 +486,8 @@
     - {name: amount, type: decimal, read_only: true, in_list: true, description: "The discount percent or the refund approved, when the act has one"}
     - {name: reason, type: data, read_only: true}
     - {name: limits, type: json, read_only: true, hidden: true, description: "The approver's limits when they approved"}
+    - {name: sale, type: data, read_only: true, in_filter: true, description: "The sale or draft it is for (its id); empty for opening the drawer"}
     - {name: used_for, type: data, read_only: true, in_list: true, description: "The sale or the act it was used for; an approval is used once"}
     - {name: approved_at, type: datetime, read_only: true, in_list: true}
+    - {name: expires_at, type: datetime, read_only: true, description: "Unused by then, it lapses; it lapses too when the cashier's session closes"}
   list: {columns: [action, cashier, approver, amount, used_for, approved_at], sort: created_at desc}
