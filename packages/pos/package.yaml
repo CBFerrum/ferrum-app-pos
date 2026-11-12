@@ -9,7 +9,7 @@ modules:
     label: POS
     icon: store
     order: 45
-    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode,
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
             report:pos_returns]
 
@@ -24,6 +24,11 @@ roles:
       - {entity: PosProfile, read: true}
       - {entity: ModeOfPayment, read: true}
       - {entity: ItemBarcode, read: true}
+      - {entity: PosRoleLimit, read: true}
+      - {entity: PosReason, read: true}
+      - {entity: PosApproval, read: true}
+      - {entity: StoredValueKind, read: true}
+      - {entity: StoredValueAccount, read: true}
       - {entity: LoyaltyProgram, read: true}
       - {entity: LoyaltyPointEntry, read: true}
       - {entity: Customer, read: true, write: true, create: true}
@@ -51,6 +56,11 @@ roles:
       - {entity: PosProfile, read: true, write: true, create: true, delete: true}
       - {entity: ModeOfPayment, read: true, write: true, create: true, delete: true}
       - {entity: ItemBarcode, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: PosRoleLimit, read: true, write: true, create: true, delete: true}
+      - {entity: PosReason, read: true, write: true, create: true, delete: true}
+      - {entity: PosApproval, read: true, export: true}
+      - {entity: StoredValueKind, read: true}
+      - {entity: StoredValueAccount, read: true}
       - {entity: LoyaltyProgram, read: true, write: true, create: true, delete: true}
       - {entity: LoyaltyPointEntry, read: true, export: true}
       - {entity: SalesInvoice, read: true}
@@ -79,6 +89,17 @@ seed:
       - {mode_name: Wallet, mode_type: Bank}
       - {mode_name: Credit, mode_type: Credit}
       - {mode_name: Loyalty Points, mode_type: Loyalty Points}
+  - entity: PosReason
+    key: [reason, applies_to]
+    records:
+      - {reason: Scanned in error, applies_to: Void}
+      - {reason: Customer changed their mind, applies_to: Void}
+      - {reason: Faulty, applies_to: Return}
+      - {reason: Wrong item, applies_to: Return}
+      - {reason: Changed their mind, applies_to: Return}
+      - {reason: Not as described, applies_to: Return}
+      - {reason: Change for the customer, applies_to: No Sale}
+      - {reason: Customer asked for a copy, applies_to: Reprint}
   - entity: Customer
     key: [customer_name]
     records:

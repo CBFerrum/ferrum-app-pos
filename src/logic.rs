@@ -13,6 +13,8 @@ pub enum Kind {
     General,
     Credit,
     Loyalty,
+    /// A gift card, store credit or other stored value (ERP's `StoredValueKind`).
+    StoredValue,
 }
 
 impl Kind {
@@ -23,6 +25,7 @@ impl Kind {
             "General" => Kind::General,
             "Credit" => Kind::Credit,
             "Loyalty Points" => Kind::Loyalty,
+            "Stored Value" => Kind::StoredValue,
             _ => return None,
         })
     }
@@ -88,6 +91,8 @@ pub struct Refundable {
     pub credit: Decimal,
     /// Paid with loyalty points (their value).
     pub loyalty: Decimal,
+    /// Paid with stored value: it goes back onto stored value, never out as money.
+    pub stored: Decimal,
 }
 
 /// What a sale can still pay back, from what it took in and what its returns refunded so far,
@@ -101,6 +106,7 @@ pub fn refundable(taken: &[(Kind, Decimal, Decimal)], write_off: Decimal) -> Ref
         match kind {
             Kind::Credit => left.credit += room,
             Kind::Loyalty => left.loyalty += room,
+            Kind::StoredValue => left.stored += room,
             _ => left.money += room,
         }
     }
@@ -136,6 +142,11 @@ pub fn check_refunds(total: Decimal, refunds: &[Tender], left: &Refundable) -> R
     let money = sum(&|k| k.is_money());
     if money > left.money {
         return Err(format!("at most {} can be refunded in cash or to cards: that is what the original sale was paid with", left.money.normalize()));
+    }
+    // Money may go back as stored value (store credit); stored value never comes back as money.
+    let stored = sum(&|k| k == Kind::StoredValue);
+    if money + stored > left.money + left.stored {
+        return Err(format!("at most {} can go back onto stored value", (left.money + left.stored - money).normalize()));
     }
     Ok(())
 }
@@ -192,10 +203,296 @@ pub fn exact_lines(qty: Decimal, net: Decimal, precision: u32, strategy: Roundin
     vec![(rest, price), (one, (net - amount(rest)) / one)]
 }
 
+/// Something a person at the till may do on their own only within their limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Discount,
+    PriceChange,
+    VoidLine,
+    VoidSale,
+    Refund,
+    ReturnWithoutReceipt,
+    NoSale,
+    Reprint,
+}
+
+impl Act {
+    pub const ALL: [Act; 8] =
+        [Act::Discount, Act::PriceChange, Act::VoidLine, Act::VoidSale, Act::Refund, Act::ReturnWithoutReceipt, Act::NoSale, Act::Reprint];
+
+    /// Its name on records (`PosApproval.action`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Act::Discount => "Discount",
+            Act::PriceChange => "Price Change",
+            Act::VoidLine => "Void Line",
+            Act::VoidSale => "Void Sale",
+            Act::Refund => "Refund",
+            Act::ReturnWithoutReceipt => "Return Without Receipt",
+            Act::NoSale => "No Sale",
+            Act::Reprint => "Reprint",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Act> {
+        Act::ALL.into_iter().find(|a| a.label() == s)
+    }
+}
+
+/// What one person may do at one register without someone else (`PosRoleLimit`): the most generous
+/// of their roles. `None` caps are no cap. The till gets the same record and checks the same way.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Limits {
+    /// The largest saving on a line against its list price, in percent, beyond what pricing rules gave.
+    pub discount_percent: Decimal,
+    /// The largest saving on a whole sale beyond what pricing rules gave.
+    pub discount_amount: Option<Decimal>,
+    pub change_price: bool,
+    pub void_line: bool,
+    pub void_sale: bool,
+    /// The largest return refunded.
+    pub refund: Option<Decimal>,
+    pub return_without_receipt: bool,
+    pub open_drawer: bool,
+    pub reprint: bool,
+}
+
+/// The larger cap, where no cap is the largest.
+fn wider(a: Option<Decimal>, b: Option<Decimal>) -> Option<Decimal> {
+    Some(a?.max(b?))
+}
+
+impl Limits {
+    /// No limit at all (a POS manager with no limits record).
+    pub fn unlimited() -> Limits {
+        Limits {
+            discount_percent: Decimal::ONE_HUNDRED,
+            discount_amount: None,
+            change_price: true,
+            void_line: true,
+            void_sale: true,
+            refund: None,
+            return_without_receipt: true,
+            open_drawer: true,
+            reprint: true,
+        }
+    }
+
+    /// The most generous of several roles' limits.
+    pub fn widest(all: impl IntoIterator<Item = Limits>) -> Option<Limits> {
+        all.into_iter().reduce(|a, b| Limits {
+            discount_percent: a.discount_percent.max(b.discount_percent),
+            discount_amount: wider(a.discount_amount, b.discount_amount),
+            change_price: a.change_price || b.change_price,
+            void_line: a.void_line || b.void_line,
+            void_sale: a.void_sale || b.void_sale,
+            refund: wider(a.refund, b.refund),
+            return_without_receipt: a.return_without_receipt || b.return_without_receipt,
+            open_drawer: a.open_drawer || b.open_drawer,
+            reprint: a.reprint || b.reprint,
+        })
+    }
+
+    /// Whether these limits let `act` through at `figure` (a saving percent or amount, a refund).
+    pub fn allows(&self, act: Act, figure: Decimal) -> bool {
+        match act {
+            Act::Discount => figure <= self.discount_percent,
+            Act::PriceChange => self.change_price,
+            Act::VoidLine => self.void_line,
+            Act::VoidSale => self.void_sale,
+            Act::Refund => self.refund.is_none_or(|r| figure <= r),
+            Act::ReturnWithoutReceipt => self.return_without_receipt,
+            Act::NoSale => self.open_drawer,
+            Act::Reprint => self.reprint,
+        }
+    }
+}
+
+/// A sale line as typed: the list price and pricing-rule discount the engine found, the price and
+/// discount the cashier asked for (`None`: not typed).
+#[derive(Debug, Clone, Copy)]
+pub struct LineAsk {
+    pub qty: Decimal,
+    pub list: Decimal,
+    pub rule: Decimal,
+    pub price: Option<Decimal>,
+    pub discount: Option<Decimal>,
+}
+
+/// What a sale asks beyond someone's limits: `(line, act, figure, why)`, the line `None` for the
+/// whole sale. `header` is the sale's own discount percent. A typed price, a line discount and the
+/// sale's discount count together as the saving against the list price.
+pub fn beyond(limits: &Limits, lines: &[LineAsk], header: Decimal) -> Vec<(Option<usize>, Act, Decimal, String)> {
+    let hundred = Decimal::ONE_HUNDRED;
+    let mut out = Vec::new();
+    let mut given = Decimal::ZERO;
+    for (i, l) in lines.iter().enumerate() {
+        let price = l.price.unwrap_or(l.list);
+        let discount = l.discount.unwrap_or(l.rule);
+        if l.price.is_some_and(|p| p != l.list) && !limits.change_price {
+            out.push((Some(i), Act::PriceChange, Decimal::ZERO, "you may not change prices".to_string()));
+        }
+        if l.list <= Decimal::ZERO {
+            continue;
+        }
+        let pays = price / l.list * (hundred - discount) / hundred * (hundred - header) / hundred;
+        let saving = ((Decimal::ONE - pays) * hundred).round_dp(4);
+        let allowed = l.rule.max(limits.discount_percent);
+        if saving > allowed {
+            out.push((Some(i), Act::Discount, saving, format!("a {}% discount exceeds the {}% allowed", saving.normalize(), allowed.normalize())));
+        }
+        // What the cashier gave beyond the pricing rules, in money.
+        let by_rule = l.qty * l.list * (hundred - l.rule) / hundred;
+        given += (by_rule - l.qty * l.list * pays).max(Decimal::ZERO);
+    }
+    let given = given.round_dp(2);
+    if let Some(cap) = limits.discount_amount.filter(|c| given > *c) {
+        out.push((None, Act::Discount, given, format!("discounts of {} on this sale exceed the {} allowed", given.normalize(), cap.normalize())));
+    }
+    out
+}
+
+/// How a return without a receipt is priced (`PosReturnPolicy.price_basis`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnBasis {
+    /// The register's price today.
+    Current,
+    /// The lowest the register sold it for over the policy's window, or today's when lower.
+    Lowest,
+    /// Typed by the cashier, the total held to their refund limit.
+    Entered,
+}
+
+impl ReturnBasis {
+    pub fn parse(s: Option<&str>) -> ReturnBasis {
+        match s {
+            Some("Lowest Price in Window") => ReturnBasis::Lowest,
+            Some("Entered") => ReturnBasis::Entered,
+            _ => ReturnBasis::Current,
+        }
+    }
+}
+
+/// The price one unit of a return without a receipt comes back at: `current` the register's price
+/// today, `lowest` the lowest it sold for in the window (none: not sold then), `entered` the price typed.
+pub fn return_price(basis: ReturnBasis, current: Decimal, lowest: Option<Decimal>, entered: Option<Decimal>) -> Result<Decimal, String> {
+    let found = match basis {
+        ReturnBasis::Current => Some(current),
+        ReturnBasis::Lowest => Some(lowest.map_or(current, |l| if current > Decimal::ZERO { l.min(current) } else { l })),
+        ReturnBasis::Entered => entered,
+    };
+    found.filter(|p| *p > Decimal::ZERO).ok_or_else(|| match basis {
+        ReturnBasis::Entered => "type the price it comes back at".to_string(),
+        _ => "it has no price at this register to come back at; the policy takes returns without a receipt at its price".to_string(),
+    })
+}
+
+/// The restocking fee kept back from goods coming back in `condition`, in percent (`fees`: condition,
+/// percent; none for that condition: no fee).
+pub fn restocking_fee(fees: &[(String, Decimal)], condition: &str) -> Decimal {
+    fees.iter().find(|(c, _)| c == condition).map(|f| f.1).unwrap_or_default()
+}
+
+/// A line's discount with a restocking fee on top, both in percent: what is refunded is the price
+/// after the discount, less the fee on that.
+pub fn with_fee(discount: Decimal, fee: Decimal) -> Decimal {
+    let hundred = Decimal::ONE_HUNDRED;
+    (hundred - (hundred - discount) * (hundred - fee) / hundred).round_dp(6)
+}
+
+/// An exchange: what comes back is worth `back`, what goes out `out` (both positive). What came back
+/// pays for what goes out (`carried`); the customer pays what is left (`due`) or is refunded the rest
+/// (`refund`) as the policy says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exchange {
+    pub carried: Decimal,
+    pub due: Decimal,
+    pub refund: Decimal,
+}
+
+pub fn exchange(back: Decimal, out: Decimal) -> Exchange {
+    let carried = back.min(out).max(Decimal::ZERO);
+    Exchange { carried, due: out - carried, refund: back - carried }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn returns_without_a_receipt_and_exchanges() {
+        let current = n("120");
+        assert_eq!(return_price(ReturnBasis::Current, current, Some(n("90")), None), Ok(n("120")));
+        assert_eq!(return_price(ReturnBasis::Lowest, current, Some(n("90")), None), Ok(n("90")), "the lowest it sold for");
+        assert_eq!(return_price(ReturnBasis::Lowest, current, Some(n("150")), None), Ok(n("120")), "today's when lower");
+        assert_eq!(return_price(ReturnBasis::Lowest, current, None, None), Ok(n("120")), "not sold in the window: today's");
+        assert_eq!(return_price(ReturnBasis::Entered, current, None, Some(n("75"))), Ok(n("75")));
+        assert!(return_price(ReturnBasis::Entered, current, None, None).is_err());
+        assert!(return_price(ReturnBasis::Current, Decimal::ZERO, None, None).is_err());
+        let fees = vec![("Damaged".to_string(), n("15"))];
+        assert_eq!((restocking_fee(&fees, "Damaged"), restocking_fee(&fees, "Resaleable")), (n("15"), Decimal::ZERO));
+        assert_eq!(with_fee(n("10"), n("15")), n("23.5"), "90 after the discount, less 15% of it: 76.50 of 100");
+        assert_eq!(with_fee(Decimal::ZERO, Decimal::ZERO), Decimal::ZERO);
+        assert_eq!(exchange(n("100"), n("130")), Exchange { carried: n("100"), due: n("30"), refund: Decimal::ZERO });
+        assert_eq!(exchange(n("100"), n("60")), Exchange { carried: n("60"), due: Decimal::ZERO, refund: n("40") });
+        assert_eq!(exchange(n("50"), n("50")), Exchange { carried: n("50"), due: Decimal::ZERO, refund: Decimal::ZERO });
+    }
+
+    fn cashier() -> Limits {
+        Limits {
+            discount_percent: n("10"),
+            discount_amount: Some(n("50")),
+            change_price: false,
+            void_line: true,
+            void_sale: false,
+            refund: Some(n("200")),
+            return_without_receipt: false,
+            open_drawer: false,
+            reprint: true,
+        }
+    }
+
+    #[test]
+    fn limits_of_several_roles_take_the_most_generous() {
+        let senior = Limits { discount_percent: n("20"), discount_amount: None, refund: Some(n("100")), open_drawer: true, ..cashier() };
+        let both = Limits::widest([cashier(), senior]).unwrap();
+        assert_eq!(both.discount_percent, n("20"));
+        assert_eq!(both.discount_amount, None, "no cap is wider than any cap");
+        assert_eq!(both.refund, Some(n("200")));
+        assert!(both.open_drawer && !both.change_price && !both.void_sale);
+        assert_eq!(Limits::widest([]), None);
+        assert!(Limits::unlimited().allows(Act::Refund, n("1000000")));
+        assert!(!cashier().allows(Act::Refund, n("200.01")) && cashier().allows(Act::Refund, n("200")));
+        for a in Act::ALL {
+            assert_eq!(Act::parse(a.label()), Some(a));
+        }
+    }
+
+    #[test]
+    fn what_a_sale_asks_beyond_the_limits() {
+        let line = |list: &str, rule: &str, price: Option<&str>, discount: Option<&str>| LineAsk {
+            qty: Decimal::ONE,
+            list: n(list),
+            rule: n(rule),
+            price: price.map(n),
+            discount: discount.map(n),
+        };
+        assert!(beyond(&cashier(), &[line("100", "0", None, Some("10"))], Decimal::ZERO).is_empty());
+        let over = beyond(&cashier(), &[line("100", "0", None, Some("12"))], Decimal::ZERO);
+        assert_eq!((over[0].0, over[0].1, over[0].2), (Some(0), Act::Discount, n("12")));
+        // A pricing rule's own 15% stands; the cashier may not go beyond it.
+        assert!(beyond(&cashier(), &[line("100", "15", None, None)], Decimal::ZERO).is_empty());
+        // A typed price is a price change, and its saving counts with the line and sale discounts.
+        let typed = beyond(&cashier(), &[line("100", "0", Some("95"), Some("5"))], Decimal::ZERO);
+        assert_eq!(typed.iter().map(|x| x.1).collect::<Vec<_>>(), vec![Act::PriceChange]);
+        assert_eq!(beyond(&cashier(), &[line("100", "0", None, Some("5"))], n("6"))[0].1, Act::Discount, "5% then 6% is 10.7%");
+        // 10% on six lines of 100 is 60 given, over the 50 a sale may carry.
+        let six: Vec<LineAsk> = (0..6).map(|_| line("100", "0", None, Some("10"))).collect();
+        let sale = beyond(&cashier(), &six, Decimal::ZERO);
+        assert_eq!((sale.len(), sale[0].0, sale[0].2), (1, None, n("60")));
+        assert!(beyond(&Limits::unlimited(), &six, n("50")).is_empty());
+    }
 
     fn n(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
@@ -239,13 +536,20 @@ mod tests {
         assert!(check_refunds(n("40"), &[t(Kind::Cash, "40")], &paid_cash).is_ok());
         assert!(check_refunds(n("40"), &[t(Kind::Cash, "30")], &paid_cash).unwrap_err().contains("must equal"));
         assert!(check_refunds(n("40"), &[t(Kind::Credit, "40")], &paid_cash).unwrap_err().contains("paid in full"));
-        let points = Refundable { money: n("50"), loyalty: n("50"), credit: Decimal::ZERO };
+        let points = Refundable { money: n("50"), loyalty: n("50"), ..Default::default() };
         assert!(check_refunds(n("100"), &[t(Kind::Cash, "100")], &points).unwrap_err().contains("at most 50"), "points never come back as cash");
         assert!(check_refunds(n("100"), &[t(Kind::Cash, "50"), t(Kind::Loyalty, "50")], &points).is_ok());
-        let on_credit = Refundable { money: n("60"), credit: n("40"), loyalty: Decimal::ZERO };
+        let on_credit = Refundable { money: n("60"), credit: n("40"), ..Default::default() };
         assert!(check_refunds(n("50"), &[t(Kind::Cash, "50")], &on_credit).unwrap_err().contains("40 of this refund must go to Credit"));
         assert!(check_refunds(n("50"), &[t(Kind::Credit, "40"), t(Kind::Cash, "10")], &on_credit).is_ok());
         assert!(check_refunds(n("30"), &[t(Kind::Credit, "30")], &on_credit).is_ok());
+        // A gift card's part comes back onto stored value only; cash may go back as store credit.
+        let card = refundable(&[(Kind::StoredValue, n("70"), Decimal::ZERO), (Kind::Cash, n("30"), Decimal::ZERO)], Decimal::ZERO);
+        assert_eq!((card.money, card.stored), (n("30"), n("70")));
+        assert!(check_refunds(n("100"), &[t(Kind::Cash, "100")], &card).unwrap_err().contains("at most 30"));
+        assert!(check_refunds(n("100"), &[t(Kind::Cash, "30"), t(Kind::StoredValue, "70")], &card).is_ok());
+        assert!(check_refunds(n("100"), &[t(Kind::StoredValue, "100")], &card).is_ok(), "the cash part as store credit");
+        assert!(settle_sale(n("80"), &[t(Kind::StoredValue, "100")], Decimal::ZERO).unwrap_err().contains("only cash"), "a card gives no change");
     }
 
     #[test]
@@ -257,7 +561,7 @@ mod tests {
         assert_eq!(refundable(&taken, Decimal::ZERO), Refundable { money: n("92.50"), ..Default::default() });
         // An earlier return gave 20 back in cash; points and what is owed stay apart from money.
         let mixed = [(Kind::Cash, n("9"), n("2")), (Kind::Loyalty, n("2"), Decimal::ZERO), (Kind::Credit, n("40"), n("15"))];
-        assert_eq!(refundable(&mixed, Decimal::ZERO), Refundable { money: n("7"), loyalty: n("2"), credit: n("25") });
+        assert_eq!(refundable(&mixed, Decimal::ZERO), Refundable { money: n("7"), loyalty: n("2"), credit: n("25"), ..Default::default() });
         // Refunding cash for a card sale uses the same room: the card's 100 less the 100 handed back.
         assert_eq!(refundable(&[(Kind::Bank, n("100"), Decimal::ZERO), (Kind::Cash, Decimal::ZERO, n("100"))], Decimal::ZERO).money, Decimal::ZERO);
         // A bill written off by 0.05 (10.95 paid of 11.00) comes back whole.

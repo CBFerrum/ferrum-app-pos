@@ -25,6 +25,18 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["pricebook"]) => Ok(SiteResponse::json(200, &price_book(k, ctx, &req).await?)),
+            ("POST", ["pin"]) => {
+                crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
+                Ok(SiteResponse::json(200, &json!({"ok": true})))
+            }
+            ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
+            ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
+            ("POST", ["exchange"]) => {
+                let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
+                let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
+                Ok(SiteResponse::json(200, &crate::invoice::exchange(k, ctx, half("back")?, half("out")?).await?))
+            }
+            ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("GET", ["returns", sale]) => {
                 let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
@@ -166,4 +178,52 @@ pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Valu
         "next": next,
         "built_at": chrono::Utc::now().to_rfc3339(),
     }))
+}
+
+/// `GET /limits?profile=`: what the signed-in person may do at the register on their own, for the
+/// till to check before it asks (and, offline, to hold the sale to the same limits the server will).
+pub async fn limits(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let pid: Uuid = param(req, "profile").and_then(|v| v.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
+    k.get(ctx, "PosProfile", pid, false).await?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let profile = crate::Profile::load(k, ctx, &mut tx, pid).await?;
+    let limits = crate::limits::of(ctx, &mut tx, &profile).await?;
+    tx.commit().await?;
+    serde_json::to_value(limits).map_err(|e| Error::internal(e.to_string()))
+}
+
+/// A text field of a JSON body.
+fn body_str(req: &SiteRequest, key: &str) -> Result<Option<String>> {
+    let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
+    Ok(v.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string))
+}
+
+/// `POST /approve` `{profile, approver, pin, action, amount?, reason, sale}`: another person's PIN
+/// approves one act on one sale (`sale`: the id the till gives it; none for opening the drawer)
+/// beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
+async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let need = |f: &str| -> Result<String> { body_str(req, f)?.ok_or_else(|| Error::field(f.to_string(), "is required")) };
+    let profile: Uuid = need("profile")?.parse().map_err(|_| Error::field("profile", "is a register's id"))?;
+    let act = crate::logic::Act::parse(&need("action")?).ok_or_else(|| Error::field("action", "is not something that is approved"))?;
+    let amount = match body_str(req, "amount")? {
+        Some(a) => Some(a.parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
+        None => None,
+    };
+    let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
+    let sale = body_str(req, "sale")?.map(|s| s.parse::<Uuid>().map_err(|_| Error::field("sale", "is the sale's id"))).transpose()?;
+    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason, sale };
+    crate::limits::approve(k, ctx, ask).await
+}
+
+/// `POST /balance` `{mode, code, pin?}`: what a card of a stored value payment method holds, its
+/// state and expiry, for the cashier before taking it (ERP's guessing limits apply; online only).
+async fn card_balance(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let mode: Uuid = body_str(req, "mode")?.and_then(|m| m.parse().ok()).ok_or_else(|| Error::field("mode", "is a payment method's id"))?;
+    let code = body_str(req, "code")?.ok_or_else(|| Error::field("code", "is required"))?;
+    let m = k.get(ctx, "ModeOfPayment", mode, false).await?;
+    let kind = id(&m, "stored_value_kind").ok_or_else(|| Error::field("mode", "is not a stored value payment method"))?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let out = ferrum_app_erp::stored_value::balance(k, ctx, &mut tx, kind, &code, body_str(req, "pin")?.as_deref()).await?;
+    tx.commit().await?;
+    Ok(out)
 }

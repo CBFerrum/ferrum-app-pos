@@ -37,6 +37,9 @@ struct Inv {
     change_amount: Option<Decimal>,
     write_off_amount: Option<Decimal>,
     tax_template: Option<Uuid>,
+    /// Its own sales invoice was made when it was sold (`invoice_now`); the closing only settles it.
+    invoiced_at_sale: Option<bool>,
+    consolidated_invoice: Option<Uuid>,
 }
 
 impl Inv {
@@ -66,8 +69,9 @@ impl Takings {
     async fn load(tx: &mut Tx, tenant: Uuid, session: Uuid, unconsolidated: bool) -> Result<Takings> {
         let invoices: Vec<Inv> = sqlx::query_as(
             "select id, number, customer, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
-             write_off_amount, tax_template from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 and docstatus = 1 \
-             and ($3 = false or consolidated_invoice is null) order by posting_date, posting_time, created_at",
+             write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 \
+             and docstatus = 1 and ($3 = false or consolidated_invoice is null or (invoiced_at_sale and pos_closing_entry is null)) \
+             order by posting_date, posting_time, created_at",
         )
         .bind(tenant)
         .bind(session)
@@ -283,7 +287,8 @@ impl DocHook for ClosingHook {
             hc.kernel.cancel_tx(&elevated(hc.ctx), hc.tx, "SalesInvoice", si, None).await?;
         }
         sqlx::query(
-            "update e_pos_invoice p set consolidated_invoice = null, pos_closing_entry = null, updated_at = now(), status = case when p.is_return then 'Return' \
+            "update e_pos_invoice p set consolidated_invoice = case when p.invoiced_at_sale then p.consolidated_invoice end, pos_closing_entry = null, \
+             updated_at = now(), status = case when p.is_return then 'Return' \
              when exists (select 1 from e_pos_invoice__payments pm where pm.tenant_id = p.tenant_id and pm.parent_id = p.id and pm.mode_type = 'Credit' and pm.amount > 0) \
              then 'Unpaid' else 'Paid' end where p.tenant_id = $1 and p.pos_closing_entry = $2",
         )
@@ -316,15 +321,16 @@ impl DocHook for ConsolidatedGuard {
             return Ok(());
         }
         let closing: Option<String> = sqlx::query_scalar(
-            "select coalesce(c.number, c.id::text) from e_pos_invoice p join e_pos_closing_entry c on c.tenant_id = p.tenant_id and c.id = p.pos_closing_entry \
-             where p.tenant_id = $1 and p.consolidated_invoice = $2 limit 1",
+            "select coalesce('POS closing ' || c.number, 'register sale ' || p.number, p.id::text) from e_pos_invoice p \
+             left join e_pos_closing_entry c on c.tenant_id = p.tenant_id and c.id = p.pos_closing_entry \
+             where p.tenant_id = $1 and p.consolidated_invoice = $2 and p.docstatus = 1 limit 1",
         )
         .bind(hc.ctx.tenant)
         .bind(id(doc, "id"))
         .fetch_optional(&mut **hc.tx)
         .await?;
         match closing {
-            Some(c) => Err(Error::invalid(format!("this invoice consolidates register sales; cancel POS closing {c} instead"))),
+            Some(c) => Err(Error::invalid(format!("this invoice is a register's sales; it goes with {c} (a return or the closing's cancellation)"))),
             None => Ok(()),
         }
     }
@@ -334,7 +340,7 @@ impl DocHook for ConsolidatedGuard {
 async fn consolidated(hc: &mut HookCtx<'_>, closing: Uuid) -> Result<Vec<(Uuid, bool)>> {
     Ok(sqlx::query_as(
         "select s.id, coalesce(s.is_return, false) from e_sales_invoice s where s.tenant_id = $1 and s.docstatus = 1 and s.id in \
-         (select consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_closing_entry = $2)",
+         (select consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_closing_entry = $2 and not coalesce(invoiced_at_sale, false))",
     )
     .bind(hc.ctx.tenant)
     .bind(closing)
@@ -344,6 +350,7 @@ async fn consolidated(hc: &mut HookCtx<'_>, closing: Uuid) -> Result<Vec<(Uuid, 
 
 #[derive(sqlx::FromRow)]
 struct ItemLine {
+    id: Uuid,
     parent_id: Uuid,
     item: Uuid,
     qty: Option<Decimal>,
@@ -352,6 +359,9 @@ struct ItemLine {
     cost_center: Option<Uuid>,
     batch_no: Option<String>,
     serial_no: Option<String>,
+    stored_value_account: Option<Uuid>,
+    stored_value_code: Option<String>,
+    stored_value_secret: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -379,8 +389,8 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
     let takings = Takings::load(hc.tx, hc.ctx.tenant, sid, true).await?;
     let ids: Vec<Uuid> = takings.invoices.iter().map(|i| i.id).collect();
     let items: Vec<ItemLine> = sqlx::query_as(
-        "select parent_id, item, qty, net_amount, income_account, cost_center, batch_no, serial_no from e_pos_invoice__items \
-         where tenant_id = $1 and parent_id = any($2) order by parent_id, idx",
+        "select id, parent_id, item, qty, net_amount, income_account, cost_center, batch_no, serial_no, stored_value_account, stored_value_code, \
+         stored_value_secret from e_pos_invoice__items where tenant_id = $1 and parent_id = any($2) order by parent_id, idx",
     )
     .bind(hc.ctx.tenant)
     .bind(&ids)
@@ -401,7 +411,7 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
 
     // Paid sales per customer; a sale left on account by itself.
     let mut groups: Vec<((Uuid, Option<Uuid>), Vec<&Inv>)> = Vec::new();
-    for inv in takings.invoices.iter().filter(|i| !i.is_return) {
+    for inv in takings.invoices.iter().filter(|i| !i.is_return && i.invoiced_at_sale != Some(true)) {
         let key = (inv.customer, credit.contains(&inv.id).then_some(inv.id));
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.1.push(inv),
@@ -416,9 +426,18 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
         made_for.extend(group.iter().map(|i| (i.id, m.id)));
         marks.push((m.id, group.iter().map(|i| i.id).collect()));
     }
+    // Sales and returns invoiced when they were made: only settled now.
+    for inv in takings.invoices.iter().filter(|i| i.invoiced_at_sale == Some(true)) {
+        let si = inv.consolidated_invoice.ok_or_else(|| Error::internal("invoiced at sale without its invoice"))?;
+        let debit_to = id(&get(hc.kernel, hc.ctx, hc.tx, "SalesInvoice", si).await?, "debit_to").ok_or_else(|| Error::internal("no receivable"))?;
+        let m = Made { id: si, debit_to };
+        ctx.settle(hc, &mut entry, cid, on, &m, inv.customer, &[inv]).await?;
+        made_for.insert(inv.id, si);
+        marks.push((si, vec![inv.id]));
+    }
     // Returns per customer and the invoice that consolidated their sale.
     let mut returns: Vec<((Uuid, Uuid), Vec<&Inv>)> = Vec::new();
-    for inv in takings.invoices.iter().filter(|i| i.is_return) {
+    for inv in takings.invoices.iter().filter(|i| i.is_return && i.invoiced_at_sale != Some(true)) {
         let orig = inv.return_against.ok_or_else(|| Error::internal("return without its sale"))?;
         let against = match made_for.get(&orig) {
             Some(si) => *si,
@@ -495,11 +514,13 @@ impl Consolidation<'_> {
     async fn make(&self, hc: &mut HookCtx<'_>, customer: Uuid, group: &[&Inv], against: Option<Uuid>) -> Result<Made> {
         let co = self.co;
         let ids: HashSet<Uuid> = group.iter().map(|i| i.id).collect();
-        // Lines merged per item, batch, income account and cost center.
-        type Key = (Uuid, Option<String>, Option<Uuid>, Option<Uuid>);
+        // Lines merged per item, batch, income account and cost center; a line loading stored value
+        // stays its own (its card).
+        type Key = (Uuid, Option<String>, Option<Uuid>, Option<Uuid>, Option<Uuid>);
         let mut merged: Vec<(Key, Decimal, Decimal, Vec<String>)> = Vec::new();
+        let card = |l: &ItemLine| l.stored_value_account.is_some() || l.stored_value_secret.is_some();
         for l in self.items.iter().filter(|l| ids.contains(&l.parent_id)) {
-            let key = (l.item, l.batch_no.clone().filter(|b| !b.is_empty()), l.income_account, l.cost_center);
+            let key = (l.item, l.batch_no.clone().filter(|b| !b.is_empty()), l.income_account, l.cost_center, card(l).then_some(l.id));
             let pos = match merged.iter().position(|m| m.0 == key) {
                 Some(p) => p,
                 None => {
@@ -517,14 +538,21 @@ impl Consolidation<'_> {
             ferrum_calc::Rounding::HalfUp => RoundingStrategy::MidpointAwayFromZero,
         };
         let mut lines = Vec::new();
-        for ((item, batch, income, cc), qty, net, serials) in merged {
+        // (index of the invoice line, the POS line) for cards, whose secret is written before submit.
+        let mut cards: Vec<(usize, &ItemLine)> = Vec::new();
+        for ((item, batch, income, cc, own), qty, net, serials) in merged {
+            let pos_line = own.and_then(|o| self.items.iter().find(|l| l.id == o));
             for (n, (q, price)) in logic::exact_lines(qty, net, co.precision, strategy).into_iter().enumerate() {
+                if let Some(l) = pos_line {
+                    cards.push((lines.len(), l));
+                }
                 // A zero price would be re-read from the price list: free goods go at 100% off.
                 let (price, discount) = if price.is_zero() { (Decimal::ONE, Decimal::ONE_HUNDRED) } else { (price, Decimal::ZERO) };
                 lines.push(json!({
                     "item": item.to_string(), "qty": q.to_string(), "price_list_rate": price.to_string(), "discount_percent": discount.to_string(),
                     "income_account": income.map(|a| a.to_string()), "cost_center": cc.map(|c| c.to_string()), "batch_no": batch,
                     "serial_no": (n == 0 && !serials.is_empty()).then(|| serials.join("\n")),
+                    "stored_value_account": pos_line.and_then(|l| l.stored_value_account).map(|a| a.to_string()),
                 }));
             }
         }
@@ -554,7 +582,8 @@ impl Consolidation<'_> {
         let input = json!({
             "company": co.id.to_string(), "customer": customer.to_string(), "posting_date": self.closing.get("posting_date"),
             "currency": co.currency_id.to_string(), "conversion_rate": "1", "update_stock": false,
-            "is_return": against.is_some(), "return_against": against.map(|a| a.to_string()),
+            "is_return": against.is_some() || group.iter().any(|i| i.is_return), "return_against": against.map(|a| a.to_string()),
+            "return_reason": (against.is_none() && group.iter().any(|i| i.is_return)).then_some("Returned at the register without a receipt"),
             "tax_template": group.iter().find_map(|i| i.tax_template).map(|t| t.to_string()),
             "cost_center": self.profile.doc.get("cost_center"),
             "items": lines, "taxes": taxes,
@@ -564,6 +593,17 @@ impl Consolidation<'_> {
         let input = input.as_object().cloned().unwrap_or_default();
         let draft = hc.kernel.insert_tx(&sctx, hc.tx, "SalesInvoice", input).await?;
         let si = id(&draft, "id").ok_or_else(|| Error::internal("no id"))?;
+        // A new card's code reaches the invoice line as the till kept it (its hash), never typed again.
+        let si_lines = rows(&draft, "items");
+        for (i, l) in cards.iter().filter(|(_, l)| l.stored_value_account.is_none()) {
+            sqlx::query("update e_sales_invoice__items set stored_value_code = $3, stored_value_secret = $4 where tenant_id = $1 and id = $2")
+                .bind(hc.ctx.tenant)
+                .bind(si_lines.get(*i).and_then(|r| id(r, "id")))
+                .bind(&l.stored_value_code)
+                .bind(&l.stored_value_secret)
+                .execute(&mut **hc.tx)
+                .await?;
+        }
         let si_doc = hc.kernel.submit_tx(&sctx, hc.tx, "SalesInvoice", si, None).await?;
         let expected: Decimal = group.iter().map(|i| i.total()).sum();
         if d(&si_doc, "rounded_total") != expected {
@@ -594,7 +634,8 @@ impl Consolidation<'_> {
         let co = self.co;
         let ids: HashSet<Uuid> = group.iter().map(|i| i.id).collect();
         let mut settled = Decimal::ZERO;
-        for p in self.pays.iter().filter(|p| ids.contains(&p.invoice) && p.kind != Kind::Credit && !p.amount.is_zero()) {
+        // Stored value paid (or took back) its share when the sale was made, by its own payment entry.
+        for p in self.pays.iter().filter(|p| ids.contains(&p.invoice) && !matches!(p.kind, Kind::Credit | Kind::StoredValue) && !p.amount.is_zero()) {
             let account = p.account.ok_or_else(|| Error::internal("a POS payment has no account"))?;
             entry.lines.push(Line::new(account, p.amount, &co.currency_code));
             settled += p.amount;
@@ -616,4 +657,57 @@ impl Consolidation<'_> {
         entry.lines.push(Line::new(m.debit_to, -settled, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
         sync_invoice_outstanding(hc.kernel, hc.ctx, hc.tx, "SalesInvoice", m.id).await
     }
+}
+
+/// Makes a register sale's (or return's) own sales invoice (credit note) now, not at closing: for
+/// what must be in the books at once (stored value sold, redeemed or refunded onto, so a card sold
+/// at ten is spendable at eleven; a tax invoice the customer takes away). The closing then only
+/// settles its payments. A return's sale is invoiced first when it is not yet.
+pub(crate) async fn invoice_now(hc: &mut HookCtx<'_>, sale: Uuid) -> Result<Uuid> {
+    let load = |sql: &'static str| sqlx::query_as::<_, Inv>(sql);
+    let inv = load(
+        "select id, number, customer, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
+         write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and id = $2",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(sale)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    if let Some(si) = inv.consolidated_invoice {
+        return Ok(si);
+    }
+    let against = match inv.return_against.filter(|_| inv.is_return) {
+        Some(orig) => Some(Box::pin(invoice_now(hc, orig)).await?),
+        None => None,
+    };
+    let doc = get(hc.kernel, hc.ctx, hc.tx, "PosInvoice", sale).await?;
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(&doc, "pos_profile").unwrap_or_default()).await?;
+    let co = company(hc.kernel, hc.ctx, hc.tx, id(&doc, "company").unwrap_or_default()).await?;
+    let items: Vec<ItemLine> = sqlx::query_as(
+        "select id, parent_id, item, qty, net_amount, income_account, cost_center, batch_no, serial_no, stored_value_account, stored_value_code, \
+         stored_value_secret from e_pos_invoice__items where tenant_id = $1 and parent_id = $2 order by idx",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(sale)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let taxes: Vec<TaxLine> = sqlx::query_as(
+        "select parent_id, account, cost_center, description, tax_amount, deduct from e_pos_invoice__taxes where tenant_id = $1 and parent_id = $2 order by idx",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(sale)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let mut at = Doc::new();
+    at.insert("posting_date".into(), doc.get("posting_date").cloned().unwrap_or(Value::Null));
+    at.insert("number".into(), json!(format!("sale {}", inv.number.clone().unwrap_or_default())));
+    let ctx = Consolidation { co: &co, closing: &at, profile: &profile, items: &items, taxes: &taxes, pays: &[] };
+    let m = ctx.make(hc, inv.customer, &[&inv], against).await?;
+    sqlx::query("update e_pos_invoice set consolidated_invoice = $3, invoiced_at_sale = true, updated_at = now() where tenant_id = $1 and id = $2")
+        .bind(hc.ctx.tenant)
+        .bind(sale)
+        .bind(m.id)
+        .execute(&mut **hc.tx)
+        .await?;
+    Ok(m.id)
 }
