@@ -12,7 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useContext, useEffect, useMemo, useState, type FormEvent } from "react";
 import { docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, ListSkeleton, placed, toast } from "@ferrum/kit";
-import type { Doc } from "@ferrum/records";
+import { LinkInput, type Doc } from "@ferrum/records";
 import { AskDialog } from "./Approval";
 import { CardInputs } from "./Card";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
@@ -43,6 +43,10 @@ export interface PayProps {
   grand: number;
   /** A named customer is needed for a sale on account and for points. */
   walkIn: boolean;
+  /** The register has no customer of its own and none is chosen: the sale cannot be paid yet. */
+  noBuyer?: boolean;
+  customerTitle?: string;
+  onCustomer?: (id: string | null, title?: string) => void;
   customer: string | null;
   /** The loyalty program the server put the customer in. */
   program: string | null;
@@ -70,7 +74,7 @@ export interface PayProps {
 
 type Added = Tender & { left?: number };
 
-export function PayDialog({ profile, modes, due, grand, walkIn, customer, program, offline, steps, buyer, onBuyer, codes, onCodes, doc, problem, pricing, namedAbove, onClose, onComplete }: PayProps) {
+export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false, customerTitle, onCustomer, customer, program, offline, steps, buyer, onBuyer, codes, onCodes, doc, problem, pricing, namedAbove, onClose, onComplete }: PayProps) {
   const money = useMoney();
   const { precision } = useContext(Currency);
   const methods: Method[] = useMemo(
@@ -191,7 +195,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
   // What the register asks of a sale of this size: the server says so when it prices it; offline, the snapshot's rule is held to.
   const needsBuyer = !buyer && walkIn && (doc?.needs_buyer === true || (offline && !!namedAbove && due > Number(namedAbove)));
   const heldBack = needsBuyer && offline ? tr("This register asks for a named buyer on a sale this size, and it cannot be checked until the connection is back: pick the customer on the sale, or sell it when the register is online.") : null;
-  const covered = t.left === 0 && !t.problem && !heldBack && !problem && !pricing;
+  const covered = !noBuyer && t.left === 0 && !t.problem && !heldBack && !problem && !pricing;
   const applyBuyer = () => {
     if (!taxId.trim()) return;
     onBuyer({ taxId: taxId.trim(), ...(buyerName.trim() ? { name: buyerName.trim() } : {}) });
@@ -365,6 +369,16 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
           )}
         </div>
 
+        {!str(profile.customer) && !buyer && onCustomer && (
+          <div className="pos-card">
+            <LinkInput to="Customer" value={customer} title={customerTitle} onChange={onCustomer} label={tr("Customer")} required disabled={busy} placeholder={tr("Choose a customer")} />
+            <p className="pos-hint">
+              {tr("This register has no walk-in customer, so the sale needs one.")}{" "}
+              {str(profile.buyer_customer) === "Find Only" ? tr("Choose an existing customer: this register does not make new ones.") : tr("Choose a customer, or give the buyer's tax registration below and one is found or made.")}
+              {offline && ` ${tr("Offline, customers cannot be searched: the one already on this sale is kept, and another can be chosen once the connection is back.")}`}
+            </p>
+          </div>
+        )}
         {asking || buyer || needsBuyer ? (
           <div className="pos-card">
             <Field label={tr("Buyer's tax registration")} htmlFor="pay-taxid" required={needsBuyer} hint={tr("The customer holding it is found, or made from it, and gets a tax invoice where the register's countries say so.")}>
