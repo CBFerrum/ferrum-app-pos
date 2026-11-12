@@ -117,6 +117,11 @@ export interface PriceBook {
   signature?: string | null;
   /** The promotions that could apply over the next days, in the promotions engine's form: kept for pricing them on this device (see docs in CHANGELOG: not yet run here). */
   promotions?: unknown[];
+  /** What the promotions engine's `when` needs besides the basket: the register's warehouse and the walk-in customer's group, the company's time zone and the channel. */
+  warehouse?: string | null;
+  customer_group?: string | null;
+  time_zone?: string | null;
+  channel?: string;
   /** The buyer rule: a sale above `named_above` to the walk-in customer needs a named buyer. */
   buyer?: { named_above: string | null; walk_in: string | null };
   /** Items the register cannot sell as they stand offline (no price in its list). */
@@ -139,6 +144,10 @@ export async function downloadSnapshot(profile: string, get: () => Promise<Parti
     version: s.version,
     signature: s.signature ?? null,
     promotions: s.promotions ?? [],
+    warehouse: s.warehouse ?? null,
+    customer_group: s.customer_group ?? null,
+    time_zone: s.time_zone ?? null,
+    channel: s.channel,
     buyer: s.buyer,
     unpriced: s.unpriced,
     truncated: s.truncated === true,
