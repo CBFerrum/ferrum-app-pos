@@ -1,8 +1,9 @@
 // Taking goods back: what the returns desk shows and sends. The server answers what is left on a
 // sale and what each way of paying can still give back (`/api/app/pos/returns`, which shares its
-// arithmetic with the return's own check); this turns that into a plan for the refund, "the way it
-// was paid", and tells the cashier early what the server would refuse: what the customer still owes
-// is cancelled first, points go back as points, and only what came in as money goes back as money.
+// arithmetic with the return's own check); the plan for the refund, "the way it was paid", is the server's too
+// (`POST /returns/{sale}/plan`, with `out` for an exchange): the till shows it and tells the cashier early what
+// the server would refuse of a change they make: what the customer still owes is cancelled first, points go back
+// as points, and only what came in as money goes back as money.
 
 import { formatDecimal, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
@@ -84,89 +85,6 @@ export interface RefundRow {
   amount: number;
   /** Points handed back (a Loyalty Points method): the server values them. */
   points?: number;
-}
-
-type PlanInput = Pick<Sheet, "paid_with" | "methods" | "refundable" | "loyalty">;
-
-/**
- * How to refund `total` (a positive amount): the customer's debt first, points back as points in
- * their share of the bill, and the rest as money through the ways it came in, in the order they
- * were used; what a way cannot take (a method this register no longer offers, or a write-off the
- * sale was short by) goes to cash. The cashier may change any of it; `checkRefund` says whether
- * the server would accept it.
- */
-export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: RefundRow[]; problem: string | null } {
-  const rows: RefundRow[] = [];
-  const left = {
-    money: Math.max(0, Number(s.refundable.money)),
-    loyalty: Math.max(0, Number(s.refundable.loyalty)),
-    credit: Math.max(0, Number(s.refundable.credit)),
-    stored: Math.max(0, Number(s.refundable.stored_value ?? 0)),
-  };
-  const usable = (...kinds: string[]) => s.methods.filter((m) => m.usable && kinds.includes(m.kind ?? ""));
-  const add = (mode: string, amount: number, points?: number) => {
-    const at = rows.find((r) => r.mode === mode);
-    if (at) {
-      at.amount = round(at.amount + amount, precision);
-      if (points) at.points = (at.points ?? 0) + points;
-    } else rows.push({ mode, amount: round(amount, precision), ...(points ? { points } : {}) });
-  };
-  let rest = round(total, precision);
-
-  const owed = Math.min(rest, left.credit);
-  if (owed > 0) {
-    const credit = usable("Credit")[0];
-    if (!credit) return { rows, problem: t("This register has no Credit method to cancel what the customer still owes.") };
-    add(credit.mode, owed);
-    rest = round(rest - owed, precision);
-  }
-  if (!(rest > 0)) return { rows, problem: null };
-
-  const points = usable("Loyalty Points")[0];
-  if (s.loyalty && points && left.loyalty > 0) {
-    const factor = Number(s.loyalty.factor);
-    const lo = Math.max(0, round(rest - left.money, precision));
-    const hi = Math.min(rest, left.loyalty);
-    const share = Math.min(Math.max((rest * left.loyalty) / (left.loyalty + left.money), lo), hi);
-    const value = (p: number) => pointsValue(p, factor, precision);
-    const near = Math.round(share / factor);
-    const ok = (p: number) => p >= 0 && p <= s.loyalty!.points_left && value(p) >= lo && value(p) <= hi;
-    let pick = [near, near - 1, near + 1, near - 2, near + 2].filter(ok).sort((a, b) => Math.abs(value(a) - share) - Math.abs(value(b) - share))[0];
-    // Whole points may not hit the amount that must go back as points: take the first that covers it.
-    if (pick === undefined && lo > 0) pick = Math.min(s.loyalty.points_left, Math.ceil(lo / factor));
-    if (pick) {
-      add(points.mode, value(pick), pick);
-      rest = round(rest - value(pick), precision);
-    }
-  }
-
-  // What a card paid goes back onto stored value (the same card's method first).
-  const cards = usable("Stored Value");
-  for (const w of s.paid_with) {
-    const via = cards.find((m) => m.mode === w.mode);
-    const take = Math.min(rest, Number(w.left), left.stored);
-    if (via && take > 0) {
-      add(via.mode, take);
-      left.stored = round(left.stored - take, precision);
-      rest = round(rest - take, precision);
-    }
-  }
-
-  const money = usable(...MONEY);
-  for (const w of s.paid_with) {
-    const via = money.find((m) => m.mode === w.mode);
-    const take = Math.min(rest, Number(w.left));
-    if (via && take > 0) {
-      add(via.mode, take);
-      rest = round(rest - take, precision);
-    }
-  }
-  if (rest > 0) {
-    const via = money.find((m) => m.kind === "Cash") ?? money[0];
-    if (!via) return { rows, problem: t("This register has no cash, card or other way to refund money.") };
-    add(via.mode, rest);
-  }
-  return { rows, problem: null };
 }
 
 /** The refunds the register proposed (`POST /returns/{sale}/plan`) as the desk starts them. What no way of paying could take back is
@@ -282,8 +200,10 @@ export function enteredPriceProblem(basis: Policy["price_basis"], entered: strin
   return basis === "Entered" && !(Number(entered) > 0) ? t("Type the price it comes back at.") : null;
 }
 
-/** An exchange (`logic::exchange`): what came back is worth `back`, what goes out `out` (both
- *  positive); what came back pays for what goes out, and the customer pays the rest or is refunded it. */
+/** An exchange with no receipt (`logic::exchange`): what came back is worth `back`, what goes out `out` (both
+ *  positive); what came back pays for what goes out, and the customer pays the rest or is refunded it. Only the desk
+ *  for goods with no receipt still adds this up: the server's plan names a sale (`/returns/{sale}/plan`) and there is
+ *  none; a route that plans an exchange with no receipt would end it. */
 export function exchange(back: number, out: number, precision = 2): { carried: number; due: number; refund: number } {
   const carried = Math.max(Math.min(back, out), 0);
   return { carried, due: round(out - carried, precision), refund: round(back - carried, precision) };

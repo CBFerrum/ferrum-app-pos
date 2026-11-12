@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backItems, checkRefund, enteredPriceProblem, exchange, parsePolicy, refundPayments, refundPlan, refundsFromProposal, restockingFee, returnBody, returnItems, unreceiptedBody, type Method, type Sheet } from "./returns";
+import { backItems, checkRefund, enteredPriceProblem, exchange, parsePolicy, refundPayments, refundsFromProposal, restockingFee, returnBody, returnItems, unreceiptedBody, type Method, type Sheet } from "./returns";
 
 const cash: Method = { mode: "cash", name: "Cash", kind: "Cash", usable: true };
 const card: Method = { mode: "card", name: "Card", kind: "Bank", usable: true };
@@ -13,46 +13,6 @@ const sheet = (over: Partial<Sheet>): Pick<Sheet, "paid_with" | "methods" | "ref
   ...over,
 });
 const paid = (mode: string, left: string) => ({ mode, paid: left, refunded: "0", left });
-
-describe("planning a refund the way the sale was paid", () => {
-  it("sends money back through the ways it came in, in the order they were used", () => {
-    const s = sheet({ paid_with: [paid("card", "100"), paid("cash", "50")], refundable: { money: "150", loyalty: "0", credit: "0" } });
-    expect(refundPlan(150, s)).toEqual({ rows: [{ mode: "card", amount: 100 }, { mode: "cash", amount: 50 }], problem: null });
-    expect(refundPlan(40, s).rows).toEqual([{ mode: "card", amount: 40 }]);
-    expect(refundPlan(120, s).rows).toEqual([{ mode: "card", amount: 100 }, { mode: "cash", amount: 20 }]);
-  });
-
-  it("takes a way of paying this register no longer offers back in cash", () => {
-    const gone = { ...card, usable: false, why: "this register does not refund through it" };
-    const s = sheet({ methods: [cash, gone], paid_with: [paid("card", "100")], refundable: { money: "100", loyalty: "0", credit: "0" } });
-    expect(refundPlan(60, s).rows).toEqual([{ mode: "cash", amount: 60 }]);
-    expect(refundPlan(60, sheet({ methods: [gone], paid_with: [paid("card", "100")], refundable: { money: "100", loyalty: "0", credit: "0" } })).problem).toMatch(/no cash, card/);
-  });
-
-  it("cancels what the customer still owes first, and only then pays out", () => {
-    const s = sheet({ paid_with: [paid("credit", "40"), paid("cash", "60")], refundable: { money: "60", loyalty: "0", credit: "40" } });
-    expect(refundPlan(50, s).rows).toEqual([{ mode: "credit", amount: 40 }, { mode: "cash", amount: 10 }]);
-    expect(refundPlan(30, s).rows).toEqual([{ mode: "credit", amount: 30 }]);
-    expect(refundPlan(30, sheet({ methods: [cash], refundable: { money: "0", loyalty: "0", credit: "40" } })).problem).toMatch(/no Credit method/);
-  });
-
-  it("gives points back as points, in their share of the bill", () => {
-    // 11.00 paid with 4 points (2.00 at half a unit a point) and 9.00 in cash.
-    const s = sheet({ paid_with: [paid("points", "2"), paid("cash", "9")], refundable: { money: "9", loyalty: "2", credit: "0" }, loyalty: { factor: "0.5", points_left: 4 } });
-    expect(refundPlan(11, s).rows).toEqual([{ mode: "points", amount: 2, points: 4 }, { mode: "cash", amount: 9 }]);
-    // Half of it back: about half the points.
-    expect(refundPlan(5.5, s).rows).toEqual([{ mode: "points", amount: 1, points: 2 }, { mode: "cash", amount: 4.5 }]);
-    // 10 back: the points' share is 1.82, nearest whole points 2.00; the cash cannot take more than its 9 anyway.
-    expect(refundPlan(10, s).rows).toEqual([{ mode: "points", amount: 2, points: 4 }, { mode: "cash", amount: 8 }]);
-    // Points that must go back whole: the cash can take 9 of the 10.50, so at least 1.50 is points.
-    expect(refundPlan(10.5, { ...s, loyalty: { factor: "0.5", points_left: 4 } }).rows).toEqual([{ mode: "points", amount: 2, points: 4 }, { mode: "cash", amount: 8.5 }]);
-  });
-
-  it("brings back a sale that was written off by a few cents whole", () => {
-    const s = sheet({ paid_with: [paid("cash", "10.95")], refundable: { money: "11", loyalty: "0", credit: "0" } });
-    expect(refundPlan(11, s).rows).toEqual([{ mode: "cash", amount: 11 }]);
-  });
-});
 
 describe("checking a refund before the server does", () => {
   const s = sheet({ refundable: { money: "9", loyalty: "2", credit: "40" }, loyalty: { factor: "0.5", points_left: 4 } });
@@ -73,14 +33,6 @@ describe("checking a refund before the server does", () => {
   it("names a method this register does not refund through", () => {
     const gone = sheet({ methods: [{ ...card, usable: false }], refundable: { money: "9", loyalty: "0", credit: "0" } });
     expect(checkRefund(5, [{ mode: "card", amount: 5 }], gone)).toBe("Card cannot refund returns at this register.");
-  });
-
-  it("accepts what the plan itself makes", () => {
-    const full = sheet({ paid_with: [paid("points", "2"), paid("cash", "9")], refundable: { money: "9", loyalty: "2", credit: "0" }, loyalty: { factor: "0.5", points_left: 4 } });
-    for (const total of [11, 5.5, 10, 2, 0.5]) {
-      const plan = refundPlan(total, full);
-      expect([total, plan.problem, checkRefund(total, plan.rows, full)]).toEqual([total, null, null]);
-    }
   });
 });
 
@@ -126,11 +78,6 @@ describe("a sale paid with a card goes back onto stored value (logic.rs check_re
     expect(checkRefund(100, [{ mode: "gift", amount: 100 }], s)).toBeNull();
     expect(checkRefund(100, [{ mode: "gift", amount: 101 }], s)).toMatch(/refunds add up/);
     expect(checkRefund(40, [{ mode: "gift", amount: 40 }], sheet({ ...s, refundable: { money: "0", loyalty: "0", credit: "0", stored_value: "30" } }))).toMatch(/At most 30.00 can go back onto stored value/);
-  });
-
-  it("plans the card's share back onto the card first, then cash", () => {
-    expect(refundPlan(100, s).rows).toEqual([{ mode: "gift", amount: 70 }, { mode: "cash", amount: 30 }]);
-    expect(refundPlan(50, s).rows).toEqual([{ mode: "gift", amount: 50 }]);
   });
 
   it("sends a card's code only on its own row, trimmed", () => {
@@ -184,18 +131,24 @@ describe("the refund the register proposes", () => {
   const sheet = { methods: [cash, card, points], loyalty: { factor: "0.5", points_left: 100 } };
 
   it("starts the desk's refunds where the register's plan put them", () => {
-    const got = refundsFromProposal({ total: "120.00", refunds: [{ mode: "card", name: "Card", kind: "Bank", amount: "100.00" }, { mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00" }, sheet);
+    const got = refundsFromProposal({ total: "120.00", refunds: [{ mode: "card", name: "Card", kind: "Bank", amount: "100.00" }, { mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00", exchange: null }, sheet);
     expect(got).toEqual({ rows: [{ mode: "card", amount: 100 }, { mode: "cash", amount: 20 }], problem: null });
   });
 
   it("sends what no way of paying can take back as points, and says what is still left", () => {
     // 30.00 was paid in points: at 0.5 a point, 60 points; no more points than were used.
-    const some = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00" }, sheet);
+    const some = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00", exchange: null }, sheet);
     expect(some.rows).toEqual([{ mode: "cash", amount: 20 }, { mode: "points", amount: 30, points: 60 }]);
     expect(some.problem).toBeNull();
-    const short = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00" }, { ...sheet, loyalty: { factor: "0.5", points_left: 40 } });
+    const short = refundsFromProposal({ total: "50.00", refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "30.00", exchange: null }, { ...sheet, loyalty: { factor: "0.5", points_left: 40 } });
     expect(short.rows[1]).toEqual({ mode: "points", amount: 20, points: 40 });
     expect(short.problem).toBe("10.00 of this refund has no way back through this register.");
-    expect(refundsFromProposal({ total: "5.00", refunds: [], unplaced: "5.00" }, { methods: [cash], loyalty: null }).problem).toContain("5.00");
+    expect(refundsFromProposal({ total: "5.00", refunds: [], unplaced: "5.00", exchange: null }, { methods: [cash], loyalty: null }).problem).toContain("5.00");
+  });
+
+  it("starts an exchange's refund from what the register plans of the net amount, not of the whole return", () => {
+    // 120.00 comes back, 100.00 goes out: 20.00 is refunded, and the register planned only that.
+    const plan = { total: "120.00", exchange: { out_total: "100.00", carried: "100.00", due: "0.00", refund: "20.00" }, refunds: [{ mode: "cash", name: "Cash", kind: "Cash", amount: "20.00" }], unplaced: "0.00" };
+    expect(refundsFromProposal(plan, sheet)).toEqual({ rows: [{ mode: "cash", amount: 20 }], problem: null });
   });
 });
