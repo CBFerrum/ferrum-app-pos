@@ -255,6 +255,11 @@ export async function priceOffline(
   };
 }
 
+/** What the till says, wherever it prices a sale on this device: promotions are the server's. The snapshot carries them in the promotions engine's
+ *  form, but this build runs no promotions engine (only `@ferrum/calc`), so the till never works one out and never shows a promotional price: they are
+ *  taken when the sale reaches the server. (What a promotions package beside `@ferrum/calc` would need is written up in the 0.7.1 changelog.) */
+export const promotionsLater = () => t("Offline: this till does not work out promotions. Any that apply are taken when the sale reaches the server, so the total it records may be lower than this one.");
+
 // ── what the till last knew ──
 
 export interface TillMemory {

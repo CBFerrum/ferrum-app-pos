@@ -488,6 +488,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             <>
               <MenuItem onSelect={() => (close(), shift("/shift"))}>{tr("Count the drawer and close the shift")}</MenuItem>
               <MenuItem onSelect={() => (close(), shift("/shift#cash"))}>{tr("Cash in or out")}</MenuItem>
+              {manager && <MenuItem onSelect={() => (close(), shift("/differences"))}>{tr("Price differences")}</MenuItem>}
               <MenuItem onSelect={() => (close(), setDialog("pin"))}>{tr("Set my PIN")}</MenuItem>
               {onSwitch && (
                 <MenuItem
@@ -595,7 +596,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             <Spinner small /> {tr("Pricing…")}
           </p>
         )}
-        {calc.doc && lines.length > 0 && <Totals doc={calc.doc} due={due} offline={calc.offline} builtAt={book?.built_at} />}
+        {calc.doc && lines.length > 0 && <Totals doc={calc.doc} due={due} offline={calc.offline} builtAt={book?.built_at} version={book?.version} />}
         <div className="pos-actions">
           <Button className="pos-btn" disabled={!lines.length} onClick={hold} aria-keyshortcuts="F9">
             {tr("Hold")}

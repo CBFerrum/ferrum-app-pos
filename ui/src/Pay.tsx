@@ -18,7 +18,7 @@ import { CardInputs } from "./Card";
 import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
 import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
-import { serverDown, till, tillAll, unreachable } from "./lib/offline";
+import { promotionsLater, serverDown, till, tillAll, unreachable } from "./lib/offline";
 import { cardBalance, firstReceipt, voidSale } from "./lib/server";
 import { allows, type Limits } from "./lib/rights";
 import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
@@ -67,9 +67,6 @@ export interface PayProps {
   /** Sells; the answer is what went wrong, or null once it is done. */
   onComplete: (tenders: Tender[], o: { invoiceNow: boolean }) => Promise<string | null>;
 }
-
-/** What a payment dialog says about the sale being priced on this device: the totals are the book's, and the promotions are the server's to apply. */
-export const offlinePromotions = () => tr("Offline: this till does not work out promotions. Any that apply are taken when the sale reaches the server, so the total it records may be lower than this one.");
 
 type Added = Tender & { left?: number };
 
@@ -316,7 +313,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, customer, progra
         )}
 
         {problem && <Alert tone="error">{isolate(problem)}</Alert>}
-        {offline && <Alert tone="info">{offlinePromotions()}</Alert>}
+        {offline && <Alert tone="info">{promotionsLater()}</Alert>}
         {applied.length > 0 && (
           <ul className="pos-added" aria-label={tr("Promotions taken")}>
             {applied.map((a, i) => (
