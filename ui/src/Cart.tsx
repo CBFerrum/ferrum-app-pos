@@ -1,17 +1,20 @@
 // The sale on screen: its lines, each with a way to change it where it stands, and the totals. A
 // line shows what it costs and what was done to it; tapping it opens its editor, where quantity,
-// discount, price and a note are changed, and what the cashier may change follows their role: the
-// register's switches and the cap are shown before typing, and what goes past them is not sent
-// (the server would refuse it; `lineProblem` is its sum, done early).
+// discount, price and a note are changed, and what the cashier may change follows their limits (from
+// the server): the cap is shown before typing, and what goes past it is not put on the line until
+// another person approves it (`lineAsks` is the server's sum, done early). A line that sells a card
+// takes the card's code.
 
 import { Minus, Plus } from "lucide-react";
 import { useState } from "react";
 import { formatMoment, t, isolate } from "@ferrum/client";
 import { Button, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
-import { num, useMoney } from "./fmt";
-import type { CartLine } from "./lib/pos";
-import { discountLimit, lineProblem, type Rights } from "./lib/rights";
+import { CardLine } from "./Card";
+import { num, str, useMoney } from "./fmt";
+import type { CartLine, LineCards } from "./lib/pos";
+import { discountLimit, lineAsks, lineProblem, type Approval, type Ask, type Limits } from "./lib/rights";
+import { lastFour } from "./lib/stored";
 
 /** What a line was priced from, when known: the list price and the discount the pricing rules gave. */
 export interface Base {
@@ -27,12 +30,18 @@ export function CartLines({
   pending,
   selected,
   editing,
-  rights,
+  limits,
+  approvals,
+  profile,
+  cards,
+  away,
   baseOf,
   onSelect,
   onEdit,
   onQty,
   onChange,
+  onAsk,
+  onCard,
   onRemove,
 }: {
   lines: CartLine[];
@@ -40,12 +49,21 @@ export function CartLines({
   pending: boolean;
   selected: string | null;
   editing: string | null;
-  rights: Rights;
+  limits: Limits;
+  approvals: Approval[];
+  profile: Doc;
+  /** The card codes set on lines (kept in memory by the till). */
+  cards: LineCards;
+  /** The server cannot be reached: nothing can be approved or made. */
+  away: boolean;
   baseOf: (line: CartLine) => Base | null;
   onSelect: (key: string) => void;
   onEdit: (key: string | null) => void;
   onQty: (key: string, qty: number) => void;
   onChange: (key: string, patch: Partial<Pick<CartLine, "discount" | "price" | "note">>) => void;
+  /** Ask another person to approve what the line asks beyond the limits, then apply it. */
+  onAsk: (asks: Ask[], apply: () => void) => void;
+  onCard: (key: string, code: string, pin?: string) => void;
   onRemove: (key: string) => void;
 }) {
   const money = useMoney();
@@ -86,7 +104,20 @@ export function CartLines({
                 <Plus className="size-4" aria-hidden="true" />
               </Button>
             </span>
-            {open && <LineEditor line={l} rights={rights} base={baseOf(l)} onChange={(patch) => onChange(l.key, patch)} onRemove={() => onRemove(l.key)} onDone={() => onEdit(null)} />}
+            {open && (
+              <LineEditor
+                line={l}
+                limits={limits}
+                approvals={approvals}
+                base={baseOf(l)}
+                away={away}
+                card={p && str(p.stored_value_kind) ? { kind: str(p.stored_value_kind), set: cards[l.key]?.code ? lastFour(cards[l.key].code) : null, profile, onUse: (code, pin) => onCard(l.key, code, pin) } : null}
+                onChange={(patch) => onChange(l.key, patch)}
+                onAsk={onAsk}
+                onRemove={() => onRemove(l.key)}
+                onDone={() => onEdit(null)}
+              />
+            )}
           </li>
         );
       })}
@@ -119,17 +150,43 @@ function QtyBox({ label, qty, onChange }: { label: string; qty: number; onChange
   );
 }
 
-function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: CartLine; rights: Rights; base: Base | null; onChange: (patch: Partial<Pick<CartLine, "discount" | "price" | "note">>) => void; onRemove: () => void; onDone: () => void }) {
+function LineEditor({
+  line,
+  limits,
+  approvals,
+  base,
+  away,
+  card,
+  onChange,
+  onAsk,
+  onRemove,
+  onDone,
+}: {
+  line: CartLine;
+  limits: Limits;
+  approvals: Approval[];
+  base: Base | null;
+  away: boolean;
+  card: { kind: string; set: string | null; profile: Doc; onUse: (code: string, pin?: string) => void } | null;
+  onChange: (patch: Partial<Pick<CartLine, "discount" | "price" | "note">>) => void;
+  onAsk: (asks: Ask[], apply: () => void) => void;
+  onRemove: () => void;
+  onDone: () => void;
+}) {
   const money = useMoney();
   const [discount, setDiscount] = useState(line.discount ?? "");
   const [price, setPrice] = useState(line.price ?? "");
-  const check = (d: string, p: string) => lineProblem(rights, { list: base?.list ?? 0, rule: base?.rule ?? 0, discount: d, price: p });
-  const problem = check(discount, price);
-  const limit = base ? discountLimit(rights, base.rule) : rights.max;
-  // What is typed goes onto the line once it is allowed; until then it stays here with the reason.
+  const problem = lineProblem({ discount, price });
+  const asks = lineAsks(limits, { list: base?.list ?? 0, rule: base?.rule ?? 0, discount, price }, approvals);
+  const limit = base ? discountLimit(limits, base.rule) : limits.discount_percent;
+  // What is typed goes onto the line once it is allowed; until then it stays here with the way to ask.
   const typed = (d: string, p: string) => {
-    if (!check(d, p)) onChange({ discount: d, price: p });
+    if (!lineProblem({ discount: d, price: p }) && !lineAsks(limits, { list: base?.list ?? 0, rule: base?.rule ?? 0, discount: d, price: p }, approvals).length) onChange({ discount: d, price: p });
   };
+  const words = (a: Ask) =>
+    a.act === "Price Change"
+      ? t("You may not change prices yourself; another person has to approve it.")
+      : t("That is {saving}% off the list price. You can give up to {limit}% yourself; more needs another person's approval.", { saving: plain(a.figure), limit: plain(limit) });
   return (
     <div className="pos-edit">
       {base && (
@@ -139,41 +196,35 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
         </p>
       )}
       <div className="pos-edit-grid">
-        {rights.discount ? (
-          <label className="field">
-            <span className="field-label">{t("Discount %")}</span>
-            <input
-              className="input"
-              inputMode="decimal"
-              placeholder={base && base.rule > 0 ? plain(base.rule) : "0"}
-              value={discount}
-              aria-invalid={!!problem || undefined}
-              onChange={(e) => {
-                setDiscount(e.target.value);
-                typed(e.target.value, price);
-              }}
-            />
-            <span className="field-hint">{rights.manager ? t("No limit for you.") : t("You can give up to {limit}%.", { limit: plain(limit) })}</span>
-          </label>
-        ) : (
-          <p className="faint pos-edit-info">{t("This register does not let cashiers give discounts.")}</p>
-        )}
-        {rights.price && (
-          <label className="field">
-            <span className="field-label">{t("Price")}</span>
-            <input
-              className="input"
-              inputMode="decimal"
-              placeholder={base ? plain(base.list) : ""}
-              value={price}
-              aria-invalid={!!problem || undefined}
-              onChange={(e) => {
-                setPrice(e.target.value);
-                typed(discount, e.target.value);
-              }}
-            />
-          </label>
-        )}
+        <label className="field">
+          <span className="field-label">{t("Discount %")}</span>
+          <input
+            className="input"
+            inputMode="decimal"
+            placeholder={base && base.rule > 0 ? plain(base.rule) : "0"}
+            value={discount}
+            aria-invalid={!!problem || undefined}
+            onChange={(e) => {
+              setDiscount(e.target.value);
+              typed(e.target.value, price);
+            }}
+          />
+          <span className="field-hint">{limit >= 100 ? t("No limit for you.") : t("You can give up to {limit}% yourself.", { limit: plain(limit) })}</span>
+        </label>
+        <label className="field">
+          <span className="field-label">{t("Price")}</span>
+          <input
+            className="input"
+            inputMode="decimal"
+            placeholder={base ? plain(base.list) : ""}
+            value={price}
+            aria-invalid={!!problem || undefined}
+            onChange={(e) => {
+              setPrice(e.target.value);
+              typed(discount, e.target.value);
+            }}
+          />
+        </label>
         <label className="field pos-edit-note">
           <span className="field-label">{t("Note on this line")}</span>
           <input className="input" maxLength={200} defaultValue={line.note ?? ""} placeholder={t("A gift, a promised repair…")} onChange={(e) => onChange({ note: e.target.value })} />
@@ -184,6 +235,18 @@ function LineEditor({ line, rights, base, onChange, onRemove, onDone }: { line: 
           {isolate(problem)}
         </p>
       )}
+      {!problem && asks.length > 0 && (
+        <div className="pos-edit-problem" role="alert">
+          {asks.map((a) => (
+            <p key={a.act}>{isolate(words(a))}</p>
+          ))}
+          <Button className="pos-btn" disabled={away} onClick={() => onAsk(asks, () => onChange({ discount, price }))}>
+            {t("Ask for approval")}
+          </Button>
+          {away && <span className="faint"> {t("Approvals need a connection.")}</span>}
+        </div>
+      )}
+      {card && <CardLine profile={card.profile} line={line.key} kind={card.kind} set={card.set} away={away} onUse={card.onUse} />}
       <div className="pos-edit-actions">
         <Button variant="danger" className="pos-btn" icon="trash" onClick={onRemove}>
           {t("Remove line")}

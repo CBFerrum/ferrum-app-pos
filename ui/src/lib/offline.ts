@@ -7,6 +7,7 @@
 import { calculate, type CalcInput } from "@ferrum/calc";
 import { bootstrap, cacheName, offlineEnv, parseApiError, renewOfflineLease, sweep, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
+import type { Limits } from "./rights";
 
 // ── requests the till makes ──
 
@@ -251,6 +252,10 @@ export interface TillMemory {
   modes: Doc[];
   /** Whether they are a POS manager, which lifts the cashier's limits at the till. */
   manager?: boolean;
+  /** What they may do on their own at this register (`GET /limits`), held to offline as the server will hold the sale. */
+  limits?: Limits;
+  /** The business's reasons for voiding and returning (`PosReason`). */
+  reasons?: Doc[];
 }
 
 /** Where the till's memory is kept: like the book, under the lease. */

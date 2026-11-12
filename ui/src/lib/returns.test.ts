@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkRefund, refundPayments, refundPlan, returnBody, returnItems, type Method, type Sheet } from "./returns";
+import { backItems, checkRefund, enteredPriceProblem, exchange, parsePolicy, refundPayments, refundPlan, restockingFee, returnBody, returnItems, unreceiptedBody, type Method, type Sheet } from "./returns";
 
 const cash: Method = { mode: "cash", name: "Cash", kind: "Cash", usable: true };
 const card: Method = { mode: "card", name: "Card", kind: "Bank", usable: true };
@@ -112,5 +112,70 @@ describe("what the return sends", () => {
     const items = [{ item: "i-tea", qty: "-1", original_line: "l1" }];
     expect(returnBody({ profile: "p", session: "s", sale: "sale-1", items })).toEqual({ pos_profile: "p", pos_opening_entry: "s", is_return: true, return_against: "sale-1", items, payments: [] });
     expect(returnBody({ id: "r-1", profile: "p", session: "s", sale: "sale-1", reason: " Faulty ", items, payments: [{ mode_of_payment: "cash", amount: "-20" }] })).toMatchObject({ id: "r-1", return_reason: "Faulty" });
+  });
+});
+
+describe("a sale paid with a card goes back onto stored value (logic.rs check_refunds)", () => {
+  const stored: Method = { mode: "gift", name: "Gift card", kind: "Stored Value", usable: true };
+  // Paid 70 by card and 30 in cash: the cash part may go back as store credit, the card's never as money.
+  const s = sheet({ methods: [cash, stored], paid_with: [paid("gift", "70"), paid("cash", "30")], refundable: { money: "30", loyalty: "0", credit: "0", stored_value: "70" } });
+
+  it("refuses money beyond the cash part, and accepts cash and card, or all as stored value", () => {
+    expect(checkRefund(100, [{ mode: "cash", amount: 100 }], s)).toMatch(/At most 30.00 can be refunded in cash/);
+    expect(checkRefund(100, [{ mode: "cash", amount: 30 }, { mode: "gift", amount: 70 }], s)).toBeNull();
+    expect(checkRefund(100, [{ mode: "gift", amount: 100 }], s)).toBeNull();
+    expect(checkRefund(100, [{ mode: "gift", amount: 101 }], s)).toMatch(/refunds add up/);
+    expect(checkRefund(40, [{ mode: "gift", amount: 40 }], sheet({ ...s, refundable: { money: "0", loyalty: "0", credit: "0", stored_value: "30" } }))).toMatch(/At most 30.00 can go back onto stored value/);
+  });
+
+  it("plans the card's share back onto the card first, then cash", () => {
+    expect(refundPlan(100, s).rows).toEqual([{ mode: "gift", amount: 70 }, { mode: "cash", amount: 30 }]);
+    expect(refundPlan(50, s).rows).toEqual([{ mode: "gift", amount: 50 }]);
+  });
+
+  it("sends a card's code only on its own row, trimmed", () => {
+    expect(refundPayments([{ mode: "gift", amount: 70 }, { mode: "cash", amount: 30 }], {}, { gift: { code: " 7KQ2-M9XD ", pin: "1234" } })).toEqual([
+      { mode_of_payment: "gift", amount: "-70", stored_value_code: "7KQ2-M9XD", stored_value_pin: "1234" },
+      { mode_of_payment: "cash", amount: "-30" },
+    ]);
+  });
+});
+
+describe("returns without a receipt and exchanges (logic.rs)", () => {
+  const policy = parsePolicy({ price_basis: "Entered", window_days: 30, store_credit: "credit-mode", refund_modes: [{ mode_of_payment: "cash" }], fees: [{ condition: "Damaged", fee_percent: "15" }], exchange_mode: "clearing" });
+
+  it("reads the policy and finds the restocking fee of a condition", () => {
+    expect(policy).toEqual({ price_basis: "Entered", window_days: 30, store_credit: "credit-mode", refund_modes: ["cash"], fees: [{ condition: "Damaged", fee_percent: 15 }], exchange_mode: "clearing" });
+    expect([restockingFee(policy.fees, "Damaged"), restockingFee(policy.fees, "Resaleable")]).toEqual([15, 0]);
+    expect(parsePolicy({}).price_basis).toBe("Current Price");
+  });
+
+  it("asks for a price only when the policy takes the one typed", () => {
+    expect(enteredPriceProblem("Entered", undefined)).toMatch(/Type the price/);
+    expect(enteredPriceProblem("Entered", "75")).toBeNull();
+    expect(enteredPriceProblem("Current Price", undefined)).toBeNull();
+  });
+
+  it("carries what came back to what goes out, and splits the rest", () => {
+    expect(exchange(100, 130)).toEqual({ carried: 100, due: 30, refund: 0 });
+    expect(exchange(100, 60)).toEqual({ carried: 60, due: 0, refund: 40 });
+    expect(exchange(50, 50)).toEqual({ carried: 50, due: 0, refund: 0 });
+  });
+
+  it("builds the return that names no sale", () => {
+    const items = backItems([{ key: "k", item: "i-pen", item_name: "Pen", qty: 2, condition: "Damaged", price: " 75 " }], "Entered");
+    expect(items).toEqual([{ item: "i-pen", qty: "-2", condition: "Damaged", manual_rate: "75" }]);
+    expect(backItems([{ key: "k", item: "i-pen", item_name: "Pen", qty: 1, condition: "Resaleable", price: "75" }], "Current Price")).toEqual([{ item: "i-pen", qty: "-1", condition: "Resaleable" }]);
+    expect(unreceiptedBody({ id: "r1", profile: "p", session: "s", customer: null, reason: "why", items, approvals: ["a1"] })).toEqual({
+      id: "r1",
+      pos_profile: "p",
+      pos_opening_entry: "s",
+      is_return: true,
+      without_receipt: true,
+      reason: "why",
+      items,
+      payments: [],
+      approvals: [{ approval: "a1" }],
+    });
   });
 });

@@ -16,6 +16,7 @@ import type { Doc } from "@ferrum/records";
 import { Currency, myEmail, remember, remembered, str, titleOf } from "./fmt";
 import { useManager, usePriceBook } from "./hooks";
 import { knownRegisters, recallTill, rememberTill, till, unreachable, type TillMemory } from "./lib/offline";
+import { parseLimits } from "./lib/rights";
 import { Till } from "./Till";
 
 // Opening a shift needs the server and is done once a day: it loads when a register has no session.
@@ -96,19 +97,35 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   });
   const modes = useQuery({
     queryKey: ["pos", "modes"],
-    queryFn: ({ signal }) => list("ModeOfPayment", { fields: "id,mode_name,mode_type", limit: 200 }, signal),
+    queryFn: ({ signal }) => list("ModeOfPayment", { fields: "id,mode_name,mode_type,stored_value_kind,offline_limit", limit: 200 }, signal),
+    staleTime: 300_000,
+    retry: false,
+  });
+  // What this person may do on their own here, and the reasons a line or sale is voided or returned for.
+  const limitsQ = useQuery({
+    queryKey: ["pos", "limits", profileId, email],
+    queryFn: ({ signal }) => till<unknown>("/api/app/pos/limits", { query: { profile: profileId }, signal }),
+    enabled: !!email,
+    retry: false,
+  });
+  const reasonsQ = useQuery({
+    queryKey: ["pos", "reasons"],
+    queryFn: ({ signal }) => list("PosReason", { filters: JSON.stringify({ disabled: false }), fields: "id,reason,applies_to,disabled", limit: 200, sort: "reason asc" }, signal),
     staleTime: 300_000,
     retry: false,
   });
   const manager = useManager(memory?.manager);
+  // The server's answer, else what this device last kept (the register's own switches before any).
+  const limits = (limitsQ.data !== undefined ? parseLimits(limitsQ.data) : null) ?? memory?.limits;
+  const reasons = reasonsQ.data?.rows ?? memory?.reasons ?? [];
   // What the server says, else (offline) what this device last knew.
   const offline = [profile.error, session.error].some((e) => e && unreachable(e));
   const profileDoc = profile.data ?? (offline ? memory?.profile : undefined);
   const open = session.data ? (session.data.rows[0] ? { id: str(session.data.rows[0].id), number: str(session.data.rows[0].number) } : null) : offline ? (memory?.session ?? null) : null;
   const modeRows = modes.data?.rows ?? memory?.modes ?? [];
   useEffect(() => {
-    if (profile.data && session.data) rememberTill({ email, profile: profile.data, session: open, modes: modeRows, manager } satisfies TillMemory);
-  }, [profile.data, session.data, modes.data, manager]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (profile.data && session.data) rememberTill({ email, profile: profile.data, session: open, modes: modeRows, manager, limits, reasons } satisfies TillMemory);
+  }, [profile.data, session.data, modes.data, manager, limitsQ.data, reasonsQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const book = usePriceBook(profileId, open?.id ?? null);
 
   if ((profile.isLoading || session.isLoading) && !memory) return <ListSkeleton rows={6} />;
@@ -117,7 +134,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   if (error || !profileDoc) {
     return <Problem error={error ?? new Error(t("This register is not on this device yet: connect once to set it up."))} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
   }
-  if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} offline={offline} onSwitch={onSwitch} />;
+  if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} limits={limits} reasons={reasons} offline={offline} onSwitch={onSwitch} />;
   return (
     <div className="pos-away">
       <div className="pos-head">

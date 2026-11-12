@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { addItem, adjustLine, balance, flushOutbox, invoiceBody, isTransient, keptReceipt, loadOutbox, parseScan, paymentRows, quickCash, receiptHtml, saveOutbox, setQty, withMethodNames, type QueuedSale } from "./pos";
+import type { Doc } from "@ferrum/records";
+import { addItem, adjustLine, balance, carriesCard, flushOutbox, invoiceBody, isTransient, keptReceipt, loadOutbox, parseScan, paymentRows, quickCash, receiptHtml, saveOutbox, setQty, withMethodNames, type QueuedSale } from "./pos";
 
 const tea = { id: "i-tea", name: "Tea" };
 const cake = { id: "i-cake", name: "Cake" };
@@ -210,5 +211,31 @@ describe("receipt", () => {
     expect(html).toContain("width:48mm");
     expect(html).toMatch(/Change<\/td><td class="r">30\.00/);
     expect(html).toContain("Cash");
+  });
+});
+
+describe("what a sale carries beyond its lines", () => {
+  const lines = [{ key: "gift", item: "i-card", item_name: "Gift card", qty: 1 }];
+  const base = { id: "sale-1", profile: "p", session: "s", customer: "c", lines };
+
+  it("names the approvals it uses, the lines taken off with why, and the invoice at once", () => {
+    const body = invoiceBody({
+      ...base,
+      tenders: [],
+      approvals: ["a1"],
+      voided: [{ item: "i-tea", item_name: "Tea", qty: 2, amount: "40.00", reason: "r1" }],
+      invoiceNow: true,
+    });
+    expect(body).toMatchObject({ approvals: [{ approval: "a1" }], voided_lines: [{ item: "i-tea", qty: "2", amount: "40.00", reason: "r1" }], invoice_now: true });
+    const plain = invoiceBody({ ...base, tenders: [] });
+    for (const k of ["approvals", "voided_lines", "invoice_now"]) expect(k in plain).toBe(false);
+  });
+
+  it("puts a card's code and PIN only on the line or tender they belong to, and knows a body that has them", () => {
+    const body = invoiceBody({ ...base, tenders: [{ mode_of_payment: "gift", amount: "30", stored_value_code: " 7KQ2-M9XD ", stored_value_pin: "1234" }], cards: { gift: { code: "NEW-CARD-0001" } } });
+    expect((body.items as Doc[])[0]).toMatchObject({ stored_value_code: "NEW-CARD-0001" });
+    expect((body.payments as Doc[])[0]).toMatchObject({ stored_value_code: "7KQ2-M9XD", stored_value_pin: "1234" });
+    expect(carriesCard(body)).toBe(true);
+    expect(carriesCard(invoiceBody({ ...base, tenders: [{ mode_of_payment: "cash", amount: "30" }] }))).toBe(false);
   });
 });

@@ -58,6 +58,9 @@ export interface Tender {
   reference_no?: string;
   /** Points redeemed with a Loyalty Points method: the server works out their amount. */
   loyalty_points?: number;
+  /** A card's code and PIN (stored value): held in memory for the one request, never queued or kept. */
+  stored_value_code?: string;
+  stored_value_pin?: string;
 }
 
 /** Tendered amounts that count (positive numbers), as the invoice's payment rows. */
@@ -67,9 +70,35 @@ export function paymentRows(tenders: Tender[]): Doc[] {
     if (points > 0) return [{ mode_of_payment: t.mode_of_payment, loyalty_points: points }];
     if (!(Number(t.amount) > 0)) return [];
     const reference = t.reference_no?.trim();
-    return [{ mode_of_payment: t.mode_of_payment, amount: String(Number(t.amount)), ...(reference ? { reference_no: reference } : {}) }];
+    const code = t.stored_value_code?.trim();
+    const pin = t.stored_value_pin?.trim();
+    return [
+      {
+        mode_of_payment: t.mode_of_payment,
+        amount: String(Number(t.amount)),
+        ...(reference ? { reference_no: reference } : {}),
+        ...(code ? { stored_value_code: code, ...(pin ? { stored_value_pin: pin } : {}) } : {}),
+      },
+    ];
   });
 }
+
+/** A line taken off the sale after it was rung (`voided_lines`): what, how many, its amount, and the reason (a `PosReason`). */
+export interface Voided {
+  item: string;
+  item_name: string;
+  qty: number;
+  amount: string;
+  reason: string;
+}
+
+/** The code (and PIN) of a card sold or topped up on a line, by the line's key: in memory, for the
+ *  requests of this sale only. */
+export type LineCards = Record<string, { code: string; pin?: string }>;
+
+/** Whether a body carries a card's code or PIN, which must never be queued or kept. */
+export const carriesCard = (body: Doc): boolean =>
+  [...((body.items as Doc[] | undefined) ?? []), ...((body.payments as Doc[] | undefined) ?? [])].some((r) => r.stored_value_code || r.stored_value_pin);
 
 /** What is still owed (positive) or handed back (negative) after `tendered`, to the cent. */
 export function balance(due: number, tendered: number): number {
@@ -90,7 +119,19 @@ export function quickCash(due: number, steps: number[] = [10, 50, 100, 500, 2000
 
 /** The POS invoice the till sends (for `_calc` and for the sale itself). `id` is the sale's own,
  *  made on the device: with it a sale sent twice can never be sold twice, however long it waited. */
-export function invoiceBody(o: { id?: string; profile: string; session: string; customer: string | null; lines: CartLine[]; tenders: Tender[] }): Doc {
+export function invoiceBody(o: {
+  id?: string;
+  profile: string;
+  session: string;
+  customer: string | null;
+  lines: CartLine[];
+  tenders: Tender[];
+  /** Approvals by another person (ids), each used once by this sale. */
+  approvals?: string[];
+  voided?: Voided[];
+  invoiceNow?: boolean;
+  cards?: LineCards;
+}): Doc {
   return {
     ...(o.id ? { id: o.id } : {}),
     pos_profile: o.profile,
@@ -102,8 +143,12 @@ export function invoiceBody(o: { id?: string; profile: string; session: string; 
       ...(l.discount ? { discount_percent: l.discount } : {}),
       ...(l.price ? { manual_rate: l.price } : {}),
       ...(l.note ? { note: l.note } : {}),
+      ...(o.cards?.[l.key]?.code ? { stored_value_code: o.cards[l.key].code, ...(o.cards[l.key].pin ? { stored_value_pin: o.cards[l.key].pin } : {}) } : {}),
     })),
     payments: paymentRows(o.tenders),
+    ...(o.approvals?.length ? { approvals: o.approvals.map((approval) => ({ approval })) } : {}),
+    ...(o.voided?.length ? { voided_lines: o.voided.map((v) => ({ item: v.item, qty: String(v.qty), amount: v.amount, reason: v.reason })) } : {}),
+    ...(o.invoiceNow ? { invoice_now: true } : {}),
   };
 }
 
