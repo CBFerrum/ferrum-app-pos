@@ -4,7 +4,10 @@
 // screen survives a reload, a basket can be held while the next customer is served, and a sale that
 // cannot be sent waits on the device (hooks.ts, lib/pos.ts) and goes when the connection is back, so
 // a dropped network never costs a sale. Prices, taxes and totals are the server's (`_calc`), or, while
-// it cannot be reached, the server's own engine run on the price book.
+// it cannot be reached, the server's own engine run on the price book. What the cashier may do on
+// their own is the server's too (`/limits`, kept for offline): beyond it another person approves with
+// their PIN (Approval.tsx), which needs the connection, and a line taken off after it was rung is
+// recorded with a reason.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
@@ -14,6 +17,7 @@ import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as
 import { Badge, Button, confirmDialog, Dialog, ListSkeleton, Menu, MenuItem, SaveStatus, Spinner, StatePanel, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
 import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
+import { SetPinDialog, useAsk } from "./Approval";
 import { CartLines, Totals, type Base } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
 import { PayDialog, ReceiptDialog } from "./Pay";
@@ -22,8 +26,8 @@ import { useCalc, useOutbox } from "./hooks";
 import { loadCart, loadHeld, ownerOf, putAside, saveCart, saveHeld, takeOut, totalOf, type Customer, type HeldSale } from "./lib/held";
 import { scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
 import { tally } from "./lib/pay";
-import { addItem, adjustLine, invoiceBody, keptReceipt, parseScan, setQty, withMethodNames, type CartLine, type QueuedSale, type Tender } from "./lib/pos";
-import { rightsOf } from "./lib/rights";
+import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, parseScan, setQty, withMethodNames, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
+import { allows, asksFor, beyond, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -59,7 +63,7 @@ interface ListResponse {
 
 const list = (entity: string, query: Record<string, string | number | boolean | undefined>, signal?: AbortSignal) => till<ListResponse>(docPath(entity), { query, signal });
 
-type Dialog = null | "pay" | "held" | "returns" | "keys";
+type Dialog = null | "pay" | "held" | "returns" | "keys" | "pin";
 
 export interface TillProps {
   profile: Doc;
@@ -67,12 +71,16 @@ export interface TillProps {
   modes: Doc[];
   book: PriceBook | null;
   manager: boolean;
+  /** What the person may do on their own (`/limits`); until it is known, the register's own switches. */
+  limits?: Limits;
+  /** The business's reasons for voiding and returning. */
+  reasons?: Doc[];
   /** The server could not be reached when this register was opened. */
   offline: boolean;
   onSwitch?: () => void;
 }
 
-export function Till({ profile, session, modes, book, manager, offline, onSwitch }: TillProps) {
+export function Till({ profile, session, modes, book, manager, limits: known, reasons = [], offline, onSwitch }: TillProps) {
   useShellTitle(tr("Till"));
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -82,7 +90,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const precision = book?.engine.precision ?? 2;
   const code = book?.currency || titleOf(profile, "currency");
   const money = useMemo(() => (v: unknown) => formatDecimal(v ?? 0, precision), [precision]);
-  const rights = useMemo(() => rightsOf(profile, manager), [profile, manager]);
+  const limits = useMemo(() => known ?? rightsOf(profile, manager), [known, profile, manager]);
   const steps = useMemo(() => denominations(code).quick, [code]);
 
   // The sale in progress and the sales on hold are the device's: they come back after a reload.
@@ -90,6 +98,10 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const [lines, setLines] = useState<CartLine[]>(restored?.lines ?? []);
   const [customer, setCustomer] = useState<Customer>(restored?.customer ?? { id: null });
   const saleKey = useRef(restored?.key ?? newKey());
+  const [approvals, setApprovals] = useState<Approval[]>(restored?.approvals ?? []);
+  const [voided, setVoided] = useState<Voided[]>(restored?.voided ?? []);
+  // A card's code and PIN: in memory for this sale only, never saved, held or queued.
+  const [cards, setCards] = useState<LineCards>({});
   const [held, setHeld] = useState<HeldSale[]>(() => loadHeld(owner));
   const [selected, setSelected] = useState<string | null>(restored?.lines.at(-1)?.key ?? null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -99,16 +111,12 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const scan = useRef<HTMLInputElement>(null);
   const outbox = useOutbox();
   useEffect(() => {
-    saveCart(owner, { lines, customer, key: saleKey.current });
-  }, [owner, lines, customer]);
+    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided });
+  }, [owner, lines, customer, approvals, voided]);
 
   const focusScan = useCallback(() => {
     if (fine()) scan.current?.focus();
   }, []);
-  const anyOpen = dialog !== null || receipt !== null;
-  useEffect(() => {
-    if (!anyOpen) focusScan();
-  }, [anyOpen, focusScan]);
 
   // ── items ──
   const groups = ((profile.item_groups as Doc[] | undefined) ?? []).map((g) => str(g.item_group)).filter(Boolean);
@@ -141,17 +149,37 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const priceOf = useMemo(() => new Map((book?.items ?? []).map((i) => [i.id, i.line.price] as const)), [book]);
 
   // ── totals ──
+  // With an approval the preview is the sale itself (the approval is for this sale's own id).
   const body = useMemo(
-    () => (lines.length ? invoiceBody({ profile: profileId, session: session.id, customer: customer.id, lines: lines.map(({ note: _note, ...l }) => l), tenders: [] }) : null),
-    [lines, customer.id, profileId, session.id],
+    () =>
+      lines.length
+        ? invoiceBody({
+            id: approvals.length ? saleKey.current : undefined,
+            profile: profileId,
+            session: session.id,
+            customer: customer.id,
+            lines: lines.map(({ note: _note, ...l }) => l),
+            tenders: [],
+            approvals: approvals.map((a) => a.id),
+            cards,
+          })
+        : null,
+    [lines, customer.id, profileId, session.id, approvals, cards],
   );
   const calc = useCalc(body, lines, book);
   const priced = useMemo(() => (calc.doc?.items as Doc[] | undefined) ?? [], [calc.doc]);
   const grand = num(calc.doc?.grand_total);
   const due = num(calc.doc?.rounded_total ?? calc.doc?.grand_total);
-  const ready = lines.length > 0 && !calc.pending && !calc.error && !!calc.doc;
+  // A line that sells or tops up a card needs the card's code before the sale can be paid.
+  const noCard = lines.find((l, i) => priced[i]?.item === l.item && str(priced[i].stored_value_kind) && !cards[l.key]?.code);
+  const ready = lines.length > 0 && !calc.pending && !calc.error && !!calc.doc && !noCard;
   const walkIn = !customer.id || customer.id === str(profile.customer);
   const away = offline || !!calc.offline;
+  const asker = useAsk(profileId, () => away || serverDown());
+  const anyOpen = dialog !== null || receipt !== null || asker.open;
+  useEffect(() => {
+    if (!anyOpen) focusScan();
+  }, [anyOpen, focusScan]);
 
   // What each line was priced from (the list price and the rule's discount), learned from lines the
   // cashier has not changed, else from the price book: the cap on a discount is measured against it.
@@ -170,6 +198,19 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     return b ? { list: num(b.line.price), rule: num(b.line.discount_percent) } : null;
   };
 
+  // When the server refuses the sale as beyond the person's limits (the whole sale's discount, a
+  // cart that came back from a reload), the same sum shows what to ask for.
+  const saleAsks: Ask[] = (() => {
+    if (!calc.error || !lines.length) return [];
+    const asks: LineAsk[] = [];
+    for (const l of lines) {
+      const b = baseOf(l);
+      if (!b) return [];
+      asks.push({ qty: l.qty, list: b.list, rule: b.rule, price: l.price ? Number(l.price) : undefined, discount: l.discount ? Number(l.discount) : undefined });
+    }
+    return asksFor(beyond(limits, asks), approvals);
+  })();
+
   // ── changing the sale ──
   const add = useCallback((item: { id: string; name: string }, qty = 1) => {
     setLines((l) => addItem(l, item, qty));
@@ -181,13 +222,37 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
     setSelected(null);
     setEditing(null);
     setSearch("");
+    setApprovals([]);
+    setVoided([]);
+    setCards({});
     saleKey.current = newKey();
   }, []);
   const changeQty = (key: string, qty: number) => setLines((l) => setQty(l, key, qty));
-  const remove = (key: string) => {
+  const take = (key: string, gone?: Voided, got: Approval[] = []) => {
     setLines((l) => l.filter((x) => x.key !== key));
+    setCards(({ [key]: _gone, ...rest }) => rest);
+    if (gone) setVoided((v) => [...v, gone]);
+    if (got.length) setApprovals((a) => [...a, ...got]);
     setEditing(null);
     setSelected(null);
+  };
+  // A line already rung is taken off with a reason from the business's list, kept with the sale; a
+  // person whose limits do not allow it gets another person's approval first.
+  const remove = (key: string) => {
+    const at = lines.findIndex((l) => l.key === key);
+    const line = lines[at];
+    if (!line) return;
+    const why = reasons.filter((r) => r.applies_to === "Void" && r.disabled !== true);
+    // With no reasons set up there is nothing to record it under: it comes off as it always did.
+    if (!why.length) return take(key);
+    const steps: Ask[] = allows(limits, "Void Line") || approvals.some((a) => a.act === "Void Line") ? [] : [{ act: "Void Line", figure: 0, why: tr("you may not take lines off a sale") }];
+    asker.ask({
+      title: tr("Take {item_name} off the sale", { item_name: line.item_name }),
+      sale: saleKey.current,
+      steps,
+      reasons: why,
+      done: (got, reason) => take(key, { item: line.item, item_name: line.item_name, qty: line.qty, amount: str(priced[at]?.item === line.item ? priced[at].amount : "0") || "0", reason: reason ?? "" }, got),
+    });
   };
 
   // A scan: the price book answers at once; the server is asked when it does not know the code.
@@ -229,7 +294,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   const now = () => new Date().toISOString();
   const hold = () => {
     if (!lines.length) return;
-    const next = putAside(held, { lines, customer, key: saleKey.current }, now(), totalOf(calc.doc));
+    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided }, now(), totalOf(calc.doc));
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
@@ -248,11 +313,14 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
         cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
-      next = putAside(rest, { lines, customer, key: saleKey.current }, now(), totalOf(calc.doc));
+      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided }, now(), totalOf(calc.doc));
     }
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
     setHeld(next);
     setLines(sale.lines);
+    setApprovals(sale.approvals ?? []);
+    setVoided(sale.voided ?? []);
+    setCards({});
     setCustomer(sale.customer);
     setSelected(sale.lines.at(-1)?.key ?? null);
     saleKey.current = sale.key;
@@ -268,16 +336,19 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
   };
 
   // ── selling ──
-  const complete = async (tenders: Tender[]): Promise<string | null> => {
+  const complete = async (tenders: Tender[], o: { invoiceNow: boolean }): Promise<string | null> => {
     const at = new Date();
     // When it was sold, not when it reaches the server. The sale has its own id, made when it began.
     const sale: Doc = {
-      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders }),
+      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards }),
       posting_date: localDate(at),
       posting_time: at.toTimeString().slice(0, 8),
     };
     const key = saleKey.current;
     const keep = (): string | null => {
+      // An approval is checked by the server alone, and a card's code goes only to it: neither waits on the device.
+      if (approvals.length) return tr("This sale carries another person's approval, which only the server can check and which lapses. Wait for the connection to sell it, or take away what was approved.");
+      if (carriesCard(sale)) return tr("A card's code goes only to the server and is never kept on this device. This sale needs the connection.");
       // Sold without the server: when it arrives, the register's policy says what happens if it took more than the warehouse holds.
       const queued: QueuedSale = { key, body: { ...sale, sold_offline: true }, at: at.toISOString(), by: email, total: String(due) };
       // The sale is the device's only copy: if the device would not keep it, it stays on screen.
@@ -395,6 +466,7 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             <>
               <MenuItem onSelect={() => (close(), shift("/shift"))}>{tr("Count the drawer and close the shift")}</MenuItem>
               <MenuItem onSelect={() => (close(), shift("/shift#cash"))}>{tr("Cash in or out")}</MenuItem>
+              <MenuItem onSelect={() => (close(), setDialog("pin"))}>{tr("Set my PIN")}</MenuItem>
               {onSwitch && (
                 <MenuItem
                   onSelect={() => {
@@ -470,12 +542,18 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             pending={calc.pending}
             selected={selected}
             editing={editing}
-            rights={rights}
+            limits={limits}
+            approvals={approvals}
+            profile={profile}
+            cards={cards}
+            away={away || serverDown()}
             baseOf={baseOf}
             onSelect={setSelected}
             onEdit={setEditing}
             onQty={changeQty}
             onChange={(key, patch) => setLines((l) => adjustLine(l, key, patch))}
+            onAsk={(asks, apply) => asker.ask({ title: tr("Approval for this line"), sale: saleKey.current, steps: asks, done: (got) => (setApprovals((a) => [...a, ...got]), apply()) })}
+            onCard={(key, code, pin) => setCards((c) => ({ ...c, [key]: { code, ...(pin ? { pin } : {}) } }))}
             onRemove={remove}
           />
         )}
@@ -484,6 +562,12 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             {isolate(calc.error)}
           </p>
         )}
+        {saleAsks.length > 0 && (
+          <Button className="pos-btn" disabled={away || serverDown()} onClick={() => asker.ask({ title: tr("Approval for this sale"), sale: saleKey.current, steps: saleAsks, done: (got) => setApprovals((a) => [...a, ...got]) })}>
+            {tr("Ask for approval")}
+          </Button>
+        )}
+        {noCard && <p className="muted">{tr("Scan or type the card's code for {item_name}: open the line.", { item_name: noCard.item_name })}</p>}
         {calc.pending && lines.length > 0 && !calc.doc && (
           <p className="muted">
             <Spinner small /> {tr("Pricing…")}
@@ -544,6 +628,9 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
             <ReturnDesk
               profile={profile}
               session={session.id}
+              modes={modes}
+              limits={limits}
+              reasons={reasons}
               onClose={() => setDialog(null)}
               onDone={(done) => {
                 setDialog(null);
@@ -553,7 +640,9 @@ export function Till({ profile, session, modes, book, manager, offline, onSwitch
           </Suspense>
         </Guard>
       )}
-      {receipt && <ReceiptDialog profile={profile} sale={receipt} onClose={() => setReceipt(null)} />}
+      {dialog === "pin" && <SetPinDialog offline={away || serverDown()} onClose={() => setDialog(null)} />}
+      {asker.node}
+      {receipt && <ReceiptDialog profile={profile} sale={receipt} limits={limits} reasons={reasons} offline={away || serverDown()} onClose={() => setReceipt(null)} />}
     </div>
   );
   return <Currency.Provider value={{ precision, code }}>{view}</Currency.Provider>;

@@ -8,7 +8,7 @@ import type { Doc, Me } from "@ferrum/records";
 import { errorMessage } from "@ferrum/client";
 import { myEmail } from "./fmt";
 import { downloadBook, loadBook, priceOffline, saveBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
-import { flushOutbox, loadOutbox, saveOutbox, type CartLine, type QueuedSale } from "./lib/pos";
+import { carriesCard, flushOutbox, loadOutbox, saveOutbox, type CartLine, type QueuedSale } from "./lib/pos";
 
 /** How old a price book may get before the till fetches it again (while online). */
 const BOOK_AGE_MS = 30 * 60_000;
@@ -171,8 +171,9 @@ export function useOutbox() {
   }, [flush]);
   // Leaving with sales not sent asks first; they stay on this device either way.
   useEffect(() => shell().leaveGuard(() => loadOutbox().length > 0), []);
-  /** Keeps a sale on this device; false when the device would not keep it. */
+  /** Keeps a sale on this device; false when the device would not keep it (or when it holds a card's code or PIN, which are never kept). */
   const add = (s: QueuedSale) => {
+    if (carriesCard(s.body)) return false;
     const next = [...loadOutbox(), s];
     if (!saveOutbox(next)) return false;
     setQueued(next);

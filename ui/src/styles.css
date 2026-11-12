@@ -1120,3 +1120,47 @@ li.pos-tile {
     text-align: start;
   }
 }
+
+/* ── approval, cards, invoice now ── */
+
+.pos-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: var(--pos-key);
+  cursor: pointer;
+}
+
+.pos-check input {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-block: 0.5rem;
+  accent-color: var(--primary);
+}
+
+.pos-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.pos-code {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-2xl);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+  text-align: center;
+  user-select: all;
+}
+
+.pos-refund-in .pos-card {
+  flex-basis: 100%;
+}
+
+.pos-refund-in .pos-card .input {
+  width: 100%;
+}
