@@ -6,7 +6,8 @@
 
 import { t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
-import type { CartLine } from "./pos";
+import type { Approval } from "./rights";
+import type { CartLine, Voided } from "./pos";
 
 export interface Customer {
   id: string | null;
@@ -19,6 +20,13 @@ export interface Cart {
   customer: Customer;
   /** The sale's own id, made on the device when it began. */
   key: string;
+  /** Another person's approvals for this sale (ids only; the PIN that gave them is never kept). */
+  approvals?: Approval[];
+  /** Lines taken off after they were rung, with why. */
+  voided?: Voided[];
+  /** A card's code was on a line when this was kept. The code is not (a card's code is never kept on the
+   *  device), so the card is asked for again; this only says that it is to be. */
+  cardAgain?: boolean;
 }
 
 export interface HeldSale extends Cart {

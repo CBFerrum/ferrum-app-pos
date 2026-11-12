@@ -25,6 +25,8 @@ describe("taking payment", () => {
   it("refuses to give change for anything but cash", () => {
     expect(tally(80, [card(100)]).problem).toMatch(/Only cash/);
     expect(tally(80, [card(60), { kind: "Loyalty Points", amount: 30 }]).problem).toMatch(/Only cash/);
+    expect(tally(80, [{ kind: "Stored Value", amount: 100 }]).problem).toMatch(/Only cash/); // a card gives no change (settle_sale)
+    expect(tally(80, [{ kind: "Stored Value", amount: 30 }, cash(50)])).toMatchObject({ change: 0, left: 0, problem: null });
     expect(tally(80, [card(60), cash(50)])).toMatchObject({ change: 30, problem: null });
     // A tender of nothing, or a negative one, does not count.
     expect(tally(10, [cash(-5), cash(0), cash(10)])).toMatchObject({ tendered: 10, left: 0 });

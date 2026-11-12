@@ -52,7 +52,7 @@ export interface Sheet {
   /** What each way of paying took in (cash net of change), refunded so far, and has left. */
   paid_with: { mode: string; paid: string; refunded: string; left: string }[];
   methods: Method[];
-  refundable: { money: string; loyalty: string; credit: string };
+  refundable: { money: string; loyalty: string; credit: string; /** Paid with stored value: it goes back onto stored value, never out as money. */ stored_value?: string };
   loyalty: { factor: string; points_left: number } | null;
   receipt: Doc;
 }
@@ -92,7 +92,12 @@ type PlanInput = Pick<Sheet, "paid_with" | "methods" | "refundable" | "loyalty">
  */
 export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: RefundRow[]; problem: string | null } {
   const rows: RefundRow[] = [];
-  const left = { money: Math.max(0, Number(s.refundable.money)), loyalty: Math.max(0, Number(s.refundable.loyalty)), credit: Math.max(0, Number(s.refundable.credit)) };
+  const left = {
+    money: Math.max(0, Number(s.refundable.money)),
+    loyalty: Math.max(0, Number(s.refundable.loyalty)),
+    credit: Math.max(0, Number(s.refundable.credit)),
+    stored: Math.max(0, Number(s.refundable.stored_value ?? 0)),
+  };
   const usable = (...kinds: string[]) => s.methods.filter((m) => m.usable && kinds.includes(m.kind ?? ""));
   const add = (mode: string, amount: number, points?: number) => {
     const at = rows.find((r) => r.mode === mode);
@@ -130,6 +135,18 @@ export function refundPlan(total: number, s: PlanInput, precision = 2): { rows: 
     }
   }
 
+  // What a card paid goes back onto stored value (the same card's method first).
+  const cards = usable("Stored Value");
+  for (const w of s.paid_with) {
+    const via = cards.find((m) => m.mode === w.mode);
+    const take = Math.min(rest, Number(w.left), left.stored);
+    if (via && take > 0) {
+      add(via.mode, take);
+      left.stored = round(left.stored - take, precision);
+      rest = round(rest - take, precision);
+    }
+  }
+
   const money = usable(...MONEY);
   for (const w of s.paid_with) {
     const via = money.find((m) => m.mode === w.mode);
@@ -163,23 +180,37 @@ export function checkRefund(total: number, rows: RefundRow[], s: Pick<Sheet, "me
   const loyalty = Number(s.refundable.loyalty);
   if (sum((k) => k === "Loyalty Points") > loyalty) return t("At most {loyalty} can go back as loyalty points.", { loyalty: fmt(loyalty) });
   const money = Number(s.refundable.money);
-  if (sum((k) => MONEY.includes(k)) > money) return t("At most {money} can be refunded in cash or to cards: that is what the sale was paid with.", { money: fmt(money) });
+  const cash = sum((k) => MONEY.includes(k));
+  if (cash > money) return t("At most {money} can be refunded in cash or to cards: that is what the sale was paid with.", { money: fmt(money) });
+  // Money may go back as stored value (store credit); stored value never comes back as money.
+  const room = money + Number(s.refundable.stored_value ?? 0);
+  if (cash + sum((k) => k === "Stored Value") > room) return t("At most {stored} can go back onto stored value.", { stored: fmt(round(room - cash, precision)) });
   return null;
 }
 
-/** The refunds as the return's payment rows: negative amounts, points as points. */
-export function refundPayments(rows: RefundRow[], reference: Record<string, string> = {}): Doc[] {
+/** A card's code and PIN, typed or made for one send: kept in memory only, never in the till's storage. */
+export interface CardProof {
+  code: string;
+  pin?: string;
+}
+
+/** The refunds as the return's payment rows: negative amounts, points as points, a card's code
+ *  (the server makes a new card for a code it does not know) only where the server's rows take it. */
+export function refundPayments(rows: RefundRow[], reference: Record<string, string> = {}, cards: Record<string, CardProof> = {}): Doc[] {
   return rows.flatMap((r): Doc[] => {
     if (r.points) return [{ mode_of_payment: r.mode, loyalty_points: r.points }];
     const ref = reference[r.mode]?.trim();
-    return r.amount > 0 ? [{ mode_of_payment: r.mode, amount: String(-r.amount), ...(ref ? { reference_no: ref } : {}) }] : [];
+    const card = cards[r.mode];
+    const proof = card?.code.trim() ? { stored_value_code: card.code.trim(), ...(card.pin?.trim() ? { stored_value_pin: card.pin.trim() } : {}) } : {};
+    return r.amount > 0 ? [{ mode_of_payment: r.mode, amount: String(-r.amount), ...(ref ? { reference_no: ref } : {}), ...proof }] : [];
   });
 }
 
 /** The return the till sends (for its preview and for the return itself). */
-export function returnBody(o: { id?: string; profile: string; session: string; sale: string; reason?: string; items: Doc[]; payments?: Doc[] }): Doc {
+export function returnBody(o: { id?: string; profile: string; session: string; sale: string; reason?: string; items: Doc[]; payments?: Doc[]; approvals?: string[] }): Doc {
   return {
     ...(o.id ? { id: o.id } : {}),
+    ...(o.approvals?.length ? { approvals: o.approvals.map((approval) => ({ approval })) } : {}),
     pos_profile: o.profile,
     pos_opening_entry: o.session,
     is_return: true,
@@ -187,5 +218,86 @@ export function returnBody(o: { id?: string; profile: string; session: string; s
     ...(o.reason?.trim() ? { return_reason: o.reason.trim() } : {}),
     items: o.items,
     payments: o.payments ?? [],
+  };
+}
+
+// ── returns without a receipt and exchanges (src/logic.rs; the server prices, the till shows) ──
+
+export type Condition = "Resaleable" | "Damaged" | "Scrap";
+export const CONDITIONS: Condition[] = ["Resaleable", "Damaged", "Scrap"];
+
+/** A register's return policy (`PosReturnPolicy`) as the desk needs it. */
+export interface Policy {
+  price_basis: "Current Price" | "Lowest Price in Window" | "Entered";
+  window_days: number;
+  store_credit: string | null;
+  refund_modes: string[];
+  fees: { condition: string; fee_percent: number }[];
+  exchange_mode: string | null;
+}
+
+export function parsePolicy(doc: Doc): Policy {
+  const rows = (v: unknown) => (Array.isArray(v) ? (v as Doc[]) : []);
+  const basis = String(doc.price_basis ?? "");
+  return {
+    price_basis: basis === "Lowest Price in Window" || basis === "Entered" ? basis : "Current Price",
+    window_days: Number(doc.window_days ?? 0) || 0,
+    store_credit: doc.store_credit ? String(doc.store_credit) : null,
+    refund_modes: rows(doc.refund_modes).map((r) => String(r.mode_of_payment)),
+    fees: rows(doc.fees).map((f) => ({ condition: String(f.condition), fee_percent: Number(f.fee_percent) || 0 })),
+    exchange_mode: doc.exchange_mode ? String(doc.exchange_mode) : null,
+  };
+}
+
+/** The restocking fee kept back from goods coming back in `condition`, in percent (`restocking_fee`). */
+export function restockingFee(fees: Policy["fees"], condition: string): number {
+  return fees.find((f) => f.condition === condition)?.fee_percent ?? 0;
+}
+
+/** Whether the price a return without a receipt comes back at is settled by what the cashier types
+ *  (`return_price`): today's and the lowest-in-window prices are the server's to find. */
+export function enteredPriceProblem(basis: Policy["price_basis"], entered: string | undefined): string | null {
+  return basis === "Entered" && !(Number(entered) > 0) ? t("Type the price it comes back at.") : null;
+}
+
+/** An exchange (`logic::exchange`): what came back is worth `back`, what goes out `out` (both
+ *  positive); what came back pays for what goes out, and the customer pays the rest or is refunded it. */
+export function exchange(back: number, out: number, precision = 2): { carried: number; due: number; refund: number } {
+  const carried = Math.max(Math.min(back, out), 0);
+  return { carried, due: round(out - carried, precision), refund: round(back - carried, precision) };
+}
+
+/** What comes back without a receipt: item, how many, in what condition, and the price typed (basis Entered). */
+export interface BackLine {
+  key: string;
+  item: string;
+  item_name: string;
+  qty: number;
+  condition: Condition;
+  price?: string;
+}
+
+export function backItems(lines: BackLine[], basis: Policy["price_basis"]): Doc[] {
+  return lines.map((l) => ({
+    item: l.item,
+    qty: String(-l.qty),
+    condition: l.condition,
+    ...(basis === "Entered" && l.price?.trim() ? { manual_rate: l.price.trim() } : {}),
+  }));
+}
+
+/** A return that names no sale. `reason` is one of the business's return reasons (a `PosReason`). */
+export function unreceiptedBody(o: { id?: string; profile: string; session: string; customer: string | null; reason: string; items: Doc[]; payments?: Doc[]; approvals?: string[] }): Doc {
+  return {
+    ...(o.id ? { id: o.id } : {}),
+    pos_profile: o.profile,
+    pos_opening_entry: o.session,
+    is_return: true,
+    without_receipt: true,
+    ...(o.customer ? { customer: o.customer } : {}),
+    ...(o.reason ? { reason: o.reason } : {}),
+    items: o.items,
+    payments: o.payments ?? [],
+    ...(o.approvals?.length ? { approvals: o.approvals.map((approval) => ({ approval })) } : {}),
   };
 }

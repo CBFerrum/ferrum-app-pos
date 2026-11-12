@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1
+
+The till's own screens for what 0.6.0 added on the server (interface only; the Rust side is unchanged), built with Ferrum-Frontend e9dae86.
+
+- **Limits from the server.** The till reads the cashier's limits from `GET /limits` (kept with the shift's data, so it starts offline with them) instead of the register's fixed switches, which answer only until they are known. The server's `beyond` and `allows` are mirrored in `lib/rights.ts` with tests that pin the cases `logic.rs` pins; the refund check mirrors the stored value class. A line editor shows the cap before typing and asks for approval for what goes past it instead of refusing.
+- **Approval at the till.** Over a limit (a discount, a price change, a line taken off, a void, a refund, a return without a receipt) the till asks another person: their email (the server offers no list of people who may approve), their PIN (masked, dropped from state before the request goes, never logged) and why. The approval is attached to the sale under the sale's own id. A wrong PIN, a lockout and "may not approve this either" are said plainly. Approvals need the connection, and a sale carrying one is not queued: the till says so. Set my PIN is in the Shift menu.
+- **Voids with a reason.** Taking off a line that was rung asks for a reason from the business's list and sends it in `voided_lines`; a finished sale not yet closed is voided from its receipt with a reason (and an approval where the limits ask for one). With no reasons set up, a line comes off as before.
+- **Stored value.** A line that sells a card takes its code (scanned, typed, or made by the server and shown once to print or hand over); a card is taken as a tender after its balance, state and expiry are read (`POST /balance`), in part with the rest by another way; a refund goes back onto the card, or onto new store credit. Codes and PINs live in memory for the one request: never in the till's storage, the sales on hold or the queue. Offline a card is refused, whatever the method's offline limit, because taking one offline would mean keeping its code on the device.
+- **Returns without a receipt, and exchanges.** In the return desk: a return naming no sale (customer optional, items scanned or searched, condition per line, the price and restocking fee shown before confirming, store credit as the default refund) and an exchange as one flow through `/exchange` (lines back, lines out, one difference to pay or refund). Both need the connection.
+- **Invoice now.** A switch on the payment step, shown when a customer is on the sale.
+- **A sale on hold that had a card on it.** The card's code is never kept, so a held sale (or a reloaded one) only remembers that a card was on it: putting it on hold says so, the list of held sales marks it, and resuming it asks for the card's code again before it can be paid.
+- **The server's own shapes.** The till's calls to the new server routes (approve, PIN, balance, a made code, void, exchange) are in one module with the shapes a walk against a running server recorded, and tests built from those answers. The made code is read from the flat answer of the kind's `prove`.
+
+Arabic and Hindi for the new words (translated by the model, to be reviewed by native speakers).
+
 ## 0.6.0
 
 What a business varies at the till, server side (the till's screens follow in a later version; the till of 0.5.2 keeps working, and what it already sends is checked as before).
