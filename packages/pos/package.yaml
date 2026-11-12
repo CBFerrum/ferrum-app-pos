@@ -4,6 +4,33 @@ label: Point of Sale
 description: Registers and cashier sessions, fast offline-tolerant POS invoices with split payments and returns, loyalty points, cash control, and end-of-day consolidation into sales invoices and the books.
 depends: [core, accounting, inventory, selling]
 
+# Modes of payment and their accounts per company are ERP's (accounting). The till's own fields
+# stay the columns they were when Point of Sale defined the entity (0.6.1 and before), so its rows,
+# their values and its seeded modes stay where they are.
+overlays:
+  - entity: ModeOfPayment
+    ops:
+      - op: add_field
+        column: true
+        after: mode_name
+        field:
+          name: mode_type
+          type: select
+          options: [Cash, Bank, General, Credit, Loyalty Points, Stored Value]
+          required: true
+          default: Cash
+          in_list: true
+          in_filter: true
+          label: Type at the Till
+          description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points. Stored Value: a gift card or store credit of the kind below, taken by its code (and PIN)."
+      - {op: add_field, column: true, field: {name: stored_value_kind, type: link, to: StoredValueKind, visible_if: "doc.mode_type == 'Stored Value'", required_if: "doc.mode_type == 'Stored Value'"}}
+      - {op: add_field, column: true, field: {name: offline_limit, type: currency, default: 0, min: "0", visible_if: "doc.mode_type == 'Stored Value'", label: Taken Offline Up To,
+          description: "A till without the connection cannot see a card's balance: it refuses the card (0, the default) or takes up to this much, settled when the sale arrives; what the card no longer holds then is a shortfall to put right"}}
+  - entity: ModeOfPaymentAccount
+    ops:
+      - {op: add_field, column: true, after: company, field: {name: account, type: link, to: Account, link_filters: {is_group: false}, in_list: true, label: Till Account,
+          description: "What the till settles this mode into for the company. Empty: Cash uses the company cash account, Bank the company bank account"}}
+
 modules:
   - name: pos
     label: POS

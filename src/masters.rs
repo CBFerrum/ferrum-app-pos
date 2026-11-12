@@ -22,10 +22,13 @@ impl DocHook for ModeOfPaymentHook {
         let mut errors = Vec::new();
         let mut companies = HashSet::new();
         for (i, r) in rows(doc, "accounts").iter().enumerate() {
-            let (Some(company), Some(account)) = (id(r, "company"), id(r, "account")) else { continue };
+            // One row per company: ERP's instrument accounts and the till's account are read from the first.
+            let Some(company) = id(r, "company") else { continue };
             if !companies.insert(company) {
                 errors.push(FieldError::new("company", "one account per company").in_row("accounts", i));
-            } else if !same_company(hc, "Account", account, Some(company)).await? {
+            } else if let Some(account) = id(r, "account")
+                && !same_company(hc, "Account", account, Some(company)).await?
+            {
                 errors.push(FieldError::new("account", "belongs to another company").in_row("accounts", i));
             }
         }

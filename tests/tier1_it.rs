@@ -581,3 +581,87 @@ async fn scenario() {
     }
     assert_eq!(rests, Vec::<String>::new(), "a staff PIN or a card's code or PIN rests in these tables");
 }
+
+/// Upgrading from Point of Sale 0.6.1, which defined `ModeOfPayment` and its accounts itself, to ERP
+/// 0.22, which defines them, with Point of Sale adding its fields to them. Runs on the workspace this
+/// file's `tier1` leaves behind when built by 0.6.1 (`FERRUM_POS_UPGRADE_DATABASE_URL`; skipped
+/// without it), updating the apps in the order `FERRUM_POS_UPGRADE_ORDER` says: `erp` first (the
+/// default) or `pos` first.
+#[test]
+fn upgrade_from_0_6_1() {
+    let Ok(url) = std::env::var("FERRUM_POS_UPGRADE_DATABASE_URL") else { return };
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(upgrade(url)).await.unwrap() });
+}
+
+async fn upgrade(url: String) {
+    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let mut packages = ferrum_domain::packages().expect("platform packages");
+    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
+    packages.extend(ferrum_app_pos::packages().expect("app packages"));
+    let catalog = Catalog::from_packages(packages).expect("both apps' catalogs load together");
+    let mut hooks = HookRegistry::default();
+    ferrum_domain::register(&mut hooks);
+    ferrum_app_erp::register(&mut hooks);
+    ferrum_app_pos::register(&mut hooks);
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot on the 0.6.1 workspace");
+    let session = k.login("shop", "admin@shop.test", "Correct-Horse-9").await.expect("login");
+    let tenant = session.tenant;
+    let order = if std::env::var("FERRUM_POS_UPGRADE_ORDER").as_deref() == Ok("pos") { ["pos", "accounting"] } else { ["accounting", "pos"] };
+    for p in order {
+        k.install_packages(tenant, &[p.to_string()]).await.unwrap_or_else(|e| panic!("update {p}: {e:?}"));
+    }
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
+    let t = T { k: k.clone(), tenant, admin };
+    let a = t.admin.clone();
+
+    // What the till's modes held is all there, in ERP's entity.
+    let mode = |name: &'static str| {
+        let t = &t;
+        async move { t.find_one("ModeOfPayment", json!({"mode_name": name})).await }
+    };
+    let (cash, card, gift, exchange) = (mode("Cash").await, mode("Card").await, mode("Gift Card").await, mode("Exchange").await);
+    assert_eq!((cash["mode_type"].clone(), card["mode_type"].clone()), (json!("Cash"), json!("Bank")));
+    assert_eq!((gift["mode_type"].clone(), dec(&gift["offline_limit"])), (json!("Stored Value"), n("20")), "{gift:?}");
+    assert!(gift["stored_value_kind"].is_string(), "{gift:?}");
+    assert_eq!(exchange["mode_type"], json!("General"));
+    let exchange = t.k.get(&a, "ModeOfPayment", uid(&exchange), false).await.expect("the mode with its rows");
+    let rows = exchange["accounts"].as_array().cloned().unwrap_or_default();
+    assert_eq!(rows.len(), 1, "{exchange:?}");
+    let (company, clearing) = (rows[0]["company"].clone(), rows[0]["account"].clone());
+    assert!(clearing.is_string(), "the till's account per company is kept: {exchange:?}");
+    assert_eq!(cash["uses_instruments"], json!(false), "ERP's own fields read as not set");
+
+    // ERP's side of the same row: the instruments account beside the till's, one row per company.
+    let ex = uid(&exchange);
+    let both = json!([{"company": company, "account": clearing, "in_hand_account": clearing}]);
+    let saved = t.k.update(&a, "ModeOfPayment", ex, obj(json!({"accounts": both})), None).await.expect("ERP's accounts on the till's row");
+    assert_eq!((saved["accounts"][0]["account"].clone(), saved["accounts"][0]["in_hand_account"].clone()), (clearing.clone(), clearing.clone()));
+    let twice = json!([{"company": company, "account": clearing}, {"company": company, "in_hand_account": clearing}]);
+    let e = t.k.update(&a, "ModeOfPayment", ex, obj(json!({"accounts": twice})), None).await.expect_err("two rows for one company");
+    assert!(messages(&e).contains("one account per company"), "{e:?}");
+    // A new mode made the way ERP's users make one still gets a type at the till.
+    let cheque = t.insert(&a, "ModeOfPayment", json!({"mode_name": "Cheque", "uses_instruments": true})).await;
+    assert_eq!(cheque["mode_type"], json!("Cash"), "the till's default, as before");
+
+    // The till sells and settles with the modes it had.
+    let s = k.login("shop", "cashier@shop.test", "Correct-Horse-9").await.expect("cashier");
+    let cashier = k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.expect("ctx");
+    let counter = uid(&t.find_one("PosProfile", json!({"profile_name": "Counter"})).await);
+    let widget = uid(&t.find_one("Item", json!({"item_code": "WIDGET"})).await);
+    let open =
+        t.k.list(
+            &a,
+            "PosOpeningEntry",
+            &ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"status": "Open", "user": "cashier@shop.test"})).unwrap(), ..Default::default() },
+        )
+        .await
+        .unwrap();
+    if open.rows.is_empty() {
+        let o = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
+        t.k.submit(&cashier, "PosOpeningEntry", uid(&o), None).await.expect("open the till");
+    }
+    let sold =
+        t.sell(&cashier, json!({"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": [pay(&card, "60"), pay(&cash, "60")]})).await;
+    assert_eq!(sold["status"], json!("Paid"), "{sold:?}");
+}

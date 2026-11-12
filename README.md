@@ -140,7 +140,7 @@ flowchart LR
     BAR --> API
     K <--> APP
     K --> OB --> EV["Notifications · webhooks<br/>automations"]
-    APP -. requires .-> D0["erp >=0.1"]
+    APP -. requires .-> D0["erp >=0.22"]
     classDef app fill:#ea580c,color:#fff,stroke:#ea580c
     class APP app
 ```
@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.6.2** | Needs ERP 0.22.0: modes of payment and their accounts are ERP's, with the till's type, stored-value kind, offline limit and account added to them as the same columns, so nothing moves on upgrade. |
 | **0.6.1** | The till's screens for 0.6.0: limits read from the server, another person's PIN to approve what is beyond them, voids with a reason, gift cards and store credit sold, taken and refunded onto, returns without a receipt and exchanges, and the tax invoice at once. |
 | **0.6.0** | Limits by role, approval by another person's PIN for one sale that lapses, voids with reasons, gift cards and store credit at the till, a sale invoiced at once, a return policy, returns without a receipt and exchanges. |
 | **0.5.2** | Rebuilt on the tuned design system: better menu icons, a lighter first page, a visible scroll cue, cleaner print. |
