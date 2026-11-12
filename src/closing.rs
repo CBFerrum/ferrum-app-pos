@@ -108,7 +108,7 @@ impl Takings {
         .bind(session)
         .fetch_all(&mut **tx)
         .await?;
-        let cash = cash.into_iter().map(|(m, t, a)| (m, if t == "Cash Out" { -a } else { a })).collect();
+        let cash = cash.into_iter().map(|(m, t, a)| (m, if matches!(t.as_str(), "Cash Out" | "Safe Drop") { -a } else { a })).collect();
         Ok(Takings { invoices, pays, cash })
     }
 
@@ -141,7 +141,8 @@ fn opening(session: &Doc) -> BTreeMap<Uuid, Decimal> {
 
 /// The reconciliation rows of a session: one per money mode, counted amounts kept (or taken
 /// from the denominations counted), expected amounts and differences recomputed.
-pub(crate) async fn reconcile(k: &Kernel, ctx: &Ctx, tx: &mut Tx, session: &Doc, counted: &[Doc], denominations: &[Doc]) -> Result<Vec<Doc>> {
+/// With `blind`, what a method was expected to hold is left out until it has been counted: the cashier counts first.
+pub(crate) async fn reconcile(k: &Kernel, ctx: &Ctx, tx: &mut Tx, session: &Doc, counted: &[Doc], denominations: &[Doc], blind: bool) -> Result<Vec<Doc>> {
     let sid = id(session, "id").ok_or_else(|| Error::internal("session without id"))?;
     let profile = Profile::load(k, ctx, tx, id(session, "pos_profile").unwrap_or_default()).await?;
     let takings = Takings::load(tx, ctx.tenant, sid, false).await?;
@@ -170,12 +171,67 @@ pub(crate) async fn reconcile(k: &Kernel, ctx: &Ctx, tx: &mut Tx, session: &Doc,
         row.insert("idx".into(), json!(i));
         row.insert("mode_of_payment".into(), json!(m.to_string()));
         row.insert("opening_amount".into(), money(open.get(&m).copied().unwrap_or_default()));
-        row.insert("expected_amount".into(), money(exp));
+        let hide = blind && count.is_none();
+        row.insert("expected_amount".into(), if hide { Value::Null } else { money(exp) });
         row.insert("closing_amount".into(), count.map(money).unwrap_or(Value::Null));
         row.insert("difference".into(), money(count.map(|c| c - exp).unwrap_or_default()));
         out.push(row);
     }
     Ok(out)
+}
+
+/// What a shift moved besides sales: cash paid in and out, what went to the safe, what returns refunded, and the tax of
+/// its sales by rate (the sales' own breakdown, the tax rows for one made before the breakdown was kept).
+struct Figures {
+    paid_in: Decimal,
+    paid_out: Decimal,
+    drops: Decimal,
+    refunds: Decimal,
+    tax: Vec<Doc>,
+}
+
+async fn figures(tx: &mut Tx, tenant: Uuid, session: Uuid) -> Result<Figures> {
+    let moved: Vec<(String, Decimal)> = sqlx::query_as(
+        "select movement_type, coalesce(sum(amount), 0) from e_pos_cash_movement where tenant_id = $1 and pos_opening_entry = $2 and docstatus = 1 group by movement_type",
+    )
+    .bind(tenant)
+    .bind(session)
+    .fetch_all(&mut **tx)
+    .await?;
+    let of = |kind: &str| moved.iter().filter(|m| m.0 == kind).map(|m| m.1).sum::<Decimal>();
+    let refunds: Decimal = sqlx::query_scalar(
+        "select coalesce(-sum(rounded_total), 0) from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 and docstatus = 1 and is_return",
+    )
+    .bind(tenant)
+    .bind(session)
+    .fetch_one(&mut **tx)
+    .await?;
+    let tax: Vec<(Option<String>, Option<Decimal>, Decimal, Decimal)> = sqlx::query_as(
+        "select description, rate, sum(taxable), sum(tax) from (            select b.description, b.rate, b.taxable_amount as taxable, b.tax_amount as tax from e_pos_invoice__tax_breakdown b              join e_pos_invoice p on p.tenant_id = b.tenant_id and p.id = b.parent_id              where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1            union all            select t.description, t.rate, p.net_total, t.tax_amount from e_pos_invoice__taxes t join e_pos_invoice p on p.tenant_id = t.tenant_id and p.id = t.parent_id              where p.tenant_id = $1 and p.pos_opening_entry = $2 and p.docstatus = 1                and not exists (select 1 from e_pos_invoice__tax_breakdown b where b.tenant_id = p.tenant_id and b.parent_id = p.id)          ) x group by description, rate order by description, rate",
+    )
+    .bind(tenant)
+    .bind(session)
+    .fetch_all(&mut **tx)
+    .await?;
+    let tax = tax
+        .into_iter()
+        .enumerate()
+        .map(|(i, (description, rate, taxable, amount))| {
+            json!({"id": Uuid::now_v7().to_string(), "idx": i, "description": description, "rate": rate.map(money), "taxable_amount": money(taxable), "tax_amount": money(amount)})
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    Ok(Figures { paid_in: of("Cash In"), paid_out: of("Cash Out"), drops: of("Safe Drop"), refunds, tax })
+}
+
+/// What the drawer should hold in cash now: the opening float, cash taken net of change and refunds, cash moved.
+pub(crate) async fn drawer_cash(k: &Kernel, ctx: &Ctx, tx: &mut Tx, session: &Doc, cash_mode: Uuid) -> Result<Decimal> {
+    let sid = id(session, "id").ok_or_else(|| Error::internal("session without id"))?;
+    let takings = Takings::load(tx, ctx.tenant, sid, false).await?;
+    let _ = k;
+    Ok(takings.expected(&opening(session), Some(cash_mode)).get(&cash_mode).copied().unwrap_or_default())
 }
 
 pub struct ClosingHook;
@@ -190,7 +246,15 @@ impl DocHook for ClosingHook {
             let n = r.get("count").and_then(Value::as_i64).unwrap_or(0);
             set(r, "amount", money(logic::count_cash(&[(d(r, "denomination"), n)])));
         }
-        let rows_ = reconcile(hc.kernel, hc.ctx, hc.tx, &session, &rows(doc, "payments"), &denominations).await?;
+        let profile = get(hc.kernel, hc.ctx, hc.tx, "PosProfile", id(&session, "pos_profile").unwrap_or_default()).await?;
+        let blind = ferrum_domain::util::b(&profile, "blind_close");
+        let rows_ = reconcile(hc.kernel, hc.ctx, hc.tx, &session, &rows(doc, "payments"), &denominations, blind).await?;
+        set(doc, "blind", json!(blind));
+        let f = figures(hc.tx, hc.ctx.tenant, sid).await?;
+        for (field, v) in [("paid_in", f.paid_in), ("paid_out", f.paid_out), ("safe_drops", f.drops), ("refund_total", f.refunds)] {
+            set(doc, field, money(v));
+        }
+        set(doc, "tax_rows", rows_value(f.tax));
         let takings = Takings::load(hc.tx, hc.ctx.tenant, sid, false).await?;
         let sum = |f: fn(&Inv) -> Option<Decimal>| -> Decimal { takings.invoices.iter().map(|i| f(i).unwrap_or_default()).sum() };
         set(doc, "invoice_count", json!(takings.invoices.iter().filter(|i| !i.is_return).count()));
@@ -226,6 +290,10 @@ impl DocHook for ClosingHook {
             .await?;
         if drafts > 0 {
             return Err(Error::invalid(format!("{drafts} unfinished sale(s) are still open in this session; submit or delete them first")));
+        }
+        // A blind close is counted: every method, before the figure it was expected to hold is seen.
+        if ferrum_domain::util::b(doc, "blind") && rows(doc, "payments").iter().any(|r| r.get("closing_amount").is_none_or(Value::is_null)) {
+            return Err(Error::field("payments", "this register closes blind: count every payment method before closing"));
         }
         set(doc, "period_end", chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         set(doc, "status", "Submitted");

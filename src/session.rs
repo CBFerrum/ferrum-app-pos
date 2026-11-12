@@ -105,14 +105,21 @@ impl CashMovementHook {
 #[async_trait]
 impl DocHook for CashMovementHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        if id(doc, "mode_of_payment").is_none()
+        let drop = s(doc, "movement_type") == Some("Safe Drop");
+        if (id(doc, "mode_of_payment").is_none() || (drop && id(doc, "account").is_none()))
             && let Some(sid) = id(doc, "pos_opening_entry")
         {
             let session = get(hc.kernel, hc.ctx, hc.tx, "PosOpeningEntry", sid).await?;
             if let Some(p) = id(&session, "pos_profile") {
                 let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, p).await?;
-                if let Some(cash) = profile.cash_mode() {
+                if id(doc, "mode_of_payment").is_none()
+                    && let Some(cash) = profile.cash_mode()
+                {
                     set(doc, "mode_of_payment", cash.id.to_string());
+                }
+                // A drop goes where the register says the safe is.
+                if drop && id(doc, "account").is_none() {
+                    set(doc, "account", profile.doc.get("safe_account").cloned().unwrap_or(Value::Null));
                 }
             }
         }
@@ -127,6 +134,17 @@ impl DocHook for CashMovementHook {
         }
         if Self::mode(hc, doc).await?.kind != Kind::Cash {
             return Err(Error::field("mode_of_payment", "cash movements are for cash payment methods"));
+        }
+        if s(doc, "movement_type") == Some("Safe Drop") {
+            if id(doc, "account").is_none() {
+                return Err(Error::field("account", "the register has no safe account: name it on the register, or give the account"));
+            }
+            // A drop takes what is in the drawer, never more.
+            let mode = Self::mode(hc, doc).await?;
+            let held = crate::closing::drawer_cash(hc.kernel, hc.ctx, hc.tx, &session, mode.id).await?;
+            if d(doc, "amount") > held && d(doc, "docstatus").is_zero() {
+                return Err(Error::field("amount", format!("the drawer holds {}: a drop cannot take more", held.normalize())));
+            }
         }
         if let Some(a) = id(doc, "account") {
             let acc = get(hc.kernel, hc.ctx, hc.tx, "Account", a).await?;
@@ -146,7 +164,7 @@ impl DocHook for CashMovementHook {
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
         let drawer = Self::mode(hc, doc).await?.account(&co)?;
         let counter = id(doc, "account").ok_or_else(|| Error::field("account", "is required"))?;
-        let amount = if s(doc, "movement_type") == Some("Cash Out") { -d(doc, "amount") } else { d(doc, "amount") };
+        let amount = if matches!(s(doc, "movement_type"), Some("Cash Out" | "Safe Drop")) { -d(doc, "amount") } else { d(doc, "amount") };
         let on = date(doc, "posting_date")?;
         let mut entry = Entry::new(co.id, on, "PosCashMovement", id(doc, "id").unwrap_or_default(), s(doc, "number").map(str::to_string));
         entry.memo = s(doc, "reason").map(str::to_string);
@@ -167,4 +185,21 @@ impl DocHook for CashMovementHook {
         ledger::reverse(hc.tx, hc.ctx, "PosCashMovement", id(doc, "id").unwrap_or_default(), on, co.precision).await?;
         Ok(())
     }
+}
+
+/// The currency of cash movements and closings made before they kept one, which their papers (the slip, the shift report)
+/// read: the company's. A bounded batch each minute until none is left; it asks only for rows without one, so a workspace
+/// that has them all costs an index-free count of nothing.
+pub(crate) async fn backfill_currency(k: &ferrum_kernel::Kernel) -> Result<()> {
+    let mut tx = k.db.system_tx().await?;
+    for table in ["e_pos_cash_movement", "e_pos_closing_entry"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update {table} t set currency = c.default_currency from e_company c where c.tenant_id = t.tenant_id and c.id = t.company \
+             and t.id in (select id from {table} where currency is null limit 500)"
+        )))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }

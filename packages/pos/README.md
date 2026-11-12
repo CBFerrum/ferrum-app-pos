@@ -10,10 +10,15 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 | `PosProfile` | A register: company, warehouse, price list, walk-in customer, tax template, payment methods (default, allowed in returns), invoice prefix, write-off account/limit, cash-difference account, negative stock, cashier discount/price rights, item and customer groups, receipt texts |
 | `PosOpeningEntry` | A cashier's session (submittable): opening float per payment method. One open session per register and cashier |
 | `PosInvoice` | A sale or return (submittable). Stock moves on submit; numbers are `PREFIX-<FY>-000001`, gapless per prefix |
-| `PosCashMovement` | Cash In / Cash Out of a drawer during a session (float top-up, petty cash), posted to the ledger |
+| `PosCashMovement` | Cash In / Cash Out / Safe Drop of a drawer during a session (float top-up, petty cash, a drop to the register's safe account), posted to the ledger |
+| `PosReceiptEvent` | A copy or gift receipt printed, or a receipt sent: who, when, why, by whose approval (read-only; the address is in the message log) |
+| `PosPriceDifference` | A sale made offline whose totals (the till's, its snapshot's, the recorded one) disagree, waiting for review |
 | `PosClosingEntry` | Ends a session: counted vs expected per payment method, then consolidation |
 | `LoyaltyProgram`, `LoyaltyPointEntry` | Tiers by lifetime spend, points value, expiry; the points ledger (read-only) |
 | `ItemBarcode` | Extra barcodes per item (pack barcodes add several units per scan). `Item.barcode` and `Item.item_code` scan too |
+
+Documents a workspace edits under Settings: `pos.receipt`, `pos.receipt_gift`, `pos.shift_report`, `pos.cash_slip`; message `pos.receipt_sent` (reads `values.company` and `values.currency`).
+Routes: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, besides `/pricebook`, `/limits`, `/returns`, `/exchange`, `/approve`.
 
 Roles: **Cashier** (own sessions, sales, returns, cash movements; may draft the closing count) and
 **POS Manager** (everything, including discounts beyond the register limit, price changes, voids,

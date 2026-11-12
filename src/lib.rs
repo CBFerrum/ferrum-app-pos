@@ -6,17 +6,20 @@
 //! notes and one settlement entry per closing, so the books see one invoice per customer
 //! instead of every receipt. Loyalty points are a ledger of their own (`LoyaltyPointEntry`).
 
+mod buyer;
 mod closing;
 mod invoice;
 mod limits;
 mod logic;
 mod loyalty;
 mod masters;
+mod receipt;
 mod reports;
 pub mod returns;
 mod session;
 mod shortfall;
 pub mod site;
+mod snapshot;
 mod stored;
 
 pub use logic::Kind;
@@ -41,6 +44,8 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosInvoice", Arc::new(invoice::PosInvoiceHook))
         .register("PosClosingEntry", Arc::new(closing::ClosingHook))
         .register("PosStockShortfall", Arc::new(shortfall::ShortfallHook))
+        .register("PosPriceDifference", Arc::new(shortfall::DifferenceHook))
+        .register("PosReceiptEvent", Arc::new(masters::EngineOnly))
         .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard))
         .add_site("pos", Arc::new(site::PosSite));
 }
@@ -52,7 +57,9 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
 
 /// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
 pub async fn maintenance(k: &Kernel) -> Result<()> {
-    loyalty::expire_points(k).await
+    loyalty::expire_points(k).await?;
+    snapshot::forget(k).await?;
+    session::backfill_currency(k).await
 }
 
 /// POS managers (and engine contexts) may exceed cashier limits and act in anyone's session.
