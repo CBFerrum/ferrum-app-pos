@@ -8,6 +8,7 @@
 
 mod closing;
 mod invoice;
+mod limits;
 mod logic;
 mod loyalty;
 mod masters;
@@ -16,6 +17,7 @@ pub mod returns;
 mod session;
 mod shortfall;
 pub mod site;
+mod stored;
 
 pub use logic::Kind;
 
@@ -32,6 +34,8 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosProfile", Arc::new(masters::PosProfileHook))
         .register("ItemBarcode", Arc::new(masters::ItemBarcodeHook))
         .register("LoyaltyPointEntry", Arc::new(masters::PointEntryHook))
+        .register("PosApproval", Arc::new(masters::EngineOnly))
+        .register("PosRoleLimit", Arc::new(masters::RoleLimitHook))
         .register("PosOpeningEntry", Arc::new(session::OpeningHook))
         .register("PosCashMovement", Arc::new(session::CashMovementHook))
         .register("PosInvoice", Arc::new(invoice::PosInvoiceHook))

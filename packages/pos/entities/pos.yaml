@@ -15,13 +15,16 @@
     - {name: mode_name, type: data, required: true, unique: true, in_list: true}
     - name: mode_type
       type: select
-      options: [Cash, Bank, General, Credit, Loyalty Points]
+      options: [Cash, Bank, General, Credit, Loyalty Points, Stored Value]
       required: true
       default: Cash
       in_list: true
       in_filter: true
-      description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points."
+      description: "Cash: notes and coins (gives change, counted at closing). Bank: card, UPI, wallet (settled into a bank or clearing account). General: any other tender with its own account. Credit: on account, the customer pays later (named customers only). Loyalty Points: redeems the customer's points. Stored Value: a gift card or store credit of the kind below, taken by its code (and PIN)."
     - {name: accounts, type: table, of: ModeOfPaymentAccount, label: Accounts per Company, description: "Empty: Cash uses the company cash account, Bank the company bank account"}
+    - {name: stored_value_kind, type: link, to: StoredValueKind, visible_if: "doc.mode_type == 'Stored Value'", required_if: "doc.mode_type == 'Stored Value'"}
+    - {name: offline_limit, type: currency, default: 0, min: "0", visible_if: "doc.mode_type == 'Stored Value'", label: Taken Offline Up To,
+       description: "A till without the connection cannot see a card's balance: it refuses the card (0, the default) or takes up to this much, settled when the sale arrives; what the card no longer holds then is a shortfall to put right"}
     - {name: disabled, type: check, in_filter: true}
   list: {columns: [mode_name, mode_type], sort: mode_name asc}
 
@@ -93,6 +96,11 @@
     - {name: allow_discount_change, type: check, description: Cashiers may give discounts up to Max Discount %}
     - {name: max_discount, type: percent, min: "0", max: "100", label: Max Discount %}
     - {name: allow_rate_change, type: check, description: Cashiers may type a different price}
+    - {name: return_policy, type: link, to: PosReturnPolicy, description: "How returns are taken here: their window, the price and refund of a return without a receipt, restocking fees, exchanges. Empty: returns need their receipt, with no window"}
+    - {name: damaged_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, description: "Goods returned damaged come back here; empty: they are not taken back damaged"}
+    - {name: scrap_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, description: "Goods returned to be scrapped come back here; empty: they are not taken back for scrap"}
+    - {name: approval_minutes, type: int, default: 5, min: "1", label: Approval Lasts (Minutes),
+       description: "An approval by another person's PIN is for one sale and act, used once, within this many minutes and while the cashier's session is open"}
     - {name: item_groups, type: table, of: PosItemGroup, label: Item Groups Shown, description: Empty = all}
     - {name: customer_groups, type: table, of: PosCustomerGroup, label: Customer Groups Allowed, description: Empty = all}
     - {name: print_format, type: select, options: [Thermal 80mm, Thermal 58mm, A4], default: Thermal 80mm}
@@ -102,7 +110,8 @@
   form:
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
     - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
-    - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change]}
+    - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
+    - {label: Returns, collapsible: true, fields: [return_policy, damaged_warehouse, scrap_warehouse]}
     - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
@@ -160,9 +169,35 @@
     - {name: warehouse, type: link, to: Warehouse, read_only: true}
     - {name: batch_no, type: data}
     - {name: serial_no, type: text, description: One serial number per line}
+    - {name: condition, type: select, options: [Resaleable, Damaged, Scrap], default: Resaleable, label: Condition,
+       description: "Returns: the state the goods come back in, which says the warehouse they go to and the restocking fee"}
     - {name: original_line, type: data, label: Returned Line, description: "Returns: id of the sold line (found automatically when the item appears once on the original)"}
     - {name: note, type: data, max_length: 200, label: Line Note, description: "What the cashier wrote on the line (a gift, a promised repair); printed under it on the receipt"}
     - {name: item_tax_rates, type: json, read_only: true}
+    - {name: stored_value_kind, type: link, to: StoredValueKind, read_only: true, label: Stored Value, description: "Its item sells stored value of this kind"}
+    - {name: stored_value_code, type: data, no_copy: true, label: Card Code, description: "The card sold or topped up; kept as its last four characters"}
+    - {name: stored_value_pin, type: data, no_copy: true, label: Card PIN, description: "A new card's PIN; never kept as typed"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true, no_copy: true, label: Topped Up}
+    - {name: stored_value_secret, type: data, read_only: true, hidden: true, no_copy: true}
+
+- name: PosInvoiceApproval
+  label: POS Approval on a Sale
+  kind: child
+  fields:
+    - {name: approval, type: link, to: PosApproval, required: true, in_list: true}
+    - {name: action, type: data, fetch_from: approval.action, read_only: true, in_list: true}
+    - {name: approver, type: data, fetch_from: approval.approver, read_only: true, in_list: true}
+    - {name: amount, type: decimal, fetch_from: approval.amount, read_only: true}
+    - {name: reason, type: data, fetch_from: approval.reason, read_only: true}
+
+- name: PosInvoiceVoid
+  label: Voided Line
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: qty, type: decimal, required: true, in_list: true}
+    - {name: amount, type: currency, in_list: true}
+    - {name: reason, type: link, to: PosReason, required: true, in_list: true, link_filters: {applies_to: Void}}
 
 - name: PosInvoicePayment
   label: POS Payment
@@ -174,6 +209,12 @@
     - {name: loyalty_points, type: int, min: 0, description: Points redeemed with the Loyalty Points mode}
     - {name: account, type: link, to: Account, read_only: true}
     - {name: reference_no, type: data, label: Reference, description: "Card approval code, UPI reference..."}
+    - {name: stored_value_code, type: data, no_copy: true, label: Card Code, description: "Stored value: the card's code; kept as its last four characters"}
+    - {name: stored_value_pin, type: data, no_copy: true, label: Card PIN, description: "Never kept"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true, no_copy: true, label: Card}
+    - {name: stored_value_secret, type: data, read_only: true, hidden: true, no_copy: true}
+    - {name: stored_value_payment, type: link, to: PaymentEntry, read_only: true, no_copy: true, label: Card Payment}
+    - {name: stored_value_balance, type: decimal, read_only: true, no_copy: true, label: Left on the Card}
 
 - name: PosInvoice
   label: POS Invoice
@@ -198,7 +239,12 @@
     - {name: posting_time, type: data, description: "HH:MM:SS of the sale on the device (UTC); empty = now"}
     - {name: sold_offline, type: check, no_copy: true, in_filter: true, label: Sold Offline, description: "Made while the till could not reach the server, and sent when it could"}
     - {name: is_return, type: check, in_filter: true}
-    - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return", required_if: "doc.is_return"}
+    - {name: without_receipt, type: check, no_copy: true, visible_if: "doc.is_return", label: Without a Receipt,
+       description: "A return that names no sale: priced and refunded as the register's return policy says, with a reason"}
+    - {name: return_against, type: link, to: PosInvoice, visible_if: "doc.is_return && !doc.without_receipt", required_if: "doc.is_return && !doc.without_receipt"}
+    - {name: reason, type: link, to: PosReason, link_filters: {applies_to: Return}, visible_if: "doc.is_return", label: Reason Returned,
+       description: "One of the business's reasons; a return without a receipt needs one"}
+    - {name: exchange, type: data, read_only: true, no_copy: true, description: "The other half of an exchange (its id): what came back, or what went out in its place"}
     - {name: return_reason, type: data, max_length: 140, visible_if: "doc.is_return", description: Why the goods came back (the returns desk asks for it)}
     - {name: currency, type: link, to: Currency, read_only: true}
     - {name: conversion_rate, type: decimal, default: 1, read_only: true}
@@ -229,13 +275,24 @@
     - {name: status, type: select, options: [Draft, Paid, Unpaid, Return, Consolidated, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: consolidated_invoice, type: link, to: SalesInvoice, read_only: true, no_copy: true}
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
+    - {name: approvals, type: table, of: PosInvoiceApproval, description: "Approvals by another person for what this sale asks beyond the cashier's limits; each is used once"}
+    - {name: voided_lines, type: table, of: PosInvoiceVoid, description: "Lines rung up and taken off before payment, with why"}
+    - {name: void_reason, type: link, to: PosReason, read_only: true, no_copy: true, label: Voided Because}
+    - {name: invoice_now, type: check, no_copy: true, label: Invoice Now, description: "Make this sale's own sales invoice when it is submitted instead of at closing (a business customer's tax invoice); stored value always is"}
+    - {name: invoiced_at_sale, type: check, read_only: true, no_copy: true}
+    - {name: voided_by, type: data, read_only: true, no_copy: true}
     - {name: remarks, type: text}
   form:
     - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, return_reason, cashier]}
     - {label: Items, fields: [items, discount_percent]}
     - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
     - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}
+    - {label: Approvals and Voids, collapsible: true, fields: [approvals, voided_lines, void_reason, voided_by]}
     - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
+  actions:
+    - {name: void, label: Void Sale, permission: write, condition: "doc.docstatus == 1 && doc.consolidated_invoice == null",
+       confirm: "Void this sale? Its stock comes back and it leaves the session's takings.",
+       params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]}
   rules:
     - {name: time_format, check: "doc.posting_time == null || doc.posting_time.matches('^[0-2][0-9]:[0-5][0-9](:[0-5][0-9])?$')", message: "Posting time must be HH:MM or HH:MM:SS"}
   list: {columns: [number, customer_name, posting_date, rounded_total, status], sort: created_at desc}
@@ -379,6 +436,8 @@
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
     - {name: warehouse, type: link, to: Warehouse, read_only: true, in_list: true, in_filter: true}
     - {name: qty_short, type: decimal, read_only: true, in_list: true, label: Quantity Short}
+    - {name: amount_short, type: currency, read_only: true, in_list: true, label: Amount Short, description: "Stored value taken offline that the card no longer held when the sale arrived; written off on the sale"}
+    - {name: stored_value_account, type: link, to: StoredValueAccount, read_only: true}
     - {name: sold_at, type: data, read_only: true, label: Sold At, description: "The sale's date and time on the till"}
     - {name: status, type: select, options: [Open, Put Right], default: Open, read_only: true, in_list: true, in_filter: true}
     - {name: resolution, type: text, read_only: true, label: How It Was Put Right}
@@ -388,3 +447,91 @@
     - {name: resolve, label: Mark Put Right, permission: write, condition: "doc.status == 'Open'",
        params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]}
   list: {columns: [item_name, warehouse, qty_short, pos_invoice, status], sort: created_at desc}
+
+- name: PosReturnPolicyMode
+  label: Refund Method
+  kind: child
+  fields:
+    - {name: mode_of_payment, type: link, to: ModeOfPayment, required: true, in_list: true}
+
+- name: PosReturnFee
+  label: Restocking Fee
+  kind: child
+  fields:
+    - {name: condition, type: select, options: [Resaleable, Damaged, Scrap], required: true, in_list: true}
+    - {name: fee_percent, type: percent, required: true, min: "0", max: "100", in_list: true, label: Fee %}
+
+- name: PosReturnPolicy
+  label: POS Return Policy
+  kind: master
+  module: pos
+  title_field: policy_name
+  description: "How a register takes returns: within how many days of the sale, what a return without a receipt comes back at and is refunded to, the restocking fee by the goods' condition, and how an exchange carries what comes back to what goes out."
+  fields:
+    - {name: policy_name, type: data, required: true, unique: true, in_list: true}
+    - {name: window_days, type: int, default: 30, min: "0", label: Days to Return, in_list: true, description: "A sale is taken back within this many days of it; 0: no limit"}
+    - {name: price_basis, type: select, options: [Current Price, Lowest Price in Window, Entered], default: Current Price, label: "Without a Receipt, Priced At", in_list: true,
+       description: "Current Price: the register's price today. Lowest Price in Window: the lowest the register sold it for in the window below, or today's if lower. Entered: the cashier types it, within their refund limit"}
+    - {name: price_window_days, type: int, default: 30, min: "1", label: Lowest Price Over (Days), visible_if: "doc.price_basis == 'Lowest Price in Window'"}
+    - {name: store_credit, type: link, to: ModeOfPayment, link_filters: {mode_type: Stored Value}, label: Store Credit,
+       description: "The stored value payment method a return without a receipt is refunded onto, unless a method below is used"}
+    - {name: refund_modes, type: table, of: PosReturnPolicyMode, label: Also Refunded To, description: "Other methods a return without a receipt may be refunded to; empty: store credit only"}
+    - {name: fees, type: table, of: PosReturnFee, label: Restocking Fees, description: "Kept back from a return by the condition the goods come back in; none: no fee"}
+    - {name: exchange_mode, type: link, to: ModeOfPayment, link_filters: {mode_type: General}, label: Exchange Clearing,
+       description: "A payment method of type General, on the register, settling into a clearing account: an exchange carries what came back to what goes out through it, so it nets to nothing"}
+  list: {columns: [policy_name, window_days, price_basis], sort: policy_name asc}
+
+- name: PosRoleLimit
+  label: POS Role Limit
+  kind: master
+  module: pos
+  title_field: role
+  description: "What a role may do at the till without someone else approving it. A person with several roles gets the most generous of them; a row naming a register applies there instead of the role's row for every register. A person none of whose roles has a row keeps the register's own discount and price settings (a POS Manager: no limit)."
+  fields:
+    - {name: role, type: data, required: true, in_list: true, in_filter: true, description: "The role's name, as given to people (Cashier, POS Manager, or your own)"}
+    - {name: pos_profile, type: link, to: PosProfile, label: Register, in_list: true, in_filter: true, description: "Empty: every register"}
+    - {name: discount_percent, type: percent, default: 0, min: "0", max: "100", label: Largest Discount %, in_list: true, description: "On a line against its list price, beyond what pricing rules give (a typed price, the line's and the sale's discounts together)"}
+    - {name: discount_amount, type: currency, min: "0", label: Largest Discount per Sale, description: "In money, beyond what pricing rules give; empty: no amount limit"}
+    - {name: change_price, type: check, label: May Change Prices}
+    - {name: void_line, type: check, default: true, label: May Void a Line}
+    - {name: void_sale, type: check, label: May Void a Sale}
+    - {name: refund_limit, type: currency, min: "0", label: Largest Refund, description: "Of one return; empty: no limit"}
+    - {name: return_without_receipt, type: check, label: May Take Returns Without a Receipt}
+    - {name: open_drawer, type: check, label: May Open the Drawer Without a Sale}
+    - {name: reprint, type: check, default: true, label: May Reprint Receipts}
+  unique: [[role, pos_profile]]
+  list: {columns: [role, pos_profile, discount_percent, refund_limit], sort: role asc}
+
+- name: PosReason
+  label: POS Reason
+  kind: master
+  module: pos
+  title_field: reason
+  description: "The reasons a till offers for voiding, returning, opening the drawer without a sale or reprinting. Disable one to stop offering it."
+  fields:
+    - {name: reason, type: data, required: true, in_list: true}
+    - {name: applies_to, type: select, options: [Void, Return, No Sale, Reprint], required: true, default: Void, in_list: true, in_filter: true}
+    - {name: disabled, type: check, in_filter: true}
+  unique: [[reason, applies_to]]
+  list: {columns: [reason, applies_to, disabled], sort: reason asc}
+
+- name: PosApproval
+  label: POS Approval
+  kind: master
+  module: pos
+  title_field: action
+  description: "One person's approval, by their PIN at the till, of one thing another person asked beyond their limits, for one sale or one act in their session. Written by the till's approval request; read-only."
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, read_only: true, in_list: true, in_filter: true}
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, read_only: true, label: Session, in_filter: true}
+    - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true, label: Asked By}
+    - {name: approver, type: data, read_only: true, in_list: true, in_filter: true}
+    - {name: action, type: select, options: [Discount, Price Change, Void Line, Void Sale, Refund, Return Without Receipt, No Sale, Reprint], read_only: true, in_list: true, in_filter: true}
+    - {name: amount, type: decimal, read_only: true, in_list: true, description: "The discount percent or the refund approved, when the act has one"}
+    - {name: reason, type: data, read_only: true}
+    - {name: limits, type: json, read_only: true, hidden: true, description: "The approver's limits when they approved"}
+    - {name: sale, type: data, read_only: true, in_filter: true, description: "The sale or draft it is for (its id); empty for opening the drawer"}
+    - {name: used_for, type: data, read_only: true, in_list: true, description: "The sale or the act it was used for; an approval is used once"}
+    - {name: approved_at, type: datetime, read_only: true, in_list: true}
+    - {name: expires_at, type: datetime, read_only: true, description: "Unused by then, it lapses; it lapses too when the cashier's session closes"}
+  list: {columns: [action, cashier, approver, amount, used_for, approved_at], sort: created_at desc}
