@@ -1,79 +1,93 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { engineUrl, loadEngine } from "@ferrum/calc";
-import { downloadSnapshot, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, times, unreachable, type PriceBook } from "./offline";
+import { beforeAll, describe, expect, it } from "vitest";
+import fixtures from "./pricing.fixtures.json";
+import { downloadSnapshot, listPrices, markDown, markUp, priceOffline, readable, scanBook, searchBook, serverDown, tillAll, unreachable, type PriceBook } from "./offline";
+import { loadPricing, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
+// An ERP fixture (pricing/tests: three items, three promotions, taxes of 8% and 10%) as the till keeps it: the snapshot plus what the till shows.
+const fixture = fixtures.cases[0] as unknown as { request: { snapshot: PricingSnapshot; basket: Basket }; priced: Priced };
 const book: PriceBook = {
+  ...(fixture.request.snapshot as PriceBook),
   profile: "p1",
-  currency: "INR",
-  customer: "walk-in",
-  engine: { precision: 2, taxes: [{ key: "gst", charge_type: "on_net_total", rate: "5" }], round_total_to: "1" },
-  items: [
-    { id: "i-tea", code: "TEA", name: "Masala tea", barcode: "8901", line: { price: "20.00" } },
-    { id: "i-cake", code: "CAKE", name: "Plum cake", barcode: null, line: { price: "45.00", discount_percent: "10", tax_rates: { gst: "12" } } },
+  catalog: [
+    { id: "i0", code: "TEA", name: "Masala tea", barcode: "8901" },
+    { id: "i1", code: "CAKE", name: "Plum cake", barcode: null },
+    { id: "i2", code: "BUN", name: "Bun", barcode: null },
   ],
-  barcodes: [{ barcode: "CASE6", item: "i-tea", qty: "6" }],
-  built_at: "2026-10-31T00:00:00Z",
+  barcodes: [{ barcode: "CASE6", item: "i0", qty: "6" }],
+  built_at: "2026-11-12T00:00:00Z",
+};
+// The moment the fixture's basket is at, as a Date in this device's time zone (its snapshot names none).
+const at = (m: string) => {
+  const [d, h] = m.split(" ");
+  const [y, mo, da] = d.split("-").map(Number);
+  const [hh, mm] = h.split(":").map(Number);
+  return new Date(y, mo - 1, da, hh, mm);
 };
 
+beforeAll(async () => {
+  await loadPricing(readFileSync(new URL("../vendor/pricing/ferrum_erp_pricing_bg.wasm", import.meta.url)));
+});
+
 describe("selling offline", () => {
-  it("counts a per-unit tax in stock units, exactly", async () => {
-    await loadEngine(readFileSync(new URL(engineUrl)));
-    // A six-pack of bottles with a deposit of 0.10 a bottle.
-    const deposit: PriceBook = {
-      ...book,
-      engine: { precision: 2, taxes: [{ key: "dep", charge_type: "on_item_quantity", rate: "0.10" }] },
-      items: [{ id: "i-six", code: "SIX", name: "Six-pack", barcode: null, line: { price: "6.00", tax_qty: "6" } }],
-    };
-    const doc = await priceOffline(deposit, [{ key: "a", item: "i-six", item_name: "Six-pack", qty: 2 }]);
-    expect([doc.total, doc.total_taxes, doc.grand_total]).toEqual(["12.00", "1.20", "13.20"]);
-    expect([times("0.1", "3"), times("1.5", "0.5"), times("-2", "0.25"), times("12", "1")]).toEqual(["0.3", "0.75", "-0.50", "12"]);
+  it("prices a cart from the snapshot with promotions, the free item they add and the tax by rate, as the server prices it", async () => {
+    const lines = fixture.request.basket.lines.map((l, i) => ({ key: `k${i}`, item: l.item, item_name: `line ${i}`, qty: Number(l.qty) }));
+    const doc = await priceOffline(book, lines, { at: at(fixture.request.basket.at) });
+    const want = fixture.priced.totals;
+    expect([doc.total, doc.total_taxes, doc.grand_total, doc.rounded_total, doc.rounding_adjustment, doc.offline]).toEqual([want.total, want.total_taxes, want.grand_total, want.rounded_total, want.rounding_adjustment, true]);
+    const items = doc.items as { item: string; item_name: string; rate: string; amount: string; promotion_percent: string; added_by_promotion?: string }[];
+    expect(items.map((i) => i.amount)).toEqual(want.lines.map((l) => l.amount));
+    // The promotional price is each line's own: its promotion share, and the free item added after the cashier's lines (named from the catalog).
+    expect(items.some((i) => Number(i.promotion_percent) > 0)).toBe(true);
+    expect(items.slice(3).map((i) => [i.added_by_promotion !== undefined, i.item_name])).toEqual([[true, book.catalog.find((c) => c.id === items[3].item)!.name]]);
+    expect((doc.applied_promotions as unknown[]).length).toBe(fixture.priced.applied.length);
+    expect((doc.tax_breakdown as { rate: string; tax_amount: string }[]).map((r) => [r.rate, r.tax_amount])).toEqual([["8", "86.81"], ["10", "2.82"]]);
   });
 
-  it("prices a cart with the server's engine from the price book", async () => {
-    await loadEngine(readFileSync(new URL(engineUrl)));
-    const doc = await priceOffline(book, [
-      { key: "a", item: "i-tea", item_name: "Masala tea", qty: 3 },
-      { key: "b", item: "i-cake", item_name: "Plum cake", qty: 1 },
-    ]);
-    // 3 × 20.00 + 40.50 = 100.50; 5% of 60.00 + 12% of 40.50 = 3.00 + 4.86 = 7.86; 108.36 → 108.00.
-    expect([doc.total, doc.total_taxes, doc.grand_total, doc.rounded_total, doc.offline]).toEqual(["100.50", "7.86", "108.36", "108.00", true]);
-    await expect(priceOffline(book, [{ key: "c", item: "i-new", item_name: "Scones", qty: 1 }])).rejects.toThrow(/Scones has no price on this device/);
+  it("applies a price or discount the cashier typed in place of the snapshot's, as the server does", async () => {
+    const when = at(fixture.request.basket.at);
+    const plain = await priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: when });
+    const typed = await priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1, price: "50", discount: "10" }], { at: when });
+    const only = (d: Record<string, unknown>) => (d.items as { price_list_rate: string; discount_percent: string }[])[0];
+    expect([only(typed).price_list_rate, only(typed).discount_percent]).toEqual(["50", "10"]);
+    expect(only(plain).price_list_rate).not.toBe("50");
+    // A blank box is no typed value.
+    const blank = await priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1, price: "  ", discount: "" }], { at: when });
+    expect(only(blank)).toEqual(only(plain));
   });
 
-  it("applies a price or discount the cashier typed, in place of the book's, as the server does", async () => {
-    await loadEngine(readFileSync(new URL(engineUrl)));
-    const doc = await priceOffline(book, [
-      { key: "a", item: "i-tea", item_name: "Masala tea", qty: 2, discount: "10" },
-      { key: "b", item: "i-cake", item_name: "Plum cake", qty: 1, price: "50", discount: "0" },
-      { key: "c", item: "i-cake", item_name: "Plum cake", qty: 1, price: "  ", discount: "" },
-    ]);
-    // 2 × 20 less 10% is 36.00; the cake at 50 with the rule's 10% taken off is 50.00; the third is the book's 40.50.
-    expect((doc.items as { rate: string; amount: string; price_list_rate: string; discount_percent: string }[]).map((i) => [i.amount, i.price_list_rate, i.discount_percent])).toEqual([
-      ["36.00", "20.00", "10"],
-      ["50.00", "50", "0"],
-      ["40.50", "45.00", "10"],
-    ]);
-    // 5% of 36.00 + 12% of 50.00 + 12% of 40.50 = 1.80 + 6.00 + 4.86; 126.50 + 12.66 = 139.16 → 139.00.
-    expect([doc.total, doc.total_taxes, doc.grand_total, doc.rounded_total, doc.rounding_adjustment]).toEqual(["126.50", "12.66", "139.16", "139.00", "-0.16"]);
+  it("will not price what the snapshot cannot: an item it does not hold, a snapshot of another shape (0.7.1's), a day it does not cover", async () => {
+    const when = at(fixture.request.basket.at);
+    await expect(priceOffline(book, [{ key: "c", item: "i-new", item_name: "Scones", qty: 1 }], { at: when })).rejects.toThrow(/Scones has no price on this device/);
+    const old = { ...book, schema: undefined } as unknown as PriceBook;
+    await expect(priceOffline(old, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: when })).rejects.toThrow(/Offline pricing is not available/);
+    expect([readable(old), readable(book), readable(null)]).toEqual([false, true, false]);
+    await expect(priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: new Date(2031, 0, 1, 10, 0) })).rejects.toThrow(/the snapshot prices from/);
+  });
+
+  it("lists each item's price and its rule's discount from the snapshot, and nothing for an item it does not hold", async () => {
+    const got = await listPrices(book, ["i0", "i0", "i1", "ghost"], at(fixture.request.basket.at));
+    expect([...got.keys()]).toEqual(["i0", "i1"]);
+    expect(Number(got.get("i0")!.list)).toBeGreaterThan(0);
+    expect((await listPrices({ ...book, schema: 9 }, ["i0"])).size).toBe(0);
   });
 
   it("scans and searches the price book", () => {
-    expect(scanBook(book, "CASE6")).toMatchObject({ item: { id: "i-tea" }, qty: 6 });
-    expect(scanBook(book, "8901")).toMatchObject({ item: { id: "i-tea" }, qty: 1 });
-    expect(scanBook(book, "cake")).toMatchObject({ item: { id: "i-cake" }, qty: 1 });
+    expect(scanBook(book, "CASE6")).toMatchObject({ item: { id: "i0" }, qty: 6 });
+    expect(scanBook(book, "8901")).toMatchObject({ item: { id: "i0" }, qty: 1 });
+    expect(scanBook(book, "cake")).toMatchObject({ item: { id: "i1" }, qty: 1 });
     expect(scanBook(book, "nothing")).toBeNull();
-    expect(searchBook(book, "cake plum").map((i) => i.id)).toEqual(["i-cake"]);
-    expect(searchBook(book, "").map((i) => i.id)).toEqual(["i-tea", "i-cake"]);
+    expect(searchBook(book, "cake plum").map((i) => i.id)).toEqual(["i1"]);
+    expect(searchBook(book, "").map((i) => i.id)).toEqual(["i2", "i0", "i1"]);
   });
 
-  it("keeps the whole snapshot the server gave: its version, signature, promotions and buyer rule", async () => {
-    const answer = { engine: book.engine, items: book.items, barcodes: book.barcodes, currency: "INR", customer: "walkin", version: "ab12", signature: "sig", promotions: [{ id: "promo" }], buyer: { named_above: "5000", walk_in: "walkin" }, truncated: false, built_at: "2026-11-13T09:00:00Z" };
+  it("keeps the whole snapshot the server gave: its schema, version, signature, promotions and buyer rule", async () => {
+    const answer = { ...fixture.request.snapshot, catalog: book.catalog, barcodes: book.barcodes, version: "ab12", signature: "sig", buyer: { named_above: "5000", walk_in: "walkin" }, truncated: false, built_at: "2026-11-13T09:00:00Z" };
     const got = await downloadSnapshot("p1", async () => answer);
-    expect([got.items.map((i) => i.id), got.barcodes.length, got.engine.round_total_to, got.version, got.signature, got.promotions?.length, got.buyer?.named_above, got.truncated]).toEqual([["i-tea", "i-cake"], 1, "1", "ab12", "sig", 1, "5000", false]);
-    // One from a server that signs nothing, and a book older than snapshots: no version, nothing invented.
-    const bare = await downloadSnapshot("p1", async () => ({ items: [], barcodes: [] }));
-    expect([bare.version, bare.signature, bare.promotions, bare.truncated]).toEqual([undefined, null, [], false]);
+    expect([got.schema, got.catalog.map((i) => i.id), got.barcodes.length, got.version, got.signature, (got.promotions as unknown[]).length, got.buyer?.named_above, got.truncated, got.profile]).toEqual([1, ["i0", "i1", "i2"], 1, "ab12", "sig", 2, "5000", false, "p1"]);
+    // One from a server that signs nothing: nothing invented.
+    const bare = await downloadSnapshot("p1", async () => ({ catalog: [], barcodes: [] }));
+    expect([bare.version, bare.signature, bare.truncated, bare.customer]).toEqual([undefined, null, false, null]);
   });
 
   it("does not wait again for a server that has just failed to answer", () => {

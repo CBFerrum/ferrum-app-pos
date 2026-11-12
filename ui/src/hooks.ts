@@ -2,20 +2,21 @@
 // of sales not yet sent, and whether the person is a POS manager.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { docPath, shell, t } from "@ferrum/client";
+import { docPath, shell } from "@ferrum/client";
 import { useDebounced } from "@ferrum/kit";
 import type { Doc, Me } from "@ferrum/records";
 import { errorMessage } from "@ferrum/client";
 import { myEmail } from "./fmt";
 import { downloadSnapshot, loadBook, priceOffline, saveBook, serverDown, SNAPSHOT_PATIENCE_MS, till, unreachable, type PriceBook } from "./lib/offline";
-import { carriesCard, flushOutbox, loadOutbox, saveOutbox, type CartLine, type QueuedSale } from "./lib/pos";
+import { notAvailable } from "./lib/pricing";
+import { carriesCard, flushOutbox, str, loadOutbox, saveOutbox, type CartLine, type QueuedSale } from "./lib/pos";
 
 /** How old a price book may get before the till fetches it again (while online). */
 const BOOK_AGE_MS = 30 * 60_000;
 
 /** The register's snapshot (prices, taxes, promotions, the buyer rule), kept under the offline lease: from this
  *  device at once, then fetched again while online when it is older than half an hour, the session changed, or
- *  what is kept is from before snapshots (no version: an offline sale could not name it). */
+ *  what is kept is not readable (`loadBook` lets go of a 0.7.1 snapshot: until the new one comes, there are no offline prices). */
 export function usePriceBook(profileId: string, session: string | null) {
   const [book, setBook] = useState<PriceBook | null>(null);
   useEffect(() => {
@@ -88,9 +89,9 @@ export function useCalc(body: Doc | null, lines: CartLine[], book: PriceBook | n
     }
     const ctl = new AbortController();
     const onDevice = async () => {
-      if (!book) return setState({ doc: null, pending: false, error: t("No connection, and no prices on this device yet.") });
+      if (!book) return setState({ doc: null, pending: false, error: notAvailable() });
       try {
-        const doc = await priceOffline(book, linesRef.current);
+        const doc = await priceOffline(book, linesRef.current, { customer: str((JSON.parse(settled) as Doc).customer) || null });
         if (!ctl.signal.aborted) setState({ doc, pending: false, offline: true });
       } catch (err) {
         if (!ctl.signal.aborted) setState({ doc: null, pending: false, error: errorMessage(err) });

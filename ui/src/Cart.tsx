@@ -6,14 +6,13 @@
 // takes the card's code.
 
 import { Minus, Plus } from "lucide-react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { formatMoment, t, isolate } from "@ferrum/client";
 import { Button, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { CardLine } from "./Card";
 import { num, str, useMoney } from "./fmt";
 import type { CartLine, LineCards } from "./lib/pos";
-import { promotionsLater } from "./lib/offline";
 import { discountLimit, lineAsks, lineProblem, type Approval, type Ask, type Limits } from "./lib/rights";
 import { lastFour } from "./lib/stored";
 
@@ -91,6 +90,7 @@ export function CartLines({
               <span className="pos-line-sub">
                 {p ? t("{value} each", { value: money(p.rate) }) : pending ? t("Pricing…") : ""}
                 {off > 0 && <span className="pos-tag">−{isolate(plain(off))}%</span>}
+                {num(p?.promotion_percent) > 0 && <span className="pos-tag">{t("promotion −{value}%", { value: plain(num(p?.promotion_percent)) })}</span>}
                 {l.price && <span className="pos-tag">{t("price changed")}</span>}
               </span>
               {l.note && <span className="pos-line-note">{isolate(l.note)}</span>}
@@ -265,6 +265,8 @@ function LineEditor({
 export function Totals({ doc, due, offline, builtAt, version }: { doc: Doc; due: number; offline?: boolean; builtAt?: string; version?: string }) {
   const money = useMoney();
   const rounding = num(doc.rounding_adjustment);
+  // The tax by rate, as the register gives it (the server's `tax_breakdown`; offline, the pricing engine's summary): shown when more than one rate is charged.
+  const byRate = ((doc.tax_breakdown as Doc[] | undefined) ?? []).filter((r) => num(r.tax_amount) !== 0 || num(r.taxable_amount) !== 0);
   return (
     <dl className="pos-totals">
       <dt>{t("Subtotal")}</dt>
@@ -277,6 +279,16 @@ export function Totals({ doc, due, offline, builtAt, version }: { doc: Doc; due:
       )}
       <dt>{t("Taxes")}</dt>
       <dd>{isolate(money(doc.total_taxes))}</dd>
+      {byRate.length > 1 &&
+        byRate.map((r, i) => (
+          <Fragment key={`${str(r.description)}-${str(r.rate)}-${i}`}>
+            <dt className="faint">
+              {isolate(str(r.description))}
+              {num(r.rate) !== 0 ? ` ${isolate(plain(num(r.rate)))}%` : ""} {t("on {amount}", { amount: money(r.taxable_amount) })}
+            </dt>
+            <dd className="faint">{isolate(money(r.tax_amount))}</dd>
+          </Fragment>
+        ))}
       {rounding !== 0 && (
         <>
           <dt>{t("Rounding")}</dt>
@@ -291,7 +303,6 @@ export function Totals({ doc, due, offline, builtAt, version }: { doc: Doc; due:
           {version ? ` ${t("Snapshot {version}.", { version: version.slice(0, 8) })}` : ""}
         </dd>
       )}
-      {offline && <dd className="pos-totals-note faint">{promotionsLater()}</dd>}
     </dl>
   );
 }

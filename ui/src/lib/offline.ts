@@ -1,12 +1,12 @@
 // Selling without a connection (Ferrum docs/plan/apps-ui.md §12.5; "POS offline" in §16): the
-// register's price book, kept on this device and refreshed while online; what the till last knew
-// (its register, open session, ways of paying), so it starts offline; and carts priced with the
-// platform's own engine (@ferrum/calc, Ferrum's crates/calc in WebAssembly), exactly as the server
+// register's snapshot, kept on this device and refreshed while online; what the till last knew
+// (its register, open session, ways of paying), so it starts offline; and carts priced from the snapshot with
+// ERP's own pricing crate in WebAssembly (lib/pricing.ts), promotions and taxes included, exactly as the server
 // prices them from the same inputs. The server prices every sale again when it arrives.
 
-import { calculate, type CalcInput } from "@ferrum/calc";
 import { bootstrap, cacheName, offlineEnv, parseApiError, renewOfflineLease, sweep, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
+import { momentIn, notAvailable, priceBasket, PRICING_SCHEMA, type PricingSnapshot } from "./pricing";
 import type { Limits } from "./rights";
 
 // ── requests the till makes ──
@@ -92,36 +92,29 @@ export async function tillAll<T>(
 
 // ── the price book ──
 
+/** What the till shows of an item: from the snapshot's `catalog`. */
 export interface BookItem {
   id: string;
   code: string;
   name: string;
   barcode: string | null;
-  /** The engine's line for one of it: price, line discount, item tax rates, and the stock
-   *  quantity per-unit taxes count for one (its unit's conversion). */
-  line: { price: string; discount_percent?: string; tax_rates?: Record<string, string>; tax_qty?: string | null };
+  item_group?: string | null;
 }
 
-export interface PriceBook {
+/** The register's snapshot as the till keeps it: ERP's pricing snapshot (schema 1: prices, units, rules, taxes, rounding, promotions, the days it
+ *  prices for, in its own fields: `lib/pricing.ts` is what reads them) with what the till shows and holds a sale to. */
+export interface PriceBook extends PricingSnapshot {
   profile: string;
-  currency: string;
+  /** The walk-in customer: a basket naming nobody else is priced as theirs. */
   customer: string | null;
-  /** What every sale shares: precision, rounding, tax rows, cash rounding. */
-  engine: Omit<CalcInput, "lines">;
-  items: BookItem[];
+  items: { id: string }[];
+  catalog: BookItem[];
   barcodes: { barcode: string; item: string; qty: string }[];
   built_at: string;
   /** The snapshot's version (a digest of its content): an offline sale names it, and the server prices the sale again with exactly it. */
   version?: string;
   /** The server's signature of the version, when it has a key. The till keeps it; only the server can check it. */
   signature?: string | null;
-  /** The promotions that could apply over the next days, in the promotions engine's form: kept for pricing them on this device (see docs in CHANGELOG: not yet run here). */
-  promotions?: unknown[];
-  /** What the promotions engine's `when` needs besides the basket: the register's warehouse and the walk-in customer's group, the company's time zone and the channel. */
-  warehouse?: string | null;
-  customer_group?: string | null;
-  time_zone?: string | null;
-  channel?: string;
   /** The buyer rule: a sale above `named_above` to the walk-in customer needs a named buyer. */
   buyer?: { named_above: string | null; walk_in: string | null };
   /** Items the register cannot sell as they stand offline (no price in its list). */
@@ -130,28 +123,10 @@ export interface PriceBook {
   truncated?: boolean;
 }
 
-/** The register's snapshot of prices, taxes, promotions and the buyer rule, in one request: the server pages its own price book and signs the whole. */
-export async function downloadSnapshot(profile: string, get: () => Promise<Partial<PriceBook> & { items: BookItem[]; barcodes: PriceBook["barcodes"] }>): Promise<PriceBook> {
+/** The register's snapshot, in one request: the server pages its own price book and signs the whole. */
+export async function downloadSnapshot(profile: string, get: () => Promise<Partial<PriceBook> & { catalog: BookItem[]; barcodes: PriceBook["barcodes"] }>): Promise<PriceBook> {
   const s = await get();
-  return {
-    profile,
-    currency: s.currency ?? "",
-    customer: s.customer ?? null,
-    engine: s.engine ?? { precision: 2 },
-    items: s.items,
-    barcodes: s.barcodes,
-    built_at: s.built_at ?? new Date().toISOString(),
-    version: s.version,
-    signature: s.signature ?? null,
-    promotions: s.promotions ?? [],
-    warehouse: s.warehouse ?? null,
-    customer_group: s.customer_group ?? null,
-    time_zone: s.time_zone ?? null,
-    channel: s.channel,
-    buyer: s.buyer,
-    unpriced: s.unpriced,
-    truncated: s.truncated === true,
-  };
+  return { ...s, profile, customer: s.customer ?? null, built_at: s.built_at ?? new Date().toISOString(), signature: s.signature ?? null, truncated: s.truncated === true } as PriceBook;
 }
 
 /** The most a snapshot may take to come: a large catalogue is paged by the server and signed whole. */
@@ -190,84 +165,109 @@ function inStore<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBReq
 
 /** Keeps the book on this device (a private window may refuse: the till then sells online only). */
 export const saveBook = (book: PriceBook) => inStore<unknown>("readwrite", (s) => s.put(book)).then(() => undefined);
-export const loadBook = (profile: string) => inStore<PriceBook | undefined>("readonly", (s) => s.get(profile)).then((b) => b ?? null, () => null);
+
+/** The book kept for a register. One with no schema is a 0.7.1 book (another shape, with its own engine and prices): it is discarded here and
+ *  fetched again when the till is next online, and until then the till has no offline prices. */
+export const readable = (b: { schema?: unknown } | null | undefined): boolean => typeof b?.schema === "number";
+export const loadBook = (profile: string) =>
+  inStore<PriceBook | undefined>("readonly", (s) => s.get(profile)).then(
+    (b) => {
+      if (b && !readable(b)) {
+        void inStore<unknown>("readwrite", (s) => s.delete(profile)).catch(() => {});
+        return null;
+      }
+      return b ?? null;
+    },
+    () => null,
+  );
 
 /** The item a scanned code names: a pack barcode (with its quantity), else an item's barcode or code. */
 export function scanBook(book: PriceBook, code: string): { item: BookItem; qty: number } | null {
   const c = code.trim();
   const pack = book.barcodes.find((b) => b.barcode === c);
-  const byId = (id: string) => book.items.find((i) => i.id === id);
+  const byId = (id: string) => book.catalog.find((i) => i.id === id);
   if (pack) {
     const item = byId(pack.item);
     return item ? { item, qty: Number(pack.qty) || 1 } : null;
   }
-  const hit = book.items.filter((i) => i.barcode === c || i.code.toLowerCase() === c.toLowerCase());
+  const hit = book.catalog.filter((i) => i.barcode === c || i.code.toLowerCase() === c.toLowerCase());
   return hit.length === 1 ? { item: hit[0], qty: 1 } : null;
 }
 
 /** Items whose name or code holds every word of `q`, by name. */
 export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  return book.items
+  return book.catalog
     .filter((i) => words.every((w) => `${i.name} ${i.code}`.toLowerCase().includes(w)))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, limit);
 }
 
-/** `a × b` for decimal strings, exactly (no binary floating point): "0.1" × "3" is "0.3". */
-export function times(a: string, b: string): string {
-  const parse = (x: string) => {
-    const [whole, frac = ""] = x.trim().split(".");
-    return { digits: BigInt(`${whole}${frac}` || "0"), scale: frac.length };
-  };
-  const [x, y] = [parse(a), parse(b)];
-  const scale = x.scale + y.scale;
-  const product = x.digits * y.digits;
-  const sign = product < 0n ? "-" : "";
-  const text = (product < 0n ? -product : product).toString().padStart(scale + 1, "0");
-  return scale ? `${sign}${text.slice(0, -scale)}.${text.slice(-scale)}` : `${sign}${text}`;
-}
-
-/** A cart priced from the book with the server's engine, in the fields the till shows (`_calc`'s).
- *  A price or discount the cashier typed replaces the book's, as it does on the server. */
+/** A cart priced from the snapshot with ERP's pricing (`lib/pricing.ts`), in the fields the till shows (`_calc`'s): promotions, free items they add,
+ *  each line's price, the tax by rate and the totals, as the server prices the sale again. A price or discount the cashier typed replaces the
+ *  snapshot's, as it does on the server. Throws what the snapshot cannot price (an item it does not hold, a day it does not cover, a schema it does
+ *  not know): the sale then waits for the server. */
 export async function priceOffline(
   book: PriceBook,
   lines: { key: string; item: string; item_name: string; qty: number; discount?: string; price?: string }[],
+  o: { customer?: string | null; at?: Date } = {},
 ): Promise<Doc> {
-  const items = new Map(book.items.map((i) => [i.id, i]));
-  const missing = lines.find((l) => !items.has(l.item));
+  if (book.schema !== PRICING_SCHEMA) throw new Error(notAvailable());
+  const held = new Set(book.items.map((i) => i.id));
+  const missing = lines.find((l) => !held.has(l.item));
   if (missing) throw new Error(t("{item_name} has no price on this device yet: sell it when the connection is back", { item_name: missing.item_name }));
-  const typed = (v: string | undefined) => (v?.trim() ? v.trim() : undefined);
-  const priced = lines.map((l) => {
-    const { tax_qty, price, discount_percent, ...rest } = items.get(l.item)!.line;
-    const line = { price: typed(l.price) ?? price, discount_percent: typed(l.discount) ?? discount_percent };
-    return { l, line, input: { key: l.key, qty: String(l.qty), ...rest, price: line.price, ...(line.discount_percent !== undefined ? { discount_percent: line.discount_percent } : {}), ...(tax_qty ? { tax_qty: times(tax_qty, String(l.qty)) } : {}) } };
+  const typed = (v: string | undefined) => (v?.trim() ? v.trim() : null);
+  const priced = await priceBasket({
+    snapshot: book,
+    basket: {
+      lines: lines.map((l) => ({ item: l.item, qty: String(l.qty), price: typed(l.price), discount_percent: typed(l.discount) })),
+      at: momentIn(book.time_zone, o.at),
+      // The walk-in customer is the snapshot's own; another is named, and their group is the server's to know.
+      customer: o.customer && o.customer !== book.customer ? o.customer : null,
+    },
   });
-  const out = await calculate({ ...book.engine, lines: priced.map((p) => p.input) });
+  const names = new Map(book.catalog.map((i) => [i.id, i.name || i.code] as const));
+  const totals = priced.totals;
   return {
-    items: priced.map(({ l, line }, i) => ({
+    items: priced.lines.map((l, i) => ({
       item: l.item,
-      item_name: l.item_name,
-      qty: String(l.qty),
-      rate: out.lines[i].rate,
-      amount: out.lines[i].amount,
-      price_list_rate: line.price,
-      discount_percent: line.discount_percent ?? "0",
+      item_name: lines[i]?.item_name ?? names.get(l.item) ?? l.item,
+      qty: l.qty,
+      rate: totals.lines[i].rate,
+      amount: totals.lines[i].amount,
+      price_list_rate: l.price_list_rate,
+      discount_percent: l.discount_percent,
+      promotion_percent: l.promotion_percent,
+      ...(l.added_by_promotion ? { added_by_promotion: l.added_by_promotion } : {}),
     })),
-    total: out.total,
-    discount_amount: out.discount_amount,
-    total_taxes: out.total_taxes,
-    rounding_adjustment: out.rounding_adjustment,
-    grand_total: out.grand_total,
-    rounded_total: out.rounded_total,
+    applied_promotions: priced.applied.map((a) => ({ promotion: a.promotion, title: a.title, line: Number(a.line), amount: a.amount, code: a.code })),
+    tax_breakdown: priced.tax_summary,
+    total: totals.total,
+    discount_amount: totals.discount_amount,
+    total_taxes: totals.total_taxes,
+    rounding_adjustment: totals.rounding_adjustment,
+    grand_total: totals.grand_total,
+    rounded_total: totals.rounded_total,
     offline: true,
   };
 }
 
-/** What the till says, wherever it prices a sale on this device: promotions are the server's. The snapshot carries them in the promotions engine's
- *  form, but this build runs no promotions engine (only `@ferrum/calc`), so the till never works one out and never shows a promotional price: they are
- *  taken when the sale reaches the server. (What a promotions package beside `@ferrum/calc` would need is written up in the 0.7.1 changelog.) */
-export const promotionsLater = () => t("Offline: this till does not work out promotions. Any that apply are taken when the sale reaches the server, so the total it records may be lower than this one.");
+/** What each of these items is listed at and the discount its pricing rule gives, from the snapshot (one item at a time, as the engine prices it): what the till
+ *  measures a cashier's discount against, and shows beside an item. Nothing for an item the snapshot does not hold, or when it cannot price. */
+export async function listPrices(book: PriceBook, ids: string[], at?: Date): Promise<Map<string, { list: string; rule: string }>> {
+  const held = new Set(book.items.map((i) => i.id));
+  const want = [...new Set(ids)].filter((id) => held.has(id));
+  const out = new Map<string, { list: string; rule: string }>();
+  if (!want.length || book.schema !== PRICING_SCHEMA) return out;
+  try {
+    const priced = await priceBasket({ snapshot: book, basket: { lines: want.map((item) => ({ item, qty: "1" })), at: momentIn(book.time_zone, at) } });
+    // a promotion may add free items after the lines asked for: they are not asked about
+    priced.lines.slice(0, want.length).forEach((l, i) => out.set(want[i], { list: l.price_list_rate, rule: l.discount_percent }));
+  } catch {
+    // outside the days it covers: the server's prices stand
+  }
+  return out;
+}
 
 // ── what the till last knew ──
 

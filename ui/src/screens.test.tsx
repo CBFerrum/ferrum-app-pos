@@ -120,9 +120,10 @@ describe("taking payment", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
   });
 
-  it("says plainly offline that promotions come when the sale is sent, and holds a sale the buyer rule would refuse", () => {
-    const html = draw(<PayDialog {...props} offline namedAbove="200" />);
-    expect(html).toContain("this till does not work out promotions");
+  it("lists the promotions an offline sale took, as the till priced them, and holds a sale the buyer rule would refuse", () => {
+    const html = draw(<PayDialog {...props} offline namedAbove="200" doc={{ offline: true, applied_promotions: [{ promotion: "p1", title: "Tea week", amount: "5.00", code: null }] }} />);
+    expect(html).toMatch(/Tea week.*−5\.00/);
+    expect(html).not.toContain("does not work out promotions");
     expect(html).toMatch(/This register asks for a named buyer on a sale this size/);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*Complete sale/);
     // Under the rule, or a named customer: nothing held back.
@@ -516,13 +517,23 @@ describe("the end of a shift", () => {
 });
 
 describe("prices offline", () => {
-  it("says plainly that promotions come when the sale is sent, and which snapshot priced it", () => {
-    const doc = { total: "100.00", total_taxes: "10.00", rounded_total: "110.00", offline: true };
-    const html = draw(<Totals doc={doc} due={110} offline builtAt="2026-11-13T09:00:00Z" version="ab12cd34ef56" />);
+  it("says which snapshot priced it, and shows the tax by rate when more than one rate is charged, as the server's does", () => {
+    const rows = [{ description: "Standard", rate: "8", taxable_amount: "100.00", tax_amount: "8.00" }, { description: "Reduced", rate: "10", taxable_amount: "20.00", tax_amount: "2.00" }];
+    const doc = { total: "120.00", total_taxes: "10.00", rounded_total: "130.00", offline: true, tax_breakdown: rows };
+    const html = draw(<Totals doc={doc} due={130} offline builtAt="2026-11-13T09:00:00Z" version="ab12cd34ef56" />);
     expect(html).toContain("Priced on this device");
     expect(html).toContain("Snapshot ab12cd34.");
-    expect(html).toContain("this till does not work out promotions");
-    expect(draw(<Totals doc={doc} due={110} />)).not.toContain("promotions");
+    expect(html).toMatch(/Standard 8% on 100\.00.*8\.00.*Reduced 10% on 20\.00.*2\.00/);
+    expect(html).not.toContain("does not work out promotions");
+    // One rate: the Taxes line says it; nothing repeated.
+    expect(draw(<Totals doc={{ ...doc, tax_breakdown: rows.slice(0, 1) }} due={130} />)).not.toContain("Standard");
+  });
+
+  it("shows a promotional price on its line", () => {
+    const lines = [{ key: "k1", item: "i1", item_name: "Plum cake", qty: 2 }];
+    const html = draw(<CartLines lines={lines} priced={[{ item: "i1", rate: "36.00", amount: "72.00", discount_percent: "0", promotion_percent: "20" }]} pending={false} selected={null} editing={null} limits={rightsOf(profile, false)} approvals={[]} profile={profile} cards={{}} away baseOf={() => null} onSelect={() => {}} onEdit={() => {}} onQty={() => {}} onChange={() => {}} onAsk={() => {}} onCard={() => {}} onRemove={() => {}} />);
+    expect(html).toContain("36.00 each");
+    expect(html).toContain("promotion −20%");
   });
 
   it("lists the sales whose offline price the register could not agree with, and lets a reviewer write what was found", () => {
