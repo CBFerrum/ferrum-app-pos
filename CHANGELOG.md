@@ -10,9 +10,9 @@ Interface only (the Rust side is unchanged): two faults a browser walk found.
 
 ## 0.7.3
 
-The till's screens for 0.7.2 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 6d4c321. The server and the till change together: the offline snapshot's shape changed in 0.7.2, so the 0.7.1 till cannot read it.
+The till's screens for 0.7.2 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 593b162. The server and the till change together: the offline snapshot's shape changed in 0.7.2, so the 0.7.1 till cannot read it.
 
-- **ERP's pricing engine in the till.** `ui/src/vendor/pricing/` holds ERP's pricing crate built for the browser (`scripts/pricing-wasm.sh`, ERP 1bbf893 = 0.26.0, crate 0.1.0, snapshot schema 1; its `README` names the two files' SHA-256 digests). `lib/pricing.ts` is the one module that takes `{snapshot, basket}` and returns the priced basket, and refuses a snapshot of a schema it does not know. The WebAssembly (650 KB) is its own lazy file: it is fetched and run only when a sale is priced offline, and the till's worker keeps it with its glue so it is there with no network (the page fetches both once online, without running them). `@ferrum/calc` is no longer used by the till. Tested against the real `.wasm` with two of ERP's fixture baskets, to the cent. The entry script is 198.0 KB of its 200 KB.
+- **ERP's pricing engine in the till.** `ui/src/vendor/pricing/` holds ERP's pricing crate built for the browser (`scripts/pricing-wasm.sh`, ERP 477471e = 0.26.0, crate 0.1.0, snapshot schema 1; its `README` names the two files' SHA-256 digests). `lib/pricing.ts` is the one module that takes `{snapshot, basket}` and returns the priced basket, and refuses a snapshot of a schema it does not know. The WebAssembly (650 KB) is its own lazy file: it is fetched and run only when a sale is priced offline, and the till's worker keeps it with its glue so it is there with no network (the page fetches both once online, without running them). `@ferrum/calc` is no longer used by the till. Tested against the real `.wasm` with two of ERP's fixture baskets, to the cent. The entry script is 198.0 KB of its 200 KB.
 - **Offline sales priced with it.** The till reads the new snapshot (`catalog`, `prices`; `engine` and each item's `line` are gone), prices the basket with promotions and tax (the promotional price on its line, the promotions taken at payment, the tax by rate in the totals when more than one rate is charged, the free items they add), and sends `price_snapshot` and `till_total` as before. The 0.7.1 notice that promotions are applied only when back online is gone; a basket the snapshot cannot price (an item it does not hold, a day it does not cover) says so and waits for the server. A snapshot kept by 0.7.1 is let go when read and fetched again when next online; until then the till says offline pricing is not available and never guesses. An item's listed price and its rule's discount (for the cap on a cashier's discount and the item tiles) are asked of the same engine, only where the server's prices are not at hand.
 - **Returns and exchanges from the server's plan.** The returns desk's refund and exchange arithmetic is gone: `POST /returns/{sale}/plan`, with `out` for an exchange, gives what the goods going out come to, what is carried over, what the customer still pays and the refund per way of paying, and the desk shows exactly that. The desk for goods with no receipt still adds up its exchange (the plan names a sale and there is none).
 - **Blind close.** The closing's expected figures are shown only as the server sends them (the report's, else the saved closing's); the till's rules that hid them, and the one that rewrote a refused safe drop's message (the server no longer names the figure), are gone. The shift's sales and takings are not shown to a cashier on a blind register while the shift is open (the server leaves them out of their reports): the closing's own figures appear with the last count.
@@ -69,7 +69,7 @@ closing's figures only as the server gives them.
 
 ## 0.7.1
 
-The till's screens for 0.7.0 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 6d4c321.
+The till's screens for 0.7.0 (interface only; the Rust side is unchanged), built with Ferrum-Frontend 593b162.
 
 - **Payment step.** A buyer's tax registration and name can be given (the field opens by itself when the register asks for a named buyer): the server finds the customer or says it would make one, tells whether the sale gets a tax invoice, and its refusals (a number the countries do not take, Find Only with no holder, two holders, a sale above the named-buyer limit) are shown as they are. A promotion code is applied and taken off by its own box, and the promotions taken are listed with what each took off. Each way of paying shows what it takes of the bill, the cash handed over and the change given back; a card shows what is left on it after this payment, never its code. The buyer and the codes are kept with the sale on screen and with a sale on hold.
 - **Receipts.** Print receipt asks the server for its first printing (`GET /receipt/{sale}`, given once: the button is busy while it is on its way and a second ask is the server's refusal, shown as it is). Print a copy and Gift receipt go through `POST /reprint` (the template marks the copy COPY n; a person whose limits do not allow reprints asks another's PIN, and the business's reprint reasons are chosen from when it has some). Send by message takes an address or number and the buyer's consent (this receipt only, or this and later ones) through `POST /send`. The till's own receipt (`fallbackReceiptHtml`) is only for a sale not yet on the register or a register that cannot be reached, and says on its face that it is not the register's receipt; the till's own shift report (`fallbackShiftHtml`) likewise. The returns desk's Copy of the receipt is the server's copy.
@@ -115,7 +115,7 @@ On upgrade an administrator sees Mode of Payment under Accounting as well as und
 
 ## 0.6.1
 
-The till's own screens for what 0.6.0 added on the server (interface only; the Rust side is unchanged), built with Ferrum-Frontend e9dae86.
+The till's own screens for what 0.6.0 added on the server (interface only; the Rust side is unchanged), built with Ferrum-Frontend 76df9d4.
 
 - **Limits from the server.** The till reads the cashier's limits from `GET /limits` (kept with the shift's data, so it starts offline with them) instead of the register's fixed switches, which answer only until they are known. The server's `beyond` and `allows` are mirrored in `lib/rights.ts` with tests that pin the cases `logic.rs` pins; the refund check mirrors the stored value class. A line editor shows the cap before typing and asks for approval for what goes past it instead of refusing.
 - **Approval at the till.** Over a limit (a discount, a price change, a line taken off, a void, a refund, a return without a receipt) the till asks another person: their email (the server offers no list of people who may approve), their PIN (masked, dropped from state before the request goes, never logged) and why. The approval is attached to the sale under the sale's own id. A wrong PIN, a lockout and "may not approve this either" are said plainly. Approvals need the connection, and a sale carrying one is not queued: the till says so. Set my PIN is in the Shift menu.
@@ -148,11 +148,11 @@ Not in this version: the rule to invoice a buyer with a tax registration at once
 
 ## 0.5.2
 
-Rebuilt with Ferrum-Frontend 45dad7f, the design system as tuned after the landed build was reviewed. The left menu's icons are chosen so that none repeats on more than three rows and each fits its row; their drawings load beside the first page instead of inside it, so the page starts lighter; a row that scrolls sideways fades at the edge where there is more, in every browser and with reduced motion; a printed record leaves out empty fields and keeps its totals with the table; menus and popovers sit inside the page's landmarks for assistive technology; a selection bar folds what does not fit into More on a narrow screen. Nothing else changes.
+Rebuilt with Ferrum-Frontend 9e7190c, the design system as tuned after the landed build was reviewed. The left menu's icons are chosen so that none repeats on more than three rows and each fits its row; their drawings load beside the first page instead of inside it, so the page starts lighter; a row that scrolls sideways fades at the edge where there is more, in every browser and with reduced motion; a printed record leaves out empty fields and keeps its totals with the table; menus and popovers sit inside the page's landmarks for assistive technology; a selection bar folds what does not fit into More on a narrow screen. Nothing else changes.
 
 ## 0.5.1
 
-The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 0a47157. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. Every key on the till and in the payment dialog is at least 44px (the old touch minimum rendered at 42), and a sale kept on the device is never shown as saved.
+The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 76c4fad. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. Every key on the till and in the payment dialog is at least 44px (the old touch minimum rendered at 42), and a sale kept on the device is never shown as saved.
 
 ## 0.5.0
 
@@ -168,11 +168,11 @@ The reports it defines in code (their titles and parameters) have names in Arabi
 
 ## 0.4.12
 
-Rebuilt with Ferrum-Frontend c59c9a2: the names of its models, fields and manifest in Arabic and Hindi (267 each in ui/src/locales/names, which the platform serves to every page of the workspace, so a record's labels, the launcher and the bar read in the person's language), and the sentences its pages still showed in English (split around a link or a figure, built in code from a template or word by word) whole and translated (300 words each in ui/src/locales). Translated by the model, to be reviewed by native speakers.
+Rebuilt with Ferrum-Frontend 43d7779: the names of its models, fields and manifest in Arabic and Hindi (267 each in ui/src/locales/names, which the platform serves to every page of the workspace, so a record's labels, the launcher and the bar read in the person's language), and the sentences its pages still showed in English (split around a link or a figure, built in code from a template or word by word) whole and translated (300 words each in ui/src/locales). Translated by the model, to be reviewed by native speakers.
 
 ## 0.4.11
 
-Rebuilt with Ferrum-Frontend 155518c: the sentences its pages built in code (counts, dates, what a toast or a screen reader says) go through t() too, as whole sentences where code chose a word, and carry built-in Arabic and Hindi (264 words each in ui/src/locales, translated by the model and to be reviewed by native speakers).
+Rebuilt with Ferrum-Frontend 046a3a2: the sentences its pages built in code (counts, dates, what a toast or a screen reader says) go through t() too, as whole sentences where code chose a word, and carry built-in Arabic and Hindi (264 words each in ui/src/locales, translated by the model and to be reviewed by native speakers).
 
 ## 0.4.10
 
@@ -180,23 +180,23 @@ The assistant knows what its records mean in its pages (contributes.shell.assist
 
 ## 0.4.9
 
-Rebuilt with Ferrum-Frontend 5b22e7b: its own words carry built-in Arabic and Hindi (253 words each, ui/src/locales, translated by the model and to be reviewed by native speakers), fetched for the page's language only. The labels it keeps in objects, its dialogs, its page titles and the words it keeps in variables go through t() as well, and the names and sizes it shows as they are keep their order right to left. Its pages are drawn once their words are in, and its entry carries only the parts of the kit it uses.
+Rebuilt with Ferrum-Frontend 389b2af: its own words carry built-in Arabic and Hindi (253 words each, ui/src/locales, translated by the model and to be reviewed by native speakers), fetched for the page's language only. The labels it keeps in objects, its dialogs, its page titles and the words it keeps in variables go through t() as well, and the names and sizes it shows as they are keep their order right to left. Its pages are drawn once their words are in, and its entry carries only the parts of the kit it uses.
 
 ## 0.4.8
 
-Rebuilt with Ferrum-Frontend 6537d65: an action's link, code or token shown once is kept in a dialog to copy, and on a page that reads right to left, English left untranslated keeps its own order. Its own words go through the kit's t() (188 places), so a workspace's own words for its language reach them, and Admin, Interface words lists them under it (dist/words.json).
+Rebuilt with Ferrum-Frontend 1f5981d: an action's link, code or token shown once is kept in a dialog to copy, and on a page that reads right to left, English left untranslated keeps its own order. Its own words go through the kit's t() (188 places), so a workspace's own words for its language reach them, and Admin, Interface words lists them under it (dist/words.json).
 
 ## 0.4.7
 
-Rebuilt with Ferrum-Frontend d5d98f2: a workspace's own words for its interface (Admin, Interface words) reach its pages as they load; an attachment field that holds a picture shows it; and a value another record already has is said so, where the form said the record had been changed by someone else. Its own screens' margins, paddings, borders, alignment and insets go by the line's start and end, so they mirror right to left as the kit's do; what it places by coordinates (boards, timelines, charts, handles) stays as it was.
+Rebuilt with Ferrum-Frontend 8a1c2e7: a workspace's own words for its interface (Admin, Interface words) reach its pages as they load; an attachment field that holds a picture shows it; and a value another record already has is said so, where the form said the record had been changed by someone else. Its own screens' margins, paddings, borders, alignment and insets go by the line's start and end, so they mirror right to left as the kit's do; what it places by coordinates (boards, timelines, charts, handles) stays as it was.
 
 ## 0.4.6
 
-Rebuilt with Ferrum-Frontend 63280d3: right to left, its pages mirror as they read (icons that point along the line, margins and alignment by the line's start and end, arrow keys along it), and the records pages' words are in Arabic and Hindi.
+Rebuilt with Ferrum-Frontend 9d80f4f: right to left, its pages mirror as they read (icons that point along the line, margins and alignment by the line's start and end, arrow keys along it), and the records pages' words are in Arabic and Hindi.
 
 ## 0.4.5
 
-Rebuilt with Ferrum-Frontend a64416a: a new record's box whose default is 1 shows ticked, as it is saved. An action's dialog says every refusal, the errors on what the action made (another record's rows) among them, and an action with parameters and a confirmation asks once.
+Rebuilt with Ferrum-Frontend 204b713: a new record's box whose default is 1 shows ticked, as it is saved. An action's dialog says every refusal, the errors on what the action made (another record's rows) among them, and an action with parameters and a confirmation asks once.
 
 ## 0.4.4
 
@@ -204,15 +204,15 @@ A customer's loyalty balance at the till was added up over one page of their poi
 
 ## 0.4.3
 
-Rebuilt with Ferrum-Frontend a76295e: its pages show times on a person's own clock when they chose one on their Account page, while today and due dates stay on the workspace's day.
+Rebuilt with Ferrum-Frontend b39fffb: its pages show times on a person's own clock when they chose one on their Account page, while today and due dates stay on the workspace's day.
 
 ## 0.4.2
 
-A till's sales, held sales, the shift's opening and the X and Z reports are on the workspace's clock. Rebuilt with Ferrum-Frontend 24c3951, so its records' pages show times on the workspace's clock too, a draft numbered on submit is headed as a draft, and a record of an app that is not installed says so.
+A till's sales, held sales, the shift's opening and the X and Z reports are on the workspace's clock. Rebuilt with Ferrum-Frontend d350579, so its records' pages show times on the workspace's clock too, a draft numbered on submit is headed as a draft, and a record of an app that is not installed says so.
 
 ## 0.4.1
 
-Rebuilt with Ferrum-Frontend bb60115: a record page reads an empty number or check as the server does, so an action whose condition needs one shows, and a workspace's settings open as their one record.
+Rebuilt with Ferrum-Frontend 20d08e5: a record page reads an empty number or check as the server does, so an action whose condition needs one shows, and a workspace's settings open as their one record.
 
 ## 0.4.0
 
@@ -220,7 +220,7 @@ The till keeps to the workspace's offline policy (Ferrum docs/offline.md): its p
 
 ## 0.3.3
 
-Rebuilt with Ferrum-Frontend 00dea07: in a workflow state that names what may change, the other fields show read-only, and the fields the state needs show required.
+Rebuilt with Ferrum-Frontend ae13c69: in a workflow state that names what may change, the other fields show read-only, and the fields the state needs show required.
 
 ## 0.3.2
 
@@ -228,7 +228,7 @@ Rebuilt with Ferrum-Frontend daeadda: after an action runs, a record page shows 
 
 ## 0.3.1
 
-Rebuilt with Ferrum-Frontend 80ff179: a field's label names its control for assistive technology, and a record whose title is a link shows that record's title, not its id.
+Rebuilt with Ferrum-Frontend 89b7cc7: a field's label names its control for assistive technology, and a record whose title is a link shows that record's title, not its id.
 
 ## 0.3.0
 
@@ -278,7 +278,7 @@ The till, rebuilt for a cashier with a queue, and the returns and shift screens 
 ## 0.2.3
 
 - Selling offline prices as the server does with the platform's newer engine (Ferrum-Frontend
-  9ecf5bf, built from Ferrum b5b2d3f, localization.md L0): taxes per unit, reverse charges (shown,
+  c04c986, built from Ferrum 4226865, localization.md L0): taxes per unit, reverse charges (shown,
   not charged) and tax rounding per line. The price book carries each item's stock quantity for
   one, so a tax per unit (a deposit per bottle on a six-pack) counts stock units offline too.
 - Built with Ferrum-Frontend's current packages: the records frame's pages load when opened, and

@@ -6,7 +6,7 @@ only to price a sale offline (`../../lib/pricing.ts`), and its worker keeps them
 
 | | |
 |---|---|
-| ERP commit | `1bbf893` (ERP 0.26.0, branch `gaps/pricing-crate`) |
+| ERP commit | `477471e` (ERP 0.26.0, branch `gaps/pricing-crate`) |
 | Crate | `ferrum-erp-pricing` 0.1.0, wasm-bindgen 0.2.129 |
 | Snapshot schema | 1 (`docs/pricing.md` in ERP) |
 | `ferrum_erp_pricing.js` | `sha256 a8ed9da59fcc22a89e1c7a67e5ea49f25c503f1d31cee5ce257670b072f42c2e` |
