@@ -9,6 +9,7 @@
 mod buyer;
 mod closing;
 mod invoice;
+mod keys;
 mod limits;
 mod logic;
 mod loyalty;
@@ -31,8 +32,11 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Registers this package's document hooks.
+/// Registers this package's document hooks. Call it inside the platform's registration of the app, `hooks.app("pos",
+/// …)`: it takes its own vault handle there, which signs a till's snapshot (`keys.rs`).
 pub fn register(h: &mut HookRegistry) {
+    let site: Arc<dyn ferrum_kernel::Site> = Arc::new(site::PosSite);
+    keys::remember(&site, h.vault());
     h.register("ModeOfPayment", Arc::new(masters::ModeOfPaymentHook))
         .register("PosProfile", Arc::new(masters::PosProfileHook))
         .register("ItemBarcode", Arc::new(masters::ItemBarcodeHook))
@@ -47,7 +51,7 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosPriceDifference", Arc::new(shortfall::DifferenceHook))
         .register("PosReceiptEvent", Arc::new(masters::EngineOnly))
         .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard))
-        .add_site("pos", Arc::new(site::PosSite));
+        .add_site("pos", site);
 }
 
 /// This package's reports.

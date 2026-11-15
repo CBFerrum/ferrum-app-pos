@@ -8,6 +8,7 @@ use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelS
 use ferrum_meta::Catalog;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -142,6 +143,16 @@ impl Localization for Testland {
     }
 }
 
+/// What opens the test's vault: the database password of `url`, with Argon2id kept cheap for tests.
+fn opener(url: &str) -> ferrum_kernel::vault::Opener {
+    ferrum_kernel::vault::Opener {
+        database_url: url.to_string(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    }
+}
+
 #[test]
 fn slice() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -151,16 +162,27 @@ fn slice() {
 async fn scenario() {
     ferrum_app_erp::localization::add(Arc::new(Testland));
     let url = std::env::var("FERRUM_POS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_pos_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    ferrum_kernel::vault::open(&db, opener(&url), false).await.expect("the vault");
     let mut packages = ferrum_domain::packages().expect("platform packages");
     packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_app_pos::packages().expect("app packages"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_app_erp::register(&mut hooks);
-    ferrum_app_pos::register(&mut hooks);
+    let erp_packages: Vec<String> = ferrum_app_erp::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
+    hooks.app("erp", &[], ferrum_app_erp::register);
+    hooks.own("erp", &erp_packages);
+    let pos_packages: Vec<String> = ferrum_app_pos::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
+    // The test keeps Point of Sale's handle too, to check what it signs with.
+    let mut pos_vault = None;
+    hooks.app("pos", &pos_packages, |h| {
+        ferrum_app_pos::register(h);
+        pos_vault = Some(h.vault());
+    });
+    let pos_vault = pos_vault.expect("Point of Sale's handle");
+    hooks.own("pos", &pos_packages);
     for source in ferrum_app_erp::reports() {
         ferrum_domain::reports::add_source(source);
     }
@@ -484,6 +506,11 @@ async fn scenario() {
     let snap = t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("snapshot");
     let version = snap["version"].as_str().unwrap().to_string();
     assert!(version.len() == 64 && snap["signature"].as_str().is_some_and(|s| s.len() == 64), "versioned and signed: {version} {}", snap["signature"]);
+    // Signed with a key derived from Point of Sale's own key in the workspace for this register and version, never the
+    // server's key.
+    let purpose = format!("snapshot:{}", hex::encode(Sha256::digest(format!("{counter}:{version}"))));
+    let key = pos_vault.derive(&k, ferrum_kernel::vault::Scope::Workspace(tenant), &purpose).await.expect("Point of Sale's key");
+    assert_eq!(snap["signature"].as_str(), Some(hex::encode(key.bytes()).as_str()), "signed with Point of Sale's own key");
     assert_eq!(snap["promotions"].as_array().map(Vec::len), Some(2), "{snap}");
     // ERP's pricing snapshot (schema 1): the price list's prices, the items with their units and rates, the tax rows;
     // and what the till shows.
@@ -899,8 +926,12 @@ async fn upgrade(url: String) {
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_app_erp::register(&mut hooks);
-    ferrum_app_pos::register(&mut hooks);
+    let erp_packages: Vec<String> = ferrum_app_erp::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
+    hooks.app("erp", &[], ferrum_app_erp::register);
+    hooks.own("erp", &erp_packages);
+    let pos_packages: Vec<String> = ferrum_app_pos::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
+    hooks.app("pos", &pos_packages, ferrum_app_pos::register);
+    hooks.own("pos", &pos_packages);
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot on the 0.6.2 workspace");
     let session = k.login("shop", "admin@shop.test", "Correct-Horse-9").await.expect("login");
     let tenant = session.tenant;

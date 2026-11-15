@@ -96,7 +96,7 @@ pub async fn snapshot(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value>
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    let signature = k.settings.secret_key.as_ref().map(|key| key.fingerprint("pos snapshot", &format!("{}:{profile}:{version}", ctx.tenant)));
+    let signature = crate::keys::snapshot_signature(k, ctx.tenant, profile, &version).await?;
     if let Value::Object(m) = &mut body {
         m.insert("version".into(), json!(version));
         m.insert("signature".into(), json!(signature));
