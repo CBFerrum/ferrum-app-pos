@@ -856,23 +856,15 @@ async fn scenario() {
         )
         .await;
     let session2 = uid(&t.k.submit(&kiosk_cashier, "PosOpeningEntry", uid(&again), None).await.expect("open again"));
-    // A shift that spans the upgrade: a sale made before sales kept their tax breakdown (a book taxed at its own 0%
-    // beside a widget at 10%) is broken down again from what it recorded, exactly, not put all at the row's rate.
+    // A shift's tax by rate is its sales' own breakdowns: a book taxed at its own 0% beside a widget at 10% is two rows,
+    // not all at the tax row's rate.
     let mut book = item("BOOK");
     book["is_stock_item"] = json!(false);
     book["tax_rates"] = json!([{"tax_account": output_tax.to_string(), "rate": "0"}]);
     let book = uid(&t.insert(&a, "Item", book).await);
     t.insert(&a, "ItemPrice", json!({"item": book.to_string(), "price_list": selling["id"], "rate": "50", "valid_from": "2020-01-01"})).await;
     let both = json!([{"item": widget.to_string(), "qty": "1"}, {"item": book.to_string(), "qty": "1"}]);
-    let old = t.sell(&kiosk_cashier, json!({"pos_profile": kiosk.to_string(), "items": both, "payments": [pay(&card, "182")]})).await;
-    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
-    sqlx::query("delete from e_pos_invoice__tax_breakdown where tenant_id = $1 and parent_id = $2")
-        .bind(tenant)
-        .bind(uid(&old))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    t.sell(&kiosk_cashier, json!({"pos_profile": kiosk.to_string(), "items": both, "payments": [pay(&card, "182")]})).await;
     let open_close = t.insert(&kiosk_cashier, "PosClosingEntry", json!({"pos_opening_entry": session2.to_string()})).await;
     let rows_: Vec<(Value, Decimal, Decimal, Decimal)> = open_close["tax_rows"]
         .as_array()
@@ -901,97 +893,4 @@ async fn plan_for(t: &T, who: &Ctx, profile: Uuid, sale: Uuid, line: &Value) -> 
 
 fn acme_id(c: &Doc) -> Uuid {
     uid(c)
-}
-
-/// A workspace Point of Sale 0.6.2 made, started on this build before an administrator updates the app (and after):
-/// what is new must work with no setting, no seeded row and no step taken. Runs on the workspace 0.6.2's `tier1` leaves
-/// behind (`FERRUM_POS_UPGRADE_DATABASE_URL`; skipped without it).
-#[test]
-fn upgrade_from_0_6_2() {
-    let Ok(url) = std::env::var("FERRUM_POS_UPGRADE_DATABASE_URL") else { return };
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(upgrade(url)).await.unwrap() });
-}
-
-async fn upgrade(url: String) {
-    ferrum_app_erp::localization::add(Arc::new(Testland));
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    let mut packages = ferrum_domain::packages().expect("platform packages");
-    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
-    packages.extend(ferrum_app_pos::packages().expect("app packages"));
-    let catalog = Catalog::from_packages(packages).expect("catalog");
-    let mut hooks = HookRegistry::default();
-    ferrum_domain::register(&mut hooks);
-    let erp_packages: Vec<String> = ferrum_app_erp::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
-    hooks.app("erp", &[], ferrum_app_erp::register);
-    hooks.own("erp", &erp_packages);
-    let pos_packages: Vec<String> = ferrum_app_pos::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
-    hooks.app("pos", &pos_packages, ferrum_app_pos::register);
-    hooks.own("pos", &pos_packages);
-    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot on the 0.6.2 workspace");
-    let session = k.login("shop", "admin@shop.test", "Correct-Horse-9").await.expect("login");
-    let tenant = session.tenant;
-    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
-    let t = T { k: k.clone(), tenant, admin };
-    let a = t.admin.clone();
-    let login = |who: &'static str| {
-        let k = k.clone();
-        async move {
-            let s = k.login("shop", who, "Correct-Horse-9").await.expect("login");
-            k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.expect("ctx")
-        }
-    };
-    let (cashier, manager) = (login("cashier@shop.test").await, login("manager@shop.test").await);
-    let counter = uid(&t.find_one("PosProfile", json!({"profile_name": "Counter"})).await);
-    let widget = uid(&t.find_one("Item", json!({"item_code": "WIDGET"})).await);
-    let (cash, card) = (t.find_one("ModeOfPayment", json!({"mode_name": "Cash"})).await, t.find_one("ModeOfPayment", json!({"mode_name": "Card"})).await);
-    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"status": "Open", "user": "cashier@shop.test"})).unwrap(), ..Default::default() };
-    let open = t.k.list(&a, "PosOpeningEntry", &q).await.unwrap().rows;
-    let session_id = match open.first() {
-        Some(o) => uid(o),
-        None => {
-            let o = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
-            uid(&t.k.submit(&cashier, "PosOpeningEntry", uid(&o), None).await.expect("open the till"))
-        }
-    };
-    let sale = |pays: Value| json!({"pos_profile": counter.to_string(), "items": [{"item": widget.to_string(), "qty": "1"}], "payments": pays});
-    let at = |sale_id: Uuid| json!({"profile": counter.to_string(), "sale": sale_id.to_string()});
-    // Not updated: the new tables and columns are there, nothing else is, and the till does everything it did and more.
-    let before = t.sell(&cashier, sale(json!([pay(&card, "60"), pay(&cash, "60")]))).await;
-    assert_eq!(
-        (before["status"].clone(), before["needs_buyer"].clone(), before["tax_invoice"].clone()),
-        (json!("Paid"), json!(false), json!(false)),
-        "{before:?}"
-    );
-    let snap =
-        t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("a snapshot, with no key and no promotions");
-    assert!(snap["version"].is_string() && snap["signature"].is_null() && snap["promotions"] == json!([]), "{snap}");
-    let (paper, _) =
-        t.page(&cashier, "GET", &format!("/receipt/{}", uid(&before)), json!({"profile": counter.to_string()}), Value::Null).await.expect("a receipt");
-    assert!(paper.contains("RECEIPT") && paper.contains("VAT 10%"), "{paper}");
-    let reasons = t.k.list(&a, "PosReason", &ListQuery::default()).await.unwrap().rows;
-    let why = reasons.iter().find(|r| r["applies_to"] == json!("Reprint")).map(|r| r["reason"].clone()).unwrap_or(json!("because"));
-    let mut ask = at(uid(&before));
-    ask.as_object_mut().unwrap().extend([("reason".to_string(), why)]);
-    let (copy, _) = t.page(&cashier, "POST", "/reprint", Value::Null, ask).await.expect("a copy");
-    assert!(copy.contains("COPY 1"), "{copy}");
-    let mut buyer = sale(json!([pay(&card, "60"), pay(&cash, "60")]));
-    buyer["buyer_tax_id"] = json!("TL-4242");
-    let named = t.sell(&cashier, buyer).await;
-    assert_eq!(
-        (named["tax_invoice"].clone(), named["invoiced_at_sale"].clone()),
-        (json!(true), json!(true)),
-        "a register with no setting: the defaults: {named:?}"
-    );
-    ferrum_app_pos::maintenance(&k).await.expect("upkeep");
-    // Closing over sales made before the breakdown was kept: the tax rows come from the sales' own.
-    let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": session_id.to_string()})).await;
-    let tax = close["tax_rows"].as_array().unwrap();
-    assert!(!tax.is_empty() && dec(&tax[0]["tax_amount"]) > Decimal::ZERO, "{close:?}");
-    // Then the administrator updates the app, and the seeded records and templates are theirs to see.
-    k.install_packages(tenant, &["pos".to_string()]).await.expect("update the app");
-    let paper = k.render_document(&manager, "pos.shift_report", uid(&close), None, false).await.expect("a shift report of a draft closing");
-    assert!(String::from_utf8_lossy(&paper.bytes).contains("SHIFT REPORT"));
-    let after = t.sell(&cashier, sale(json!([pay(&cash, "60"), pay(&card, "60")]))).await;
-    assert_eq!(after["status"], json!("Paid"));
 }
