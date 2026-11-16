@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.7.4-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.1-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.9.1:** the till's days and times on the workspace's clock, no exchange key, no 0.7.1 price book; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.7.4:** a fix for the shift screen reached from the till, and a register with no default customer asks for one.
 - [x] **0.7.3:** ERP's pricing engine in the till as WebAssembly, offline sales priced with promotions and tax, returns and exchanges planned by the server, and blind close in the till.
 - [x] **0.7.2:** one pricing for offline prices and the server's check, a signed price snapshot, exchanges planned by the server, and exact tax rows across the upgrade.
