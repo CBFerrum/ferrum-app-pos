@@ -1,19 +1,17 @@
-//! The register's own endpoints (`/api/app/pos/...`, signed in): its price book, so a till that
-//! loses the connection keeps pricing sales with the platform's own engine (`ferrum-calc`, the
-//! same code built for the browser) instead of stopping; and the returns desk's lookups
-//! (`returns`).
+//! The register's own endpoints (`/api/app/pos/...`, signed in): the snapshot a till prices with
+//! while offline (`snapshot`), PINs and approvals, stored value balances, exchanges, receipts, the
+//! cashier's limits, and the returns desk's lookups (`returns`).
 
 use crate::returns;
 use async_trait::async_trait;
-use ferrum_app_erp::pricing::calc_input;
-use ferrum_domain::util::{company, currency, d, id, rows, s};
+use ferrum_domain::util::{id, rows, s};
 use ferrum_kernel::{Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, Site, SiteRequest, SiteResponse};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Items priced per request; the till asks for the next page with `after`.
+/// Items of the price book priced at a time; the snapshot pages through them with `after`.
 const PAGE: u32 = 250;
 
 pub struct PosSite;
@@ -24,7 +22,6 @@ impl Site for PosSite {
         let Some(ctx) = &req.user else { return Err(Error::NotFound("page".into())) };
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
-            ("GET", ["pricebook"]) => Ok(SiteResponse::json(200, &price_book(k, ctx, &req).await?)),
             ("GET", ["snapshot"]) => Ok(SiteResponse::json(200, &crate::snapshot::snapshot(k, ctx, &req).await?)),
             ("POST", ["pin"]) => {
                 crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
@@ -62,28 +59,9 @@ pub(crate) fn param<'a>(req: &'a SiteRequest, key: &str) -> Option<&'a str> {
     req.query.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// `GET /pricebook?profile=&after=`: a page of the register's items, each with what the engine
-/// needs to price it (its price, line discount and item tax rates, as a sale of one has them for
-/// the register's default customer), and what every sale shares (tax rows, rounding, precision),
-/// with `next` while items remain; `unpriced` names the page's items the register cannot sell as
-/// they stand (no price in its price list), which a till sells only online. A till prices a sale offline from these; the server prices the
-/// sale again when it arrives, and one whose payments no longer cover it waits for a person (a
-/// price changed meanwhile, a quantity or customer the price book could not foresee).
-pub async fn price_book(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
-    let profile_id: Uuid = param(req, "profile").and_then(|v| v.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
-    let after: Option<Uuid> = match param(req, "after") {
-        Some(a) => Some(a.parse().map_err(|_| Error::field("after", "is an item id"))?),
-        None => None,
-    };
-    book_page(k, ctx, profile_id, after).await
-}
-
-/// One page of the price book (`after`: the last item of the page before).
-pub(crate) async fn book_page(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<Value> {
-    Ok(book_sale(k, ctx, profile_id, after).await?.0)
-}
-
-/// [`book_page`], and the sale of one of each of its items the register priced (none when no item of the page sells).
+/// One page of the register's price book for its snapshot (`after`: the last item of the page before): its items as the
+/// till shows them, their pack barcodes, the items it cannot sell offline and why (`unpriced`), `next` while items remain;
+/// and the sale of one of each of its items the register priced (none when no item of the page sells).
 pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<(Value, Option<Doc>)> {
     // Reading the register is the right to its prices.
     let profile = k.get(ctx, "PosProfile", profile_id, false).await?;
@@ -130,7 +108,7 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     // priced again: each round drops at least one, so it ends.
     let priced = loop {
         if items.is_empty() {
-            return Ok((json!({"profile": profile_id, "items": [], "barcodes": [], "unpriced": unpriced, "next": next}), None));
+            return Ok((json!({"items": [], "barcodes": [], "unpriced": unpriced, "next": next}), None));
         }
         let sale: Doc = json!({"pos_profile": profile_id, "items": items.iter().map(|i| json!({"item": i.get("id"), "qty": "1"})).collect::<Vec<_>>()})
             .as_object()
@@ -152,47 +130,14 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
             Err(e) => return Err(e),
         }
     };
-    let company_id = id(&priced, "company").ok_or_else(|| Error::field("company", "the register has no company"))?;
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let co = company(k, ctx, &mut tx, company_id).await?;
-    let (code, precision) = currency(k, ctx, &mut tx, id(&priced, "currency").unwrap_or(co.currency_id)).await?;
-    tx.commit().await?;
-    let rate = Some(d(&priced, "conversion_rate")).filter(|r| *r > Decimal::ZERO).unwrap_or(Decimal::ONE);
-    // Promotions are a basket's, not an item's: the book keeps each item as a sale of one prices it, and the
-    // snapshot carries the promotions beside it.
-    let lines: Vec<Doc> = rows(&priced, "items")
-        .into_iter()
-        .filter(|r| s(r, "added_by_promotion").is_none())
-        .map(|mut r| {
-            r.remove("promotion_percent");
-            r
-        })
-        .collect();
-    // Tax rows are keyed by position, not by the ids a preview gives them, so the same book is the same book twice.
-    let taxes: Vec<Doc> = rows(&priced, "taxes")
-        .into_iter()
-        .map(|mut t| {
-            t.remove("id");
-            t
-        })
-        .collect();
-    let input = calc_input(&lines, &taxes, d(&priced, "discount_percent"), &co, precision, rate, true);
-    let mut engine = serde_json::to_value(&input).map_err(|e| Error::internal(e.to_string()))?;
-    if let Value::Object(m) = &mut engine {
-        m.remove("lines");
-    }
-    // Each item with its line, matched by item (the engine keeps the lines' order).
-    let priced_items: Vec<Value> = lines
+    // Each item the sale priced (a free item a promotion added is not one of the page's), as the till shows it.
+    let shown: Vec<Value> = rows(&priced, "items")
         .iter()
-        .zip(&input.lines)
-        .filter_map(|(row, line)| {
-            let item = id(row, "item")?;
+        .filter(|r| s(r, "added_by_promotion").is_none())
+        .filter_map(|r| {
+            let item = id(r, "item")?;
             let own = items.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(&item.to_string()))?;
-            Some(json!({
-                "id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"), "item_group": own.get("item_group"),
-                // `tax_qty`: one's stock quantity, which per-unit taxes count (the till scales it).
-                "line": {"price": line.price, "discount_percent": line.discount_percent, "tax_rates": line.tax_rates, "tax_qty": line.tax_qty},
-            }))
+            Some(json!({"id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"), "item_group": own.get("item_group")}))
         })
         .collect();
     // Pack barcodes of these items (a case of six scans as six).
@@ -205,18 +150,7 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     };
     // Pack barcodes are an extra: a person who may not read them still gets prices.
     let barcodes = k.list(ctx, "ItemBarcode", &packs).await.map(|p| p.rows).unwrap_or_default();
-    let page = json!({
-        "profile": profile_id,
-        "currency": code,
-        "customer": priced.get("customer"),
-        "engine": engine,
-        "items": priced_items,
-        "barcodes": barcodes,
-        "unpriced": unpriced,
-        "next": next,
-        "built_at": chrono::Utc::now().to_rfc3339(),
-    });
-    Ok((page, Some(priced)))
+    Ok((json!({"items": shown, "barcodes": barcodes, "unpriced": unpriced, "next": next}), Some(priced)))
 }
 
 /// `GET /limits?profile=`: what the signed-in person may do at the register on their own, for the

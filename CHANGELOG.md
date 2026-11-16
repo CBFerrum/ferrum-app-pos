@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+Server only; what only an older till or older rows needed is gone. No interface or database change.
+
+- **`GET /pricebook` is gone.** The till prices offline from `GET /snapshot` since 0.7.1 and nothing else asks for the price book. The route and what only it gave (`engine`, each item's `line`, `currency`, `customer`, `built_at`) are removed; the snapshot reads the register's price book page by page as before.
+- **A kept snapshot the server cannot read is an error.** Every version in `pos_snapshot` is ERP's pricing snapshot as this server wrote it; the shape kept before 0.7.2 was never installed anywhere, so an offline sale naming an unreadable one is refused (the till keeps it and sends it again) instead of being recorded as one whose snapshot is gone. A snapshot that is gone, or cannot price the basket, is still a Price Difference.
+- **No currency backfill.** Cash movements and closings take their currency from the company when they are made; the upkeep no longer looks every minute for rows made before they kept one.
+- **An exchange sent again is made once.** The till's `Idempotency-Key` on `POST /exchange` is not read: each half carries the id the till gave it and keeps while the exchange is unchanged, so the same exchange sent again after a lost answer is refused and nothing is made twice (tested). Sales, online and from the offline queue, go through the platform's records API, which keeps the answer under the key, and their own id refuses a second sale.
+- Not done (interface, needs `ui/dist` rebuilt with Ferrum-Frontend): the till still sends that key with an exchange, and still discards a book kept by 0.7.1.
+
 ## 0.7.5
 
 A till's offline snapshot is signed with Point of Sale's own key in the platform's vault: 64 hexadecimal digits of a key derived from it for that register and version, kept nowhere. Until now the server's key (`FERRUM_SECRET_KEY`) signed it, which the platform is making its own. Nothing checks a snapshot's signature yet (the till keeps it), so nothing signed before needs that key again; a till that compares signatures sees each register's change once, at the upgrade, for the same version. While the vault is closed the snapshot goes unsigned, as it did on a server without a key, and the log says why. It registers as itself (`hooks.app("pos", …)`) to be given its handle, and needs a platform with the vault (0.3.8 on the platform's main from cdec881). No database or interface change.

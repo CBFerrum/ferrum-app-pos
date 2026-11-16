@@ -232,7 +232,7 @@ A cashier who reads only their own sales sees only their own figures.
 
 - **Two roles,** below. Row-level security applies to every table.
 - **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay.
-- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes (price book, snapshot, limits, approvals, balance, receipts, returns, exchange) are under `/api/app/pos/`.
+- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes (snapshot, limits, approvals, balance, receipts, returns, exchange) are under `/api/app/pos/`.
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
 ### 🌍 Languages
