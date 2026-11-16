@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.2
+
+Needs ERP 0.30.4 or later (`stored_value::typed`) and the same platform as 0.9.1. No interface change.
+
+- **A gift card sold at the till, or store credit refunded onto a new card, opens again.** Against ERP 0.27.0 and
+  later the sale was refused when it was submitted ("the code typed for ••••0001: is no longer kept: type it again"):
+  the till kept the new card's code as its hash and the PIN's hash and wrote them onto ERP's invoice line and refund
+  by SQL, in a form ERP no longer reads. The till now asks ERP to keep the code when the sale is saved and keeps only
+  ERP's one-time handle and the last four characters, which it passes on with the invoice line or the refund; the
+  PIN's hash is no longer on the till's line. A draft whose code is typed again, whose line is taken off or which is
+  deleted lets ERP drop the code it kept. Nothing changes for the cashier.
+- **The package has one SQL file.** `002_staff_pin.sql` and `003_snapshot.sql` are folded into `001_loyalty.sql`
+  (the schema they make is unchanged). **Upgrading:** a development database that applied the old files is reset (a
+  new database is made afresh); nothing else changes.
+
 ## 0.9.1
 
 Needs the same platform as 0.9.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
