@@ -533,10 +533,17 @@ async fn scenario() {
                "out": {"pos_profile": counter.to_string(), "items": [line(widget, out_qty)], "payments": pays}})
     };
     let one_back = json!({"items": [line(widget, "-1")], "payments": []});
-    let done = t.site(&cashier, "POST", "/exchange", Value::Null, ex(one_back, "2", json!([pay(&cash, "110")]))).await.expect("exchanged");
+    // As the till sends it: each half under the id the till gave it, which it keeps while the exchange is unchanged.
+    let mut first = ex(one_back, "2", json!([pay(&cash, "110")]));
+    (first["back"]["id"], first["out"]["id"]) = (json!(new_id()), json!(new_id()));
+    let done = t.site(&cashier, "POST", "/exchange", Value::Null, first.clone()).await.expect("exchanged");
     assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), n("110"), Decimal::ZERO), "{done}");
     assert_eq!((done["return"]["exchange"].clone(), done["sale"]["exchange"].clone()), (done["sale"]["id"].clone(), done["return"]["id"].clone()));
     assert_eq!((dec(&done["return"]["rounded_total"]), dec(&done["sale"]["rounded_total"]), dec(&done["sale"]["total_taxes"])), (n("-110"), n("220"), n("20")));
+    // Its answer lost, the till sends the same exchange again: refused, and nothing is made twice.
+    assert!(t.site(&cashier, "POST", "/exchange", Value::Null, first).await.is_err(), "the same exchange again");
+    t.find_one("PosInvoice", json!({"exchange": done["sale"]["id"]})).await;
+    t.find_one("PosInvoice", json!({"exchange": done["return"]["id"]})).await;
     // And refunded the difference as the sale was paid: two back, one out.
     let bought = t.sell(&cashier, sale(json!([line(widget, "2")]), json!([pay(&card, "220")]))).await;
     let r2 = new_id();

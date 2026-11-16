@@ -191,20 +191,3 @@ impl DocHook for CashMovementHook {
         Ok(())
     }
 }
-
-/// The currency of cash movements and closings made before they kept one, which their papers (the slip, the shift report)
-/// read: the company's. A bounded batch each minute until none is left; it asks only for rows without one, so a workspace
-/// that has them all costs an index-free count of nothing.
-pub(crate) async fn backfill_currency(k: &ferrum_kernel::Kernel) -> Result<()> {
-    let mut tx = k.db.system_tx().await?;
-    for table in ["e_pos_cash_movement", "e_pos_closing_entry"] {
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "update {table} t set currency = c.default_currency from e_company c where c.tenant_id = t.tenant_id and c.id = t.company \
-             and t.id in (select id from {table} where currency is null limit 500)"
-        )))
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}

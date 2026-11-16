@@ -770,12 +770,8 @@ async fn scenario() {
     assert_eq!(drop["account"], safe["id"], "to the register's safe: {drop:?}");
     t.k.submit(&kiosk_cashier, "PosCashMovement", uid(&drop), None).await.expect("dropped");
     assert_eq!(t.gl("Shop Safe").await, n("200") - n("50"), "dropped in, and paid in out of it");
-    // A movement made before they kept a currency: the upkeep gives it the company's.
-    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
-    sqlx::query("update e_pos_cash_movement set currency = null where tenant_id = $1").bind(tenant).execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    ferrum_app_pos::maintenance(&t.k).await.expect("upkeep");
-    assert_eq!(t.k.get(&a, "PosCashMovement", uid(&drop), false).await.unwrap()["currency"], json!(inr["id"]), "backfilled");
+    // A movement takes the company's currency as it is made: its paper reads it.
+    assert_eq!(t.k.get(&a, "PosCashMovement", uid(&drop), false).await.unwrap()["currency"], json!(inr["id"]), "the company's");
     let (slip, _) =
         (String::from_utf8_lossy(&t.k.render_document(&manager, "pos.cash_slip", uid(&drop), None, false).await.expect("a slip").bytes).to_string(), ());
     assert!(slip.contains("SAFE DROP") && slip.contains("200"), "{slip}");

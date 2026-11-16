@@ -39,11 +39,7 @@ pub async fn snapshot(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value>
     let (mut catalog, mut barcodes, mut unpriced, mut lines): (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Doc>) = Default::default();
     loop {
         let (page, priced) = book_sale(k, ctx, profile, after).await?;
-        for i in page.get("items").and_then(Value::as_array).into_iter().flatten() {
-            catalog
-                .push(json!({"id": i.get("id"), "code": i.get("code"), "name": i.get("name"), "barcode": i.get("barcode"), "item_group": i.get("item_group")}));
-        }
-        for (into, key) in [(&mut barcodes, "barcodes"), (&mut unpriced, "unpriced")] {
+        for (into, key) in [(&mut catalog, "items"), (&mut barcodes, "barcodes"), (&mut unpriced, "unpriced")] {
             into.extend(page.get(key).and_then(Value::as_array).cloned().unwrap_or_default());
         }
         if let Some(p) = priced {
@@ -131,8 +127,8 @@ pub(crate) async fn forget(k: &Kernel) -> Result<()> {
 
 /// A sale made offline, priced again with the snapshot its till used, as the till priced it: its lines (a free item
 /// a promotion added left out: the pricing adds its own), what the cashier typed (`typed`: discount and price of each
-/// of those lines), its customer and moment. None when the snapshot is gone, cannot be read (one kept before 0.7.2) or
-/// cannot price the basket (an item it never had): the difference says so.
+/// of those lines), its customer and moment. None when the snapshot is gone or cannot price the basket (an item it never
+/// had): the difference says so.
 pub(crate) async fn reprice(
     hc: &mut ferrum_kernel::HookCtx<'_>,
     doc: &Doc,
@@ -142,7 +138,7 @@ pub(crate) async fn reprice(
 ) -> Result<Option<Priced>> {
     let Some(version) = s(doc, "price_snapshot") else { return Ok(None) };
     let Some(body) = kept(hc.tx, hc.ctx.tenant, profile, version).await? else { return Ok(None) };
-    let Ok(snap) = serde_json::from_value::<Snapshot>(body) else { return Ok(None) };
+    let snap: Snapshot = serde_json::from_value(body).map_err(|e| Error::internal(format!("the kept snapshot {version}: {e}")))?;
     let lines = rows(doc, "items")
         .iter()
         .filter(|r| s(r, "added_by_promotion").is_none())

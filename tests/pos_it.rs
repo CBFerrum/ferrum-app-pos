@@ -279,30 +279,32 @@ async fn scenario() {
         .await);
     t.insert(&a, "ItemBarcode", json!({"barcode": "BOX-WIDGET", "item": widget.to_string(), "qty": "2"})).await;
 
-    // ───────────── the price book: what a till prices offline with ─────────────
+    // ───────────── the snapshot: what a till prices offline with ─────────────
     let req = ferrum_kernel::SiteRequest {
         tenant,
         user: Some(a.clone()),
         method: "GET".into(),
-        path: "/pricebook".into(),
+        path: "/snapshot".into(),
         query: json!({"profile": counter1.to_string()}).as_object().cloned().unwrap(),
         headers: Default::default(),
         body: vec![],
         client_ip: "it".into(),
     };
-    let book = ferrum_app_pos::site::price_book(&t.k, &a, &req).await.expect("price book");
-    let line_of = |item: Uuid| book["items"].as_array().unwrap().iter().find(|i| i["id"] == json!(item.to_string())).cloned().expect("in the book");
-    assert_eq!(book["items"].as_array().unwrap().len(), 4, "{book}");
-    assert_eq!((line_of(pen)["line"]["price"].clone(), line_of(pen)["barcode"].clone()), (json!("9.99"), json!("8901234567890")));
+    let snapshot = |req: ferrum_kernel::SiteRequest| {
+        let k = t.k.clone();
+        async move { ferrum_kernel::Site::handle(&ferrum_app_pos::site::PosSite, &k, req).await.map(|r| serde_json::from_slice::<Value>(&r.body).expect("JSON")) }
+    };
+    let book = snapshot(req.clone()).await.expect("snapshot");
+    let shown = |item: Uuid| book["catalog"].as_array().unwrap().iter().find(|i| i["id"] == json!(item.to_string())).cloned().expect("in the catalog");
+    let price = |item: Uuid| book["prices"].as_array().unwrap().iter().find(|p| p["item"] == json!(item.to_string())).cloned().expect("priced");
+    assert_eq!(book["catalog"].as_array().unwrap().len(), 4, "{book}");
+    assert_eq!((dec(&price(pen)["rate"]), shown(pen)["barcode"].clone()), (n("9.99"), json!("8901234567890")));
     assert!(book["barcodes"].as_array().unwrap().iter().any(|b| b["barcode"] == json!("BOX-WIDGET")), "{book}");
-    assert_eq!(book["next"], Value::Null);
-    // The same engine, from the book, totals a cart exactly as the server does.
-    let mut engine = book["engine"].clone();
-    engine["lines"] = json!([
-        {"key": "a", "qty": "3", "price": line_of(pen)["line"]["price"], "tax_rates": line_of(pen)["line"]["tax_rates"]},
-        {"key": "b", "qty": "2", "price": line_of(widget)["line"]["price"], "tax_rates": line_of(widget)["line"]["tax_rates"]},
-    ]);
-    let offline = ferrum_calc::compute(&serde_json::from_value(engine).expect("engine input")).expect("offline totals");
+    assert_eq!(book["truncated"], json!(false));
+    // The till's pricing, from the snapshot, totals a cart exactly as the server does.
+    let basket = json!({"snapshot": book.clone(), "basket": {"lines": [{"item": pen.to_string(), "qty": "3"}, {"item": widget.to_string(), "qty": "2"}],
+                                                             "at": format!("{} 12:00", a.today())}});
+    let offline: Value = serde_json::from_str(&ferrum_erp_pricing::price_json(&basket.to_string())).expect("priced");
     let online =
         t.k.preview(
             &a,
@@ -312,16 +314,17 @@ async fn scenario() {
         .await
         .expect("server totals");
     let dec = |v: &Value| v.as_str().unwrap().parse::<rust_decimal::Decimal>().unwrap();
-    assert_eq!((offline.grand_total, offline.rounded_total), (dec(&online["grand_total"]), dec(&online["rounded_total"])), "{online:?}");
-    assert_eq!(offline.rounded_total, rust_decimal::Decimal::new(25295, 2), "3 × 9.99 + 2 × 100 = 229.97, VAT 10% 23.00, 252.97 → 252.95");
+    let till = &offline["totals"];
+    assert_eq!((dec(&till["grand_total"]), dec(&till["rounded_total"])), (dec(&online["grand_total"]), dec(&online["rounded_total"])), "{offline} {online:?}");
+    assert_eq!(dec(&till["rounded_total"]), rust_decimal::Decimal::new(25295, 2), "3 × 9.99 + 2 × 100 = 229.97, VAT 10% 23.00, 252.97 → 252.95");
     // An item without a price in the register's price list is left out (sold online only), and named.
     let unpriced = uid(&t.insert(&a, "Item", item("NOPRICE", json!({}))).await);
-    let again = ferrum_app_pos::site::price_book(&t.k, &a, &req).await.expect("price book");
-    assert_eq!(again["items"].as_array().unwrap().len(), 4, "{again}");
+    let again = snapshot(req.clone()).await.expect("snapshot");
+    assert_eq!(again["catalog"].as_array().unwrap().len(), 4, "{again}");
     assert_eq!(again["unpriced"][0]["id"], json!(unpriced.to_string()), "{again}");
     t.k.update(&a, "Item", unpriced, obj(json!({"disabled": true})), None).await.expect("disable it again");
     let refused = ferrum_kernel::SiteRequest { query: json!({"profile": "nonsense"}).as_object().cloned().unwrap(), ..req.clone() };
-    assert!(ferrum_app_pos::site::price_book(&t.k, &a, &refused).await.is_err(), "a register is required");
+    assert!(snapshot(refused).await.is_err(), "a register is required");
     let clash = t.k.insert(&a, "ItemBarcode", obj(json!({"barcode": "8901234567890", "item": widget.to_string()}))).await;
     assert!(matches!(clash, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "barcode")), "a scan must find one item: {clash:?}");
     t.insert(
