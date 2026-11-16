@@ -1,7 +1,5 @@
 //! Point of Sale's handle on the vault (Ferrum docs/operations.md, "The vault"). A till's offline snapshot is signed with
-//! a key derived from Point of Sale's own key in the workspace for that snapshot, kept nowhere (`snapshot.rs`). Until
-//! 0.7.5 it was the server's key (`FERRUM_SECRET_KEY`) that signed it. Nothing checks a signature yet (a till keeps it,
-//! only the server could check it), so nothing signed the old way needs that key again.
+//! a key derived from Point of Sale's own key in the workspace for that snapshot, kept nowhere (`snapshot.rs`).
 
 use ferrum_kernel::vault::{Scope, Vault};
 use ferrum_kernel::{Error, Kernel, Result, Site};
@@ -36,7 +34,7 @@ pub(crate) fn purpose(profile: Uuid, version: &str) -> String {
 
 /// The signature of `version` of `profile`'s snapshot in `tenant`: 64 hexadecimal digits of a key derived for it from
 /// Point of Sale's key in the workspace (HKDF, keyed by that key, so nobody without it can make it). None while the
-/// vault is closed (said in the log): the snapshot goes unsigned, as on a server without a key before.
+/// vault is closed (said in the log): the snapshot goes unsigned.
 pub(crate) async fn snapshot_signature(k: &Kernel, tenant: Uuid, profile: Uuid, version: &str) -> Result<Option<String>> {
     match handle(k)?.derive(k, Scope::Workspace(tenant), &purpose(profile, version)).await {
         Ok(key) => Ok(Some(hex::encode(key.bytes()))),

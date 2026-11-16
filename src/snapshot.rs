@@ -29,8 +29,8 @@ const DAYS_AHEAD: i64 = 14;
 /// recorded as one whose snapshot is gone.
 const KEEP_DAYS: i64 = 45;
 
-/// `GET /snapshot?profile=`: everything above, signed with the server's key when it has one, and kept
-/// under its version.
+/// `GET /snapshot?profile=`: everything above, signed with a key derived for the register and version from Point of
+/// Sale's own key in the vault (unsigned while the vault is closed, `keys.rs`), and kept under its version.
 pub async fn snapshot(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let profile: Uuid = param(req, "profile").and_then(|v| v.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
     let register = k.get(ctx, "PosProfile", profile, false).await?;

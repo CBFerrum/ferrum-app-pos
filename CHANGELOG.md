@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+Server only. No interface or database change.
+
+- **A shift's tax by rate is its sales' own breakdowns.** Every sale and return keeps its tax breakdown as it is priced, so the closing no longer looks for sales without one to work theirs out again from what they recorded: that was for sales made before 0.7.2 kept breakdowns, which no installation holds. A sale that carries no tax adds nothing, as before.
+- The tests of an update from 0.6.1 and 0.6.2 (run only with `FERRUM_POS_UPGRADE_DATABASE_URL`) are gone with them.
+
 ## 0.8.0
 
 Server only; what only an older till or older rows needed is gone. No interface or database change.
