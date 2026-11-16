@@ -4,25 +4,16 @@
 // register's records — profiles, sessions, sales, closings, loyalty — as lists and forms in the
 // records frame. What needs the server (returns, opening and closing a shift) loads when asked for.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from "react-router";
-import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, StatePanel, Toaster } from "@ferrum/kit";
+import { useEffect, type ReactNode } from "react";
+import { Link, Outlet, useRouteError } from "react-router";
+import { routeBase, shell, t } from "@ferrum/client";
+import { StatePanel } from "@ferrum/kit";
 import { Problem } from "./ui";
-import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
+import { mountApp, RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import { keepToTheLease } from "./lib/offline";
 import { warmPricing } from "./lib/pricing";
 import { RegisterPage } from "./Register";
 import "./styles.css";
-
-// Its own words in the page's language (src/locales), fetched as the page starts; it is drawn once they are in.
-void addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") });
-
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 30_000 } },
-});
 
 function RouteError() {
   return <Problem error={useRouteError()} onRetry={() => window.location.reload()} />;
@@ -70,8 +61,12 @@ if ("serviceWorker" in navigator) {
 
 setFrameMode("app", ["pos"]);
 
-const router = createBrowserRouter(
-  [
+keepToTheLease();
+
+mountApp({
+  route: "pos",
+  catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") },
+  routes: [
     {
       path: "/",
       element: (
@@ -95,28 +90,10 @@ const router = createBrowserRouter(
             { path: "e/:entity", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.ListView })) },
             { path: "e/:entity/:id", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.FormView })) },
             { path: "r/:name", lazy: () => import("@ferrum/records").then((m) => ({ Component: m.ReportView })) },
-            { path: "apps/:app/settings", lazy: () => import("@ferrum/records/frame").then((m) => ({ Component: m.AppSettingsPage })) },
-            { path: "x/:app/:page", lazy: () => import("@ferrum/records/frame").then((m) => ({ Component: m.ScreenPage })) },
           ],
         },
         { path: "*", element: <NotFound /> },
       ],
     },
   ],
-  { basename: routeBase("pos") },
-);
-
-keepToTheLease();
-
-// Drawn once the page's words are in (its language's catalogs, fetched as the page starts).
-void wordsReady().then(() =>
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        <Toaster />
-        <ConfirmHost />
-      </QueryClientProvider>
-    </StrictMode>,
-  ),
-);
+});

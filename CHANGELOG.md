@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.1
+
+Needs the same platform as 0.9.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
+
+- A sale's day and time are on the company's clock (the workspace's when it names none), the clock it is priced on;
+  they were the browser's. Offline prices take the workspace's clock when the snapshot names no zone, not the device's.
+- The return desk writes a sale's day and time as they are kept, and the day a sale comes back until as the day it is.
+  A cash movement's day, and the today loyalty points and a card's expiry are counted from, are the workspace's.
+- An exchange no longer sends an idempotency key the server never read. A 0.7.1 price book and the stores kept before
+  the offline lease are no longer looked for.
+- The two routes to the screens apps no longer have (`apps/:app/settings`, `x/:app/:page`) are gone.
+- The page starts through the frontend's `mountApp`; the interface lint has no baseline file any more.
+
 ## 0.9.0
 
 Server only. No interface or database change.

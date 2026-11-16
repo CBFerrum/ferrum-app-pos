@@ -166,18 +166,10 @@ function inStore<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBReq
 /** Keeps the book on this device (a private window may refuse: the till then sells online only). */
 export const saveBook = (book: PriceBook) => inStore<unknown>("readwrite", (s) => s.put(book)).then(() => undefined);
 
-/** The book kept for a register. One with no schema is a 0.7.1 book (another shape, with its own engine and prices): it is discarded here and
- *  fetched again when the till is next online, and until then the till has no offline prices. */
-export const readable = (b: { schema?: unknown } | null | undefined): boolean => typeof b?.schema === "number";
+/** The book kept for a register. */
 export const loadBook = (profile: string) =>
   inStore<PriceBook | undefined>("readonly", (s) => s.get(profile)).then(
-    (b) => {
-      if (b && !readable(b)) {
-        void inStore<unknown>("readwrite", (s) => s.delete(profile)).catch(() => {});
-        return null;
-      }
-      return b ?? null;
-    },
+    (b) => b ?? null,
     () => null,
   );
 
@@ -326,21 +318,12 @@ export function knownRegisters(email: string): Doc[] {
 
 // ── what the device may keep ──
 
-/** Before the shared policy the book and the till's memory were kept for anyone on the device. */
-const LEGACY = { db: "ferrum-pos", memory: "ferrum.pos.till" };
-
-/** At start: forgets what the lease no longer covers (and what was kept before it), then renews
- *  the lease every hour while the till is open. Queued and held sales are kept whatever it says. */
+/** At start: forgets what the lease no longer covers, then renews the lease every hour while the
+ *  till is open. Queued and held sales are kept whatever it says. */
 export function keepToTheLease(every = 3_600_000): () => void {
   const forget = () => {
     void sweep(offlineEnv(), typeof indexedDB === "undefined" ? undefined : indexedDB);
   };
-  try {
-    localStorage.removeItem(LEGACY.memory);
-    if (typeof indexedDB !== "undefined") indexedDB.deleteDatabase(LEGACY.db);
-  } catch {
-    // nothing kept, or nothing to keep it in
-  }
   forget();
   const timer = setInterval(() => void renewOfflineLease().then(forget), every);
   return () => clearInterval(timer);

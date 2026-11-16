@@ -13,8 +13,6 @@ export const myEmail = () => bootstrap()?.person?.email ?? "";
 /** Whether the pointer is a mouse or a trackpad: only then does the till pull focus back to the
  *  scan box by itself (on a touch screen that would raise the keyboard after every tap). */
 export const fine = () => typeof matchMedia === "function" && matchMedia("(pointer: fine)").matches;
-/** A local date as the server's date: YYYY-MM-DD. */
-export const localDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /** How amounts are written here: the currency's places (the register's price book knows them). */
 export const Currency = createContext({ precision: 2, code: "" });

@@ -8,12 +8,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router";
-import { api, docPath, errorMessage, formatDecimal, formatMoment, t as tr, isolate } from "@ferrum/client";
+import { api, docPath, errorMessage, formatDecimal, formatMoment, todayIso, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Field, toast, useShellTitle, placed, FormSkeleton, StatePanel } from "@ferrum/kit";
 import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { CashCounter, countTotal, type Counted } from "./Count";
-import { Currency, localDate, myEmail, num, remembered, str, titleOf } from "./fmt";
+import { Currency, myEmail, num, remembered, str, titleOf } from "./fmt";
 import { useManager, useOutbox } from "./hooks";
 import { loadHeld, ownerOf } from "./lib/held";
 import { till, unreachable } from "./lib/offline";
@@ -489,7 +489,7 @@ function Cash({ session, company, moves, money, onMoved }: { session: string; co
     setBusy(true);
     setError(null);
     try {
-      await till(docPath("PosCashMovement"), { method: "POST", query: { submit: true }, body: movementBody({ session, kind, amount: value ?? 0, reason: why, account: account.id, date: localDate(new Date()) }) });
+      await till(docPath("PosCashMovement"), { method: "POST", query: { submit: true }, body: movementBody({ session, kind, amount: value ?? 0, reason: why, account: account.id, date: todayIso() }) });
       toast(kind === "Cash In" ? tr("Cash put in") : kind === "Cash Out" ? tr("Cash taken out") : tr("Cash dropped to the safe"));
       setAmount("");
       setWhy("");

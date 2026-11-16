@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetBootstrap } from "@ferrum/client";
+import { resetBootstrap, setTimeZone } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { fakeBootstrap } from "@ferrum/testing";
 import { CartLines, Totals } from "./Cart";
@@ -16,7 +16,7 @@ import { AskDialog, SetPinDialog } from "./Approval";
 import { CardLine } from "./Card";
 import { PayDialog, ReceiptDialog } from "./Pay";
 import ReceiptMore from "./ReceiptMore";
-import ReturnDesk, { Sale } from "./Returns";
+import ReturnDesk, { dayOf, Sale, when } from "./Returns";
 import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
 import DifferencesPage from "./Differences";
@@ -586,5 +586,19 @@ describe("prices offline", () => {
     expect(html).toContain("The till took payment for 139.00; the register recorded 131.00.");
     expect(html).toContain("Mark reviewed");
     expect(draw(<DifferencesPage />, (qc) => qc.setQueryData(["pos", "differences", "Open"], { rows: [] }))).toContain("Nothing to review");
+  });
+});
+
+describe("a sale's day and time", () => {
+  it("are written as the register kept them, whatever the browser's clock, and a day never moves", () => {
+    // A sale kept at 2:30 p.m. on 5 Nov, in a workspace on Kiritimati's clock (UTC+14) and a browser on another.
+    setTimeZone("Pacific/Kiritimati");
+    try {
+      const wall = (o: Intl.DateTimeFormatOptions, at: number) => new Intl.DateTimeFormat(undefined, { ...o, timeZone: "UTC" }).format(at);
+      expect(when("2026-11-05", "14:30:00")).toContain(wall({ day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }, Date.UTC(2026, 10, 5, 14, 30)));
+      expect(dayOf("2026-11-05")).toBe(wall({ dateStyle: "medium" }, Date.UTC(2026, 10, 5)));
+    } finally {
+      setTimeZone(undefined);
+    }
   });
 });

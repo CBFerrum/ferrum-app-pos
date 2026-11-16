@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import fixtures from "./pricing.fixtures.json";
+import { resetBootstrap } from "@ferrum/client";
+import { fakeBootstrap } from "@ferrum/testing";
 import { loadPricing, momentIn, priceBasket, PRICING_SCHEMA, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
 // The real WebAssembly, ERP's pricing crate as built by its scripts/pricing-wasm.sh, priced against two of ERP's own fixture baskets
@@ -39,5 +41,18 @@ describe("ERP's pricing engine in the till", () => {
   it("gives the moment in the snapshot's time zone", () => {
     const at = new Date("2026-11-13T22:30:00Z");
     expect([momentIn("Asia/Kolkata", at), momentIn("America/New_York", at), momentIn("UTC", new Date("2026-11-13T00:05:00Z"))]).toEqual(["2026-11-14 04:00", "2026-11-13 17:30", "2026-11-13 00:05"]);
+  });
+
+  it("gives the moment on the workspace's clock when the snapshot names no zone, as ERP prices it", () => {
+    // 11:00 UTC on 5 Nov is 01:00 on 6 Nov in Kiritimati (UTC+14), and still 5 Nov on any device west of UTC+13.
+    const g = globalThis as { __FERRUM_BOOTSTRAP__?: unknown };
+    g.__FERRUM_BOOTSTRAP__ = fakeBootstrap({ locale: { ...fakeBootstrap().locale, timezone: "Pacific/Kiritimati" } });
+    resetBootstrap();
+    try {
+      expect(momentIn(null, new Date("2026-11-05T11:00:00Z"))).toBe("2026-11-06 01:00");
+    } finally {
+      delete g.__FERRUM_BOOTSTRAP__;
+      resetBootstrap();
+    }
   });
 });
