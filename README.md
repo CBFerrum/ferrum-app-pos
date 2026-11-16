@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.1-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.2-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,10 +39,10 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.7.4 |
+| **Version** | 0.9.2 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
-| **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 3 database migrations |
-| **Depends on** | Ferrum platform `>=0.3.1, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.26` (installing Point of Sale installs ERP) |
+| **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
+| **Depends on** | Ferrum platform `>=0.3.1, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.30.4` (installing Point of Sale installs ERP) |
 | **Works with** | ERP (items, prices, promotions, stored value, invoices, stock), [Retail](https://github.com/CBFerrum/ferrum-app-retail) (goods sold at a till can be returned at any store), Mail and messages (receipts by message) |
 | **Languages** | English, Arabic (right to left), Hindi |
 | **Tests** | 18 Rust tests, 153 interface tests |
@@ -294,7 +294,7 @@ Limits live on the server and are kept on the device so the till starts offline 
 
 | With | How | Needs |
 |---|---|---|
-| **ERP** | Items, prices, price lists, pricing rules, promotions, stored value, customers, taxes, sales invoices, credit notes, payments and stock | ERP `>=0.26` installed (done for you) |
+| **ERP** | Items, prices, price lists, pricing rules, promotions, stored value, customers, taxes, sales invoices, credit notes, payments and stock | ERP `>=0.30.4` installed (done for you) |
 | **Country add-ons** | Tax registration numbers and invoice rules, through ERP's localization seam | The country's add-on |
 | **Mail and messages** | Receipts sent by message on the channels the workspace has | A channel |
 | **Retail** | Goods sold at a till can be returned at any store | Retail installed |
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.9.2:** a gift card sold at the till opens again on today's ERP, its code handed on as ERP keeps it; one SQL file.
 - [x] **0.9.1:** the till's days and times on the workspace's clock, no exchange key, no 0.7.1 price book; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.7.4:** a fix for the shift screen reached from the till, and a register with no default customer asks for one.
 - [x] **0.7.3:** ERP's pricing engine in the till as WebAssembly, offline sales priced with promotions and tax, returns and exchanges planned by the server, and blind close in the till.
@@ -417,7 +418,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ## 🚀 Install
 
-Point of Sale is a native Ferrum app. It ships in the official Ferrum server image, and a workspace administrator installs it from **Apps** (`/store/`). It requires ERP `>=0.26`, and installing it in a workspace without ERP installs ERP whole. Self-hosters who build their own image enable the `pos` feature of the server.
+Point of Sale is a native Ferrum app. It ships in the official Ferrum server image, and a workspace administrator installs it from **Apps** (`/store/`). It requires ERP `>=0.30.4`, and installing it in a workspace without ERP installs ERP whole. Self-hosters who build their own image enable the `pos` feature of the server.
 
 First steps after installing:
 

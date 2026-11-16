@@ -395,6 +395,32 @@ async fn scenario() {
     assert_eq!((sold["invoiced_at_sale"].clone(), sold["items"][0]["stored_value_code"].clone()), (json!(true), json!("••••0001")), "{sold:?}");
     assert!(sold["consolidated_invoice"].is_string());
     assert_eq!(balance("GIFT-0000-0000-0001").await, n("500"), "spendable at once");
+    // The till kept what ERP answered for the new card's code (a handle and its last four characters), and so does the
+    // invoice line it handed ERP; the submission that opened the card took what the handle named.
+    let (kept, handed): (String, String) = {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query_as(
+            "select p.stored_value_secret, s.stored_value_secret from e_pos_invoice__items p, e_sales_invoice__items s \
+             where p.tenant_id = $1 and p.parent_id = $2 and s.tenant_id = $1 and s.parent_id = $3",
+        )
+        .bind(t.tenant)
+        .bind(uid(&sold))
+        .bind(sold["consolidated_invoice"].as_str().unwrap().parse::<Uuid>().unwrap())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap()
+    };
+    assert_eq!(handed, kept, "the invoice line got what the till kept");
+    assert!(kept.ends_with(":0001") && kept.len() == 69, "a handle and the last four characters: {kept}");
+    let waiting = || {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            let n: i64 = sqlx::query_scalar("select count(*) from stored_value_typed where tenant_id = $1").bind(t.tenant).fetch_one(&mut *tx).await.unwrap();
+            n
+        }
+    };
+    assert_eq!(waiting().await, 0, "nothing waits once the card is open");
     let told = t.site(&cashier, "POST", "/balance", Value::Null, json!({"mode": giftcard["id"], "code": "GIFT-0000-0000-0001"})).await.expect("balance");
     assert_eq!((dec(&told["balance"]), told["state"].clone()), (n("500"), json!("Active")), "{told}");
     // Taken as a tender, in part: the balance left is on the payment row.
@@ -570,6 +596,32 @@ async fn scenario() {
     assert_eq!((settled["consolidated_invoice"].clone(), settled["status"].clone()), (si.clone(), json!("Consolidated")), "settled, not invoiced twice");
     let inv = t.find_one("SalesInvoice", json!({"id": si})).await;
     assert_eq!(dec(&inv["outstanding_amount"]), Decimal::ZERO, "the closing paid it");
+    // A closing run again issues no card again: each card sold or refunded onto at the till is one account, loaded once.
+    let twice = async {
+        let again = t.k.insert(&cashier, "PosClosingEntry", obj(json!({"pos_opening_entry": open["id"]}))).await?;
+        t.k.submit(&manager, "PosClosingEntry", uid(&again), None).await
+    };
+    assert!(twice.await.is_err(), "a session closes once");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    let opened = [("GIFT-0000-0000-0001", None, "issue"), ("GIFT-PIN0-0000-0002", Some("Pq-card-77"), "issue"), ("GIFT-CRED-0000-0003", None, "refund")];
+    for (code, pin, how) in opened {
+        let sec = ferrum_app_erp::stored_value::secret(tenant, code, pin).unwrap();
+        let (accounts, loads): (i64, i64) = sqlx::query_as(
+            "select count(distinct a.id), count(e.id) from e_stored_value_account a \
+             left join stored_value_entry e on e.tenant_id = a.tenant_id and e.account_id = a.id and e.entry_type = $4 \
+             where a.tenant_id = $1 and a.code_hash = $2 and a.pin_hash is not distinct from $3",
+        )
+        .bind(tenant)
+        .bind(&sec.hash)
+        .bind(&sec.pin_hash)
+        .bind(how)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!((accounts, loads), (1, 1), "{code}: one card, opened once ({how}), with the PIN typed at the till");
+    }
+    drop(tx);
+    assert_eq!(waiting().await, 0, "nothing waits for a card");
     // The approval given in the closed session covers nothing in the next one.
     let reopen = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
     t.k.submit(&cashier, "PosOpeningEntry", uid(&reopen), None).await.expect("a new session");
@@ -583,6 +635,15 @@ async fn scenario() {
     t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "93718264055", "Discount", Some("15"), &new_id())).await.expect("approved");
     let secrets = ["93718264055", "GIFT-0000-0000-0001", "GIFT000000000001", "GIFT-PIN0-0000-0002", "GIFTPIN000000002", "Pq-card-77"];
     let like: Vec<String> = secrets.iter().map(|s| format!("%{s}%")).collect();
+    // Nor a card's code or PIN as hashes (the form ERP keeps on the card itself, and the till once kept on its lines):
+    // anywhere but the card (its record, and the platform's audit entry and event of its creation), a reader finds a
+    // handle and the last four characters at most.
+    let mut hashes = Vec::new();
+    for (code, pin) in [("GIFT-0000-0000-0001", None), ("GIFT-PIN0-0000-0002", Some("Pq-card-77")), ("GIFT-CRED-0000-0003", None)] {
+        let sec = ferrum_app_erp::stored_value::secret(tenant, code, pin).unwrap();
+        hashes.push(format!("%{}%", sec.hash));
+        hashes.extend(sec.pin_hash.map(|p| format!("%{p}%")));
+    }
     let mut tx = t.k.db.pool.begin().await.unwrap();
     sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await.unwrap();
     let tables: Vec<String> =
@@ -592,9 +653,13 @@ async fn scenario() {
             .unwrap();
     let mut rests = Vec::new();
     for table in tables {
-        let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from \"{table}\" x where x::text ilike any($1)")))
-            .bind(&like)
-            .fetch_one(&mut *tx)
+        let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select count(*) from \"{table}\" x where x::text ilike any($1) or ($3 <> 'e_stored_value_account' and x::text not like '%StoredValueAccount%' and x::text like any($2))"
+        )))
+        .bind(&like)
+        .bind(&hashes)
+        .bind(&table)
+        .fetch_one(&mut *tx)
             .await
             .unwrap();
         if hits > 0 {
