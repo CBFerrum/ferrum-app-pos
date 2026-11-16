@@ -16,7 +16,7 @@ const BOOK_AGE_MS = 30 * 60_000;
 
 /** The register's snapshot (prices, taxes, promotions, the buyer rule), kept under the offline lease: from this
  *  device at once, then fetched again while online when it is older than half an hour, the session changed, or
- *  what is kept is not readable (`loadBook` lets go of a 0.7.1 snapshot: until the new one comes, there are no offline prices). */
+ *  nothing is kept yet (until it comes, there are no offline prices). */
 export function usePriceBook(profileId: string, session: string | null) {
   const [book, setBook] = useState<PriceBook | null>(null);
   useEffect(() => {

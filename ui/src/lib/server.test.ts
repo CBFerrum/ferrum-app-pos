@@ -71,8 +71,8 @@ describe("what the server was seen to take and answer", () => {
     answer({ carried: "110", due: "110", refund: "0", return: { id: "ret-1", rounded_total: "-110", exchange: "sale-2" }, sale });
     const back = { pos_profile: "reg1", return_against: "bought", items: [{ item: "widget", qty: "-1" }], payments: [] };
     const out = { pos_profile: "reg1", items: [{ item: "widget", qty: "2" }], payments: [{ mode_of_payment: "cash", amount: "110" }] };
-    const done = await exchange(back, out, "key-1");
-    expect(last()).toEqual({ path: "/api/app/pos/exchange", o: { method: "POST", body: { back, out }, idempotencyKey: "key-1" } });
+    const done = await exchange(back, out);
+    expect(last()).toEqual({ path: "/api/app/pos/exchange", o: { method: "POST", body: { back, out } } });
     expect([done.sale.id, done.sale.rounded_total, done.carried, done.due, done.refund]).toEqual(["sale-2", "220", "110", "110", "0"]);
   });
 });

@@ -142,7 +142,7 @@ export default function Unreceipted({
         return onDone(withMethodNames(profile, { ...done, is_return: true }));
       }
       const sale = invoiceBody({ id: ids.out, profile: profileId, session, customer: customer.id, lines: out, tenders: [] });
-      const res = await sendExchange(half, { ...sale, payments: tender }, ids.back);
+      const res = await sendExchange(half, { ...sale, payments: tender });
       void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
       onDone(withMethodNames(profile, res.sale));
     } catch (e) {

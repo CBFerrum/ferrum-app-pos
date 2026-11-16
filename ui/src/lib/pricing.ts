@@ -2,12 +2,12 @@
 // server prices an offline sale again with, so the totals agree. It is loaded only when a sale is priced offline, and its two files are
 // kept by the till's worker (see `warmPricing`) so it is there with no network. Money travels as decimal strings, never floats.
 
-import { t } from "@ferrum/client";
+import { bootstrap, t } from "@ferrum/client";
 
 /** The snapshot schema this build of the engine reads (ERP's docs/pricing.md). Any other is refused, never guessed at. */
 export const PRICING_SCHEMA = 1;
 
-/** Said where the till has no offline prices: nothing kept, or what is kept is of a shape this till cannot read (a snapshot of 0.7.1, or of a newer schema). It never guesses. */
+/** Said where the till has no offline prices: nothing kept, or what is kept is of a schema this till cannot read (a newer one). It never guesses. */
 export const notAvailable = () => t("Offline pricing is not available on this device yet: it needs one connection to load this register's prices.");
 
 export interface BasketLine {
@@ -97,9 +97,9 @@ export function warmPricing(): Promise<unknown> {
   return Promise.allSettled([import("../vendor/pricing/ferrum_erp_pricing.js"), fetch(wasm)]);
 }
 
-/** The moment `at` in a time zone as the engine reads it (`YYYY-MM-DD HH:MM`); the device's own when the snapshot names none. */
+/** The moment `at` in a time zone as the engine reads it (`YYYY-MM-DD HH:MM`): the company's, else the workspace's, as ERP prices it. */
 export function momentIn(timeZone: string | null | undefined, at: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timeZone || undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(at);
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timeZone || bootstrap()?.locale.timezone || undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(at);
   const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }

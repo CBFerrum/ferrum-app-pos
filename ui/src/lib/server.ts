@@ -41,7 +41,8 @@ export const voidSale = (sale: string, reason: string | undefined, approval?: st
 
 /** `POST /exchange`: a return (`back`, negative quantities) and a sale (`out`) in one transaction. Answers
  *  both as submitted invoices, linked by `exchange`, and the split as text: what the return carries to the
- *  sale, what the customer still pays, what goes back. */
+ *  sale, what the customer still pays, what goes back. Both halves carry the ids the till chose, kept while it
+ *  sends the same exchange again, so it is never made twice. */
 export interface ExchangeAnswer {
   carried: string;
   due: string;
@@ -49,7 +50,7 @@ export interface ExchangeAnswer {
   return: Doc;
   sale: Doc;
 }
-export const exchange = (back: Doc, out: Doc, key: string) => till<ExchangeAnswer>("/api/app/pos/exchange", { method: "POST", body: { back, out }, idempotencyKey: key });
+export const exchange = (back: Doc, out: Doc) => till<ExchangeAnswer>("/api/app/pos/exchange", { method: "POST", body: { back, out } });
 
 // ── what 0.7.0 added: the receipt's papers, the refund plan, the snapshot, the shift's papers, price differences ──
 

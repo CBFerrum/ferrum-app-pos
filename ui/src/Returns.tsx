@@ -11,7 +11,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Minus, Plus } from "lucide-react";
 import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { docPath, errorMessage, formatMoment, newKey, t, isolate } from "@ferrum/client";
+import { docPath, errorMessage, formatDate, formatMoment, fromZonedInput, newKey, t, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, Field, useDebounced, placed, FormSkeleton, ListSkeleton, StatePanel } from "@ferrum/kit";
 import { Problem } from "./ui";
 import type { Doc } from "@ferrum/records";
@@ -39,10 +39,14 @@ export interface DeskProps {
   reasons: Doc[];
 }
 
-/** A sale's day and time (the workspace's clock, as the server keeps them) in the kit's shape. */
-const when = (day: string, time: string | null) => formatMoment(`${day}T${time && /^\d\d:\d\d/.test(time) ? time.slice(0, 8) : "00:00:00"}`, time ? { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" } : { day: "numeric", month: "short" });
-/** A date with no time (the last day a sale comes back). */
-const dayOf = (day: string) => formatMoment(`${day}T12:00:00Z`, { dateStyle: "medium" });
+/** A sale's day and time (the workspace's clock, as the server keeps them) in the kit's shape: read and written on the same
+ *  clock, so no browser's zone moves them. */
+export const when = (day: string, time: string | null) => {
+  const hm = time && /^\d\d:\d\d/.test(time) ? time.slice(0, 5) : null;
+  return formatMoment(fromZonedInput(`${day}T${hm ?? "12:00"}`), hm ? { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" } : { day: "numeric", month: "short" });
+};
+/** A date with no time (the last day a sale comes back): no zone moves it. */
+export const dayOf = (day: string) => formatDate(day);
 
 export default function ReturnDesk({ onClose, onDone, ...desk }: DeskProps & { onClose: () => void; onDone: (receipt: Doc) => void }) {
   const [sale, setSale] = useState<string | null>(null);
@@ -288,7 +292,7 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
       if (exchanging) {
         // One transaction, linked by `exchange`: what comes back, what goes out, and the one difference paid or refunded.
         const goods = invoiceBody({ id: outKey, profile: profileId, session, customer: str(data.sale.customer) || null, lines: out, tenders: [] });
-        const res = await sendExchange(body, { ...goods, payments: tender }, key);
+        const res = await sendExchange(body, { ...goods, payments: tender });
         void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
         return onDone(withMethodNames(profile, res.sale));
       }

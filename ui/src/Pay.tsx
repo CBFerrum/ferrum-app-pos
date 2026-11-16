@@ -10,12 +10,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useContext, useEffect, useMemo, useState, type FormEvent } from "react";
-import { docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
+import { docPath, errorMessage, todayIso, t as tr, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, Field, Icon, ListSkeleton, placed, toast } from "@ferrum/kit";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { AskDialog } from "./Approval";
 import { CardInputs } from "./Card";
-import { Currency, localDate, num, titleOf, useMoney, str } from "./fmt";
+import { Currency, num, titleOf, useMoney, str } from "./fmt";
 import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
 import { serverDown, till, tillAll, unreachable } from "./lib/offline";
@@ -102,7 +102,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
       ]);
       return {
         factor: num(p.conversion_factor),
-        available: pointsAvailable(e.map((r) => ({ points: num(r.points), remaining: num(r.remaining), expiry_date: str(r.expiry_date) || null })), localDate(new Date())),
+        available: pointsAvailable(e.map((r) => ({ points: num(r.points), remaining: num(r.remaining), expiry_date: str(r.expiry_date) || null })), todayIso()),
       };
     },
   });
@@ -156,7 +156,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
   const usingPoints = current?.kind === "Loyalty Points";
   const usingCard = current?.kind === "Stored Value";
   const typed = usingPoints ? pointsValue(Math.floor(num(points)), factor, precision) : num(amount);
-  const cardWhy = usingCard && card ? cardProblem(card, typed, localDate(new Date())) : null;
+  const cardWhy = usingCard && card ? cardProblem(card, typed, todayIso()) : null;
   // A card is taken only once its balance has been read and covers what is typed.
   const cardReady = !usingCard || (!!card && !cardWhy);
   const pending: Tender | null =

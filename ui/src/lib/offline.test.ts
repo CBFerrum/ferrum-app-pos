@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import fixtures from "./pricing.fixtures.json";
-import { downloadSnapshot, listPrices, markDown, markUp, priceOffline, readable, scanBook, searchBook, serverDown, tillAll, unreachable, type PriceBook } from "./offline";
+import { downloadSnapshot, listPrices, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, unreachable, type PriceBook } from "./offline";
 import { loadPricing, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
 // An ERP fixture (pricing/tests: three items, three promotions, taxes of 8% and 10%) as the till keeps it: the snapshot plus what the till shows.
@@ -56,12 +56,11 @@ describe("selling offline", () => {
     expect(only(blank)).toEqual(only(plain));
   });
 
-  it("will not price what the snapshot cannot: an item it does not hold, a snapshot of another shape (0.7.1's), a day it does not cover", async () => {
+  it("will not price what the snapshot cannot: an item it does not hold, a schema it does not know, a day it does not cover", async () => {
     const when = at(fixture.request.basket.at);
     await expect(priceOffline(book, [{ key: "c", item: "i-new", item_name: "Scones", qty: 1 }], { at: when })).rejects.toThrow(/Scones has no price on this device/);
-    const old = { ...book, schema: undefined } as unknown as PriceBook;
-    await expect(priceOffline(old, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: when })).rejects.toThrow(/Offline pricing is not available/);
-    expect([readable(old), readable(book), readable(null)]).toEqual([false, true, false]);
+    const newer = { ...book, schema: book.schema + 1 };
+    await expect(priceOffline(newer, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: when })).rejects.toThrow(/Offline pricing is not available/);
     await expect(priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1 }], { at: new Date(2031, 0, 1, 10, 0) })).rejects.toThrow(/the snapshot prices from/);
   });
 
@@ -129,10 +128,6 @@ describe("what the device keeps", () => {
       resetBootstrap();
     };
     as(lease("k1", "2999-01-01T00:00:00Z"));
-    storage.setItem("ferrum.pos.till", JSON.stringify({ p1: till }));
-    const stop = keepToTheLease();
-    stop();
-    expect(storage.map.has("ferrum.pos.till")).toBe(false);
     rememberTill(till);
     expect(recallTill("p1", "asha@shop.test")?.profile.name).toBe("Front");
     // Signed out everywhere: a new key, and what the old sign-in kept goes.

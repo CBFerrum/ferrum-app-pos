@@ -21,11 +21,11 @@ import { SetPinDialog, useAsk } from "./Approval";
 import { CartLines, Totals, type Base } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
 import { PayDialog, ReceiptDialog } from "./Pay";
-import { Currency, fine, localDate, myEmail, num, str, titleOf, useMoney } from "./fmt";
+import { Currency, fine, myEmail, num, str, titleOf, useMoney } from "./fmt";
 import { useCalc, useOutbox } from "./hooks";
 import { loadCart, loadHeld, ownerOf, putAside, saveCart, saveHeld, takeOut, totalOf, type Customer, type HeldSale } from "./lib/held";
 import { listPrices, scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
-import { notAvailable } from "./lib/pricing";
+import { momentIn, notAvailable } from "./lib/pricing";
 import { tally } from "./lib/pay";
 import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
 import { allows, asksFor, beyond, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
@@ -374,11 +374,13 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const complete = async (tenders: Tender[], o: { invoiceNow: boolean }): Promise<string | null> => {
     if (noBuyer) return tr("Choose the customer first: this register has no customer of its own for a sale nobody is named on.");
     const at = new Date();
-    // When it was sold, not when it reaches the server. The sale has its own id, made when it began.
+    // When it was sold, not when it reaches the server: on the clock its prices are for (the company's, else the workspace's),
+    // which the server prices it again at. The sale has its own id, made when it began.
+    const [day, hm] = momentIn(book?.time_zone, at).split(" ");
     const sale: Doc = {
       ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes }),
-      posting_date: localDate(at),
-      posting_time: at.toTimeString().slice(0, 8),
+      posting_date: day,
+      posting_time: `${hm}:${String(at.getUTCSeconds()).padStart(2, "0")}`,
     };
     const key = saleKey.current;
     const keep = (): string | null => {
