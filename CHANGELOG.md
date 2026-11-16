@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.5
+
+A till's offline snapshot is signed with Point of Sale's own key in the platform's vault: 64 hexadecimal digits of a key derived from it for that register and version, kept nowhere. Until now the server's key (`FERRUM_SECRET_KEY`) signed it, which the platform is making its own. Nothing checks a snapshot's signature yet (the till keeps it), so nothing signed before needs that key again; a till that compares signatures sees each register's change once, at the upgrade, for the same version. While the vault is closed the snapshot goes unsigned, as it did on a server without a key, and the log says why. It registers as itself (`hooks.app("pos", …)`) to be given its handle, and needs a platform with the vault (0.3.8 on the platform's main from cdec881). No database or interface change.
+
 ## 0.7.4
 
 Interface only (the Rust side is unchanged): two faults a browser walk found.
