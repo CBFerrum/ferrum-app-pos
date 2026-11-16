@@ -628,14 +628,11 @@ impl Consolidation<'_> {
             ferrum_calc::Rounding::HalfUp => RoundingStrategy::MidpointAwayFromZero,
         };
         let mut lines = Vec::new();
-        // (index of the invoice line, the POS line) for cards, whose secret is written before submit.
-        let mut cards: Vec<(usize, &ItemLine)> = Vec::new();
         for ((item, batch, income, cc, own), qty, net, serials) in merged {
             let pos_line = own.and_then(|o| self.items.iter().find(|l| l.id == o));
+            // A new card's code reaches the invoice line as ERP kept it for the till (its handle), never typed again.
+            let new_card = pos_line.filter(|l| l.stored_value_account.is_none());
             for (n, (q, price)) in logic::exact_lines(qty, net, co.precision, strategy).into_iter().enumerate() {
-                if let Some(l) = pos_line {
-                    cards.push((lines.len(), l));
-                }
                 // A zero price would be re-read from the price list: free goods go at 100% off.
                 let (price, discount) = if price.is_zero() { (Decimal::ONE, Decimal::ONE_HUNDRED) } else { (price, Decimal::ZERO) };
                 lines.push(json!({
@@ -643,6 +640,8 @@ impl Consolidation<'_> {
                     "income_account": income.map(|a| a.to_string()), "cost_center": cc.map(|c| c.to_string()), "batch_no": batch,
                     "serial_no": (n == 0 && !serials.is_empty()).then(|| serials.join("\n")),
                     "stored_value_account": pos_line.and_then(|l| l.stored_value_account).map(|a| a.to_string()),
+                    "stored_value_code": new_card.and_then(|l| l.stored_value_code.clone()),
+                    "stored_value_secret": new_card.and_then(|l| l.stored_value_secret.clone()),
                 }));
             }
         }
@@ -683,17 +682,6 @@ impl Consolidation<'_> {
         let input = input.as_object().cloned().unwrap_or_default();
         let draft = hc.kernel.insert_tx(&sctx, hc.tx, "SalesInvoice", input).await?;
         let si = id(&draft, "id").ok_or_else(|| Error::internal("no id"))?;
-        // A new card's code reaches the invoice line as the till kept it (its hash), never typed again.
-        let si_lines = rows(&draft, "items");
-        for (i, l) in cards.iter().filter(|(_, l)| l.stored_value_account.is_none()) {
-            sqlx::query("update e_sales_invoice__items set stored_value_code = $3, stored_value_secret = $4 where tenant_id = $1 and id = $2")
-                .bind(hc.ctx.tenant)
-                .bind(si_lines.get(*i).and_then(|r| id(r, "id")))
-                .bind(&l.stored_value_code)
-                .bind(&l.stored_value_secret)
-                .execute(&mut **hc.tx)
-                .await?;
-        }
         let si_doc = hc.kernel.submit_tx(&sctx, hc.tx, "SalesInvoice", si, None).await?;
         let expected: Decimal = group.iter().map(|i| i.total()).sum();
         if d(&si_doc, "rounded_total") != expected {

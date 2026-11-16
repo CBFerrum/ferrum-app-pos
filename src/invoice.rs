@@ -199,6 +199,17 @@ impl DocHook for PosInvoiceHook {
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        match old {
+            Some(old) => crate::stored::let_go(hc, old, Some(doc)).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        crate::stored::let_go(hc, doc, None).await
+    }
+
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         if name != "void" {
             return Ok(None);

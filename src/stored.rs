@@ -8,8 +8,9 @@
 //! own hook); a tender takes from it, or a refund gives back onto it, by a payment entry against
 //! that invoice or credit note, in the sale's own transaction, so each happens exactly once with the
 //! sale's submit (which a retry or a second sync cannot repeat). Codes are never kept: a line or a
-//! tender keeps the code's last four characters and, for a new card, the hash ERP keeps; a PIN is
-//! checked when the sale is saved (with ERP's guessing limits) and dropped.
+//! tender keeps the code's last four characters and, for a new card, the handle ERP answers for it
+//! (`stored_value::typed`), which the invoice line or refund passes on; a PIN is checked when the
+//! sale is saved (with ERP's guessing limits) and dropped.
 //!
 //! Offline, a till cannot see a balance: a payment method of this kind is refused offline unless it
 //! states an amount it may take offline (`ModeOfPayment.offline_limit`); such a sale is settled when
@@ -25,24 +26,32 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// The account an existing card's code names, without its PIN (value is given, not taken).
-async fn by_code(hc: &mut HookCtx<'_>, hash: &str) -> Result<Option<Uuid>> {
-    Ok(sqlx::query_scalar("select id from e_stored_value_account where tenant_id = $1 and code_hash = $2")
-        .bind(hc.ctx.tenant)
-        .bind(hash)
-        .fetch_optional(&mut **hc.tx)
-        .await?)
-}
-
 fn fresh(row: &Doc) -> Option<String> {
     s(row, "stored_value_code").filter(|c| !c.starts_with('•')).map(str::to_string)
 }
 
+/// ERP's refusal of a code (too short) on the row it was typed on.
+fn at(e: Error, field: String) -> Error {
+    match e {
+        Error::Invalid(m) => Error::field(field, m),
+        e => e,
+    }
+}
+
+/// A code typed for a card loaded or given back onto: the card it names, or a new card's code kept by ERP until the
+/// invoice line or refund that opens it (`stored_value_secret` holds ERP's handle, nothing a reader could use).
+async fn take(hc: &mut HookCtx<'_>, row: &mut Doc, code: &str, field: String) -> Result<()> {
+    let typed = sv::typed(hc.kernel, hc.ctx, hc.tx, code, s(row, "stored_value_pin")).await.map_err(|e| at(e, field))?;
+    set(row, "stored_value_account", typed.account.map(|a| json!(a.to_string())).unwrap_or(Value::Null));
+    set(row, "stored_value_secret", typed.kept.map(Value::String).unwrap_or(Value::Null));
+    set(row, "stored_value_code", typed.shown);
+    Ok(())
+}
+
 /// Before a sale is kept: each code typed is replaced by its last four characters. A line's code
-/// names the card topped up, or a new card (its hash kept for the invoice); a tender's code (and
+/// names the card topped up, or a new card (kept by ERP for the invoice); a tender's code (and
 /// PIN) names the card paid with, or on a return the card given back onto (a new card when unknown).
 pub(crate) async fn prepare(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> Result<()> {
-    let tenant = hc.ctx.tenant;
     let mut items = rows(doc, "items");
     let mut errors = Vec::new();
     for (i, r) in items.iter_mut().enumerate() {
@@ -50,18 +59,7 @@ pub(crate) async fn prepare(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profi
             continue;
         }
         if let Some(code) = fresh(r) {
-            let sec = sv::secret(tenant, &code, s(r, "stored_value_pin")).map_err(|e| Error::field(format!("items.{i}.stored_value_code"), e.to_string()))?;
-            match by_code(hc, &sec.hash).await? {
-                Some(acc) => {
-                    set(r, "stored_value_account", acc.to_string());
-                    set(r, "stored_value_secret", Value::Null);
-                }
-                None => {
-                    set(r, "stored_value_account", Value::Null);
-                    set(r, "stored_value_secret", format!("{}:{}:{}", sec.hash, sec.hint, sec.pin_hash.unwrap_or_default()));
-                }
-            }
-            set(r, "stored_value_code", sv::masked(&sec.hint));
+            take(hc, r, &code, format!("items.{i}.stored_value_code")).await?;
         }
         set(r, "stored_value_pin", Value::Null);
         if id(r, "stored_value_account").is_none() && s(r, "stored_value_secret").is_none() {
@@ -78,19 +76,17 @@ pub(crate) async fn prepare(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profi
         }
         let kind = id(&mode.doc, "stored_value_kind").ok_or_else(|| Error::invalid(format!("{} names no stored value kind", mode.name)))?;
         if let Some(code) = fresh(p) {
-            let pin = s(p, "stored_value_pin").map(str::to_string);
-            let sec = sv::secret(tenant, &code, pin.as_deref()).map_err(|e| Error::field(format!("payments.{i}.stored_value_code"), e.to_string()))?;
-            let (acc, secret) = if ret {
-                match by_code(hc, &sec.hash).await? {
-                    Some(a) => (Some(a), None),
-                    None => (None, Some(format!("{}:{}:{}", sec.hash, sec.hint, sec.pin_hash.unwrap_or_default()))),
-                }
+            let field = format!("payments.{i}.stored_value_code");
+            if ret {
+                take(hc, p, &code, field).await?;
             } else {
-                (Some(sv::find(hc.kernel, hc.ctx, hc.tx, Some(kind), &code, pin.as_deref()).await?), None)
-            };
-            set(p, "stored_value_account", acc.map(|a| json!(a.to_string())).unwrap_or(Value::Null));
-            set(p, "stored_value_secret", secret.map(Value::String).unwrap_or(Value::Null));
-            set(p, "stored_value_code", sv::masked(&sec.hint));
+                let pin = s(p, "stored_value_pin").map(str::to_string);
+                let hint = sv::secret(hc.ctx.tenant, &code, None).map_err(|e| at(e, field))?.hint;
+                let acc = sv::find(hc.kernel, hc.ctx, hc.tx, Some(kind), &code, pin.as_deref()).await?;
+                set(p, "stored_value_account", acc.to_string());
+                set(p, "stored_value_secret", Value::Null);
+                set(p, "stored_value_code", sv::masked(&hint));
+            }
         }
         set(p, "stored_value_pin", Value::Null);
         if id(p, "stored_value_account").is_none() && !(ret && s(p, "stored_value_secret").is_some()) {
@@ -99,6 +95,21 @@ pub(crate) async fn prepare(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profi
     }
     set(doc, "payments", crate::rows_value(payments));
     if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+}
+
+/// The new cards' codes ERP keeps for a sale's lines and tenders.
+fn kept(doc: &Doc) -> Vec<String> {
+    ["items", "payments"].iter().flat_map(|t| rows(doc, t)).filter_map(|r| s(&r, "stored_value_secret").map(str::to_string)).collect()
+}
+
+/// Codes ERP kept for a draft that no longer holds them (typed again, the row taken off, the draft deleted): ERP
+/// lets them go, so no hash outlives the sale it was typed for.
+pub(crate) async fn let_go(hc: &mut HookCtx<'_>, old: &Doc, now: Option<&Doc>) -> Result<()> {
+    let still = now.map(kept).unwrap_or_default();
+    for k in kept(old).into_iter().filter(|k| !still.contains(k)) {
+        sv::forget(hc.ctx, hc.tx, &k).await?;
+    }
+    Ok(())
 }
 
 /// Whether a sale loads, takes or gives back stored value.
@@ -166,20 +177,15 @@ pub(crate) async fn settle(hc: &mut HookCtx<'_>, doc: &Doc, invoice: Uuid) -> Re
             "remarks": format!("Register sale {}", s(doc, "number").unwrap_or_default())});
         match account {
             Some(a) => v["stored_value_account"] = json!(a.to_string()),
-            None => v["stored_value_kind"] = mode.get("stored_value_kind").cloned().unwrap_or(Value::Null),
+            // A new card: its code reaches the refund as ERP kept it for the till (its handle), never typed again.
+            None => {
+                v["stored_value_kind"] = mode.get("stored_value_kind").cloned().unwrap_or(Value::Null);
+                v["stored_value_code"] = p.get("stored_value_code").cloned().unwrap_or(Value::Null);
+                v["stored_value_secret"] = p.get("stored_value_secret").cloned().unwrap_or(Value::Null);
+            }
         }
         let draft = hc.kernel.insert_tx(&sctx, hc.tx, "PaymentEntry", v.as_object().cloned().unwrap_or_default()).await?;
         let pid = id(&draft, "id").ok_or_else(|| Error::internal("no id"))?;
-        if account.is_none() {
-            // A new card: its code reaches the payment as the till kept it (its hash), never typed again.
-            sqlx::query("update e_payment_entry set stored_value_code = $3, stored_value_secret = $4 where tenant_id = $1 and id = $2")
-                .bind(hc.ctx.tenant)
-                .bind(pid)
-                .bind(p.get("stored_value_code").and_then(Value::as_str))
-                .bind(p.get("stored_value_secret").and_then(Value::as_str))
-                .execute(&mut **hc.tx)
-                .await?;
-        }
         hc.kernel.submit_tx(&sctx, hc.tx, "PaymentEntry", pid, None).await?;
         let (acc, left): (Uuid, Decimal) = sqlx::query_as(
             "select a.id, coalesce(a.balance, 0) from stored_value_entry e join e_stored_value_account a on a.tenant_id = e.tenant_id and a.id = e.account_id \
