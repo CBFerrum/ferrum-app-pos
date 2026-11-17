@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3
+
+Server only. Needs the same platform and ERP as 0.9.2. No interface or database change.
+
+- **A closing books each day's sales on that day.** The consolidated sales invoices and credit notes were all dated on
+  the closing's day, and one journal entry settled them there, while each sale's stock had left on the day it was
+  sold: a session that ran past midnight at a month's or tax period's end, or was closed days later, put the earlier
+  day's revenue and output tax in the later period, and a sale whose month had been closed since still reached the
+  books, in the open month. Sales and returns are now consolidated per customer and day of sale (and original
+  invoice), each invoice dated on its day and settled on it, one journal entry per day of sale; a closing whose sales
+  fall in a closed period is refused, as their stock would be. What the count found missing or extra is booked on
+  the closing's day, as before.
+- **The register's dates and times are the workspace's.** The day a till's own date may run ahead of was the UTC day;
+  a sale the till did not time took the UTC time of day beside the workspace's date (and was priced, and its stock
+  ordered, at that time); and the lowest price a return without a receipt is priced at, the points that expire and
+  the price the item lookup shows were all read against the database's day, which is UTC. All are on the workspace's
+  day and clock now, so a shop east or west of UTC no longer meets yesterday's or tomorrow's rules around midnight.
+
 ## 0.9.2
 
 Needs ERP 0.30.4 or later (`stored_value::typed`) and the same platform as 0.9.1. No interface change.

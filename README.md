@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.2-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.3-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -28,7 +28,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 - 📴 **It sells offline.** The till's page, files and price book stay on the device. Sales wait in a queue with who made them and go when the connection, or the cashier's session, is back.
 - 🧮 **One pricing engine.** ERP's pricing code is compiled to WebAssembly and runs in the till, so prices, promotions and taxes offline match what the server prices again on arrival.
-- 🧾 **It closes into the books.** Closing a shift consolidates the sales into ERP sales invoices and credit notes, with one settlement entry, cash differences booked and every total checked to the unit.
+- 🧾 **It closes into the books.** Closing a shift consolidates the sales into ERP sales invoices and credit notes dated on each sale's day and settled that day, cash differences booked and every total checked to the unit.
 - 🛡️ **Control without friction.** Limits by role, approvals by another person's PIN without signing out, voids with reasons, a log of every reprint, and blind cash counts.
 - ↩️ **Returns that follow the money.** With or without a receipt, exchanges as one transaction, refunds through the way the sale was paid, and a return policy per register.
 - 🎁 **Gift cards, store credit and loyalty** are built in, through ERP's stored value and the app's points ledger with tiers and expiry.
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.9.2 |
+| **Version** | 0.9.3 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.3.8, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.30.4` (installing Point of Sale installs ERP) |
@@ -202,9 +202,9 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 ### 🏦 Closing into the books
 
 - **On sale:** stock leaves the register's warehouse with its valuation entry (cost of goods sold against stock), as a delivery note would.
-- **On closing:** paid sales become one sales invoice per customer. A sale with a credit part gets its own invoice, so each unpaid sale is a separate receivable with its due date. Returns become one credit note per customer and original invoice and never move stock again.
+- **On closing:** paid sales become one sales invoice per customer and day of sale, dated on that day, so a shift that runs past midnight or is closed days later puts each day's revenue and tax in that day's period; a closing whose sales fall in a closed period is refused. A sale with a credit part gets its own invoice, so each unpaid sale is a separate receivable with its due date. Returns become one credit note per customer, original invoice and day and never move stock again.
 - **Exact.** Taxes are the POS taxes as fixed amounts and cash rounding is carried as an amount, so every consolidated total equals its POS invoices. A mismatch refuses the closing.
-- **One settlement entry** debits each payment method's account (cash net of change), the loyalty expense for redeemed points and the write-off account, and credits the receivable.
+- **One settlement entry per day of sale**, dated that day, debits each payment method's account (cash net of change), the loyalty expense for redeemed points and the write-off account, and credits the receivable. What the count found missing or extra is booked on the closing's day.
 - **Cancelling a closing** reverses the settlement, cancels its invoices and credit notes, returns the sales to Paid, Unpaid or Return and reopens the session. It is refused when later credit notes, payments or returns depend on it.
 - **A POS invoice can be voided** only before its session closes. Afterwards, make a return.
 
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.9.3:** a closing books each day's sales, tax and takings on that day; the register's dates and times are the workspace's, not UTC's.
 - [x] **0.9.2:** a gift card sold at the till opens again on today's ERP, its code handed on as ERP keeps it; one SQL file.
 - [x] **0.9.1:** the till's days and times on the workspace's clock, no exchange key, no 0.7.1 price book; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.7.4:** a fix for the shift screen reached from the till, and a register with no default customer asks for one.

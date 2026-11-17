@@ -219,7 +219,7 @@
     - {name: customer, type: link, to: Customer, in_filter: true, description: Empty = the profile's default customer}
     - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, description: "HH:MM:SS of the sale on the device (UTC); empty = now"}
+    - {name: posting_time, type: data, description: "HH:MM:SS of the sale, local time as the till sends it; empty = now on the workspace's clock"}
     - {name: sold_offline, type: check, no_copy: true, in_filter: true, label: Sold Offline, description: "Made while the till could not reach the server, and sent when it could"}
     - {name: is_return, type: check, in_filter: true}
     - {name: without_receipt, type: check, no_copy: true, visible_if: "doc.is_return", label: Without a Receipt,

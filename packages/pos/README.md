@@ -217,15 +217,19 @@ the session, then consolidates and closes the session.
 * **On sale**: stock leaves the register's warehouse with its valuation entry (Dr cost of goods
   sold, Cr stock), exactly as a delivery note — stock value and stock accounts always agree.
 * **On closing**: the session's paid sales become **one Sales Invoice per
-  customer**; a sale with a Credit (pay later) part gets **its own Sales Invoice**, so each unpaid
-  sale is a separate receivable with its due date. Returns become **one credit note per customer
-  and original invoice**. They never move stock (`update_stock` off). Taxes are the POS taxes as
-  fixed amounts and cash rounding is carried as an amount to the round-off account, so every
-  consolidated total equals its POS invoices exactly (verified; a mismatch refuses the closing).
-* One journal entry of the closing settles each consolidated invoice: Dr each payment method's
-  account (cash net of change), Dr loyalty expense for redeemed points, Dr write-off account,
-  Cr the receivable (allocated to the invoice). Credit parts stay open on their invoice.
-  Counting differences post between the payment method's account and the cash-difference account
+  customer and day of sale**, dated on that day (a session that runs past midnight, or is closed
+  days later, puts each day's revenue and tax in that day's period; a closing whose sales fall in a
+  closed period is refused, as their stock was); a sale with a Credit (pay later) part gets **its
+  own Sales Invoice**, so each unpaid sale is a separate receivable with its due date. Returns
+  become **one credit note per customer, original invoice and day**. They never move stock
+  (`update_stock` off). Taxes are the POS taxes as fixed amounts and cash rounding is carried as an
+  amount to the round-off account, so every consolidated total equals its POS invoices exactly
+  (verified; a mismatch refuses the closing).
+* One journal entry of the closing per day of sale, dated that day, settles that day's
+  consolidated invoices: Dr each payment method's account (cash net of change), Dr loyalty expense
+  for redeemed points, Dr write-off account, Cr the receivable (allocated to the invoice), so no
+  day ends with its takings owed. Credit parts stay open on their invoice. Counting differences
+  post on the closing's day between the payment method's account and the cash-difference account
   (default: company round-off account).
 * Cancelling a closing reverses the settlement, cancels its invoices and credit notes, returns the
   POS invoices to Paid/Unpaid/Return and reopens the session. It is refused when later credit notes,
