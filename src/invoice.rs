@@ -38,11 +38,6 @@ fn credit_of(doc: &Doc) -> Decimal {
     rows(doc, "payments").iter().filter(|p| kind_of(p) == Some(Kind::Credit)).map(|p| d(p, "amount")).sum()
 }
 
-/// The current UTC time of day, for sales the client did not time.
-fn now_time() -> String {
-    chrono::Utc::now().format("%H:%M:%S").to_string()
-}
-
 #[async_trait]
 impl DocHook for PosInvoiceHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -64,8 +59,9 @@ impl DocHook for PosInvoiceHook {
         set(doc, "conversion_rate", money(Decimal::ONE));
         set(doc, "set_warehouse", profile.warehouse.to_string());
         set(doc, "cost_center", profile.doc.get("cost_center").cloned().unwrap_or(Value::Null));
+        // A sale the till did not time is timed on the workspace's clock, the clock its day is taken from.
         if s(doc, "posting_time").is_none() {
-            set(doc, "posting_time", now_time());
+            set(doc, "posting_time", hc.ctx.now_local().format("%H:%M:%S").to_string());
         }
         let mut named = false;
         if b(doc, "is_return") && b(doc, "without_receipt") {
@@ -137,8 +133,8 @@ impl DocHook for PosInvoiceHook {
         let mut errors = Vec::new();
         let day = date(doc, "posting_date")?;
         let opened = date(&session, "posting_date")?;
-        let today = chrono::Utc::now().date_naive();
-        // Offline devices send their own date; it must fall inside the session (one day of clock slack).
+        let today = hc.ctx.today();
+        // Offline devices send their own date; it must fall inside the session (one day of clock slack on the workspace's day).
         if day < opened || day > today + chrono::Duration::days(1) {
             errors.push(FieldError::new("posting_date", format!("must be within the session, from {opened} to today")));
         }
@@ -778,17 +774,17 @@ fn fees(policy: Option<&Doc>) -> Vec<(String, Decimal)> {
     policy.map(|p| rows(p, "fees").iter().filter_map(|f| Some((s(f, "condition")?.to_string(), d(f, "fee_percent")))).collect()).unwrap_or_default()
 }
 
-/// The lowest the register sold `item` for over the last `days` days.
+/// The lowest the register sold `item` for over the last `days` days of the workspace.
 async fn lowest_sold(hc: &mut HookCtx<'_>, profile: Uuid, item: Option<Uuid>, days: i64) -> Result<Option<Decimal>> {
     Ok(sqlx::query_scalar(
         "select min(l.rate) from e_pos_invoice__items l join e_pos_invoice p on p.tenant_id = l.tenant_id and p.id = l.parent_id \
          where p.tenant_id = $1 and p.pos_profile = $2 and p.docstatus = 1 and not coalesce(p.is_return, false) and l.item = $3 and l.qty > 0 \
-         and p.posting_date >= current_date - $4::int",
+         and p.posting_date >= $4",
     )
     .bind(hc.ctx.tenant)
     .bind(profile)
     .bind(item)
-    .bind(days as i32)
+    .bind(hc.ctx.today() - chrono::Duration::days(days))
     .fetch_one(&mut **hc.tx)
     .await?)
 }

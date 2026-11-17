@@ -512,8 +512,9 @@ async fn returns(tx: &mut Tx, ctx: &Ctx, r: &Range) -> Result<Value> {
 /// One query per scan: the code is matched against item barcodes, the item's own barcode and
 /// the item code (in that order); `search` matches codes and names, `item_group` browses a
 /// group (both limited to the register's item groups). Prices come from the register's price
-/// list (else the item's standard rate) and stock from its warehouse. Pricing rules apply on the
-/// invoice, which (or its `_calc` preview) is the authority on the final price.
+/// list as it stands on the workspace's day (else the item's standard rate) and stock from its
+/// warehouse. Pricing rules apply on the invoice, which (or its `_calc` preview) is the authority
+/// on the final price.
 async fn item_lookup(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
     let profile = p.uuid("pos_profile")?.ok_or_else(|| Error::field("pos_profile", "is required"))?;
     let code = p.str("code");
@@ -536,7 +537,7 @@ async fn item_lookup(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
            union all (select id, 1, 4 from e_item where tenant_id = $1 and $3::text is null and $4::text is null and item_group = $6 order by item_code limit 200)) \
          select i.id, i.item_code, i.item_name, u.uom_name, i.stock_uom, h.qty, \
            coalesce((select ip.rate from e_item_price ip where ip.tenant_id = $1 and ip.item = i.id and ip.price_list = (select id from lst) \
-             and ip.valid_from <= current_date and (ip.valid_upto is null or ip.valid_upto >= current_date) order by ip.valid_from desc limit 1), i.standard_rate), \
+             and ip.valid_from <= $7 and (ip.valid_upto is null or ip.valid_upto >= $7) order by ip.valid_from desc limit 1), i.standard_rate), \
            coalesce((select b.qty from stock_balance b where b.tenant_id = $1 and b.item_id = i.id and b.warehouse_id = (select warehouse from prof)), 0), \
            i.is_stock_item, i.has_serial_no, i.has_batch_no, i.item_group \
          from hit h join e_item i on i.tenant_id = $1 and i.id = h.item left join e_uom u on u.tenant_id = i.tenant_id and u.id = i.stock_uom \
@@ -549,6 +550,7 @@ async fn item_lookup(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
     .bind(&search)
     .bind(p.str("search"))
     .bind(group)
+    .bind(ctx.today())
     .fetch_all(&mut **tx)
     .await?;
     let out: Vec<Value> = data

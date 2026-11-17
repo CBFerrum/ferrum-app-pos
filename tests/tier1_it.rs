@@ -1,7 +1,9 @@
 //! The till's rules a business varies, against a real PostgreSQL (the same database as `pos_it`,
 //! reset first; cargo runs test binaries one after the other): limits by role, approval by another
-//! person's PIN, voids with reasons, reprints, stored value, returns without a receipt and exchanges.
+//! person's PIN, voids with reasons, reprints, stored value, returns without a receipt and exchanges,
+//! and the register's dates on the workspace's day rather than UTC's.
 
+use chrono::Timelike;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery, SiteRequest};
 use ferrum_meta::Catalog;
@@ -667,4 +669,90 @@ async fn scenario() {
         }
     }
     assert_eq!(rests, Vec::<String>::new(), "a staff PIN or a card's code or PIN rests in these tables");
+
+    // ───────────── the workspace's day and time, not UTC's ─────────────
+    // A test cannot set the clock: as the platform's own suites do, the workspace moves to a zone whose day is not UTC's
+    // now (UTC-11 before 10:00 UTC, UTC+14 after), and what the register dates and counts is held to the workspace's day.
+    let zone = if chrono::Utc::now().hour() < 10 { "Pacific/Pago_Pago" } else { "Pacific/Kiritimati" };
+    t.k.update_tenant_settings(&a, json!({"timezone": zone}).as_object().unwrap()).await.expect("the zone");
+    let again = |who: &Ctx| t.k.load_ctx(tenant, who.user, None, "it".into());
+    let (a, manager, colleague) = (again(&a).await.unwrap(), again(&manager).await.unwrap(), again(&colleague).await.unwrap());
+    let today = a.today();
+    assert_ne!(today, chrono::Utc::now().date_naive(), "the workspace's day is not UTC's");
+    let day = |n: i64| (today + chrono::Duration::days(n)).to_string();
+    let ago = t.insert(&colleague, "PosOpeningEntry", json!({"pos_profile": counter.to_string(), "posting_date": day(-31)})).await;
+    let ago = uid(&t.k.submit(&colleague, "PosOpeningEntry", uid(&ago), None).await.expect("a session opened a month ago"));
+    let at = |n: i64, items: Value| json!({"pos_profile": counter.to_string(), "pos_opening_entry": ago.to_string(), "posting_date": day(n), "items": items});
+    // A till's own date may run a day ahead of the workspace's, not two; a sale it did not time is timed on the
+    // workspace's clock, as it is dated.
+    let ahead = t.k.insert(&colleague, "PosInvoice", obj(at(1, json!([line(widget, "1")])))).await;
+    assert!(ahead.is_ok(), "a day ahead of the workspace ({}): {:?}", day(1), ahead.as_ref().err());
+    let beyond = t.k.insert(&colleague, "PosInvoice", obj(at(2, json!([line(widget, "1")])))).await;
+    assert!(
+        matches!(beyond, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "posting_date")),
+        "two days ahead ({}): {:?}",
+        day(2),
+        beyond.map(|d| d["posting_date"].clone())
+    );
+    let ahead = ahead.unwrap();
+    let timed = chrono::NaiveTime::parse_from_str(ahead["posting_time"].as_str().unwrap(), "%H:%M:%S").unwrap();
+    let behind = (a.now_local().time() - timed).num_minutes().rem_euclid(24 * 60);
+    assert!(behind < 5, "timed {timed}; the workspace's time is {}", a.now_local().time());
+    t.k.delete(&a, "PosInvoice", uid(&ahead), None).await.expect("drop the draft");
+    // The lowest the register sold a widget for over the policy's 30 days, in the workspace's days: 80 thirty days ago is
+    // in, 70 the day before is out.
+    let expense = uid(&t.find_one("Account", json!({"account_name": "Administrative Expenses", "company": cid.to_string()})).await);
+    t.insert(
+        &a,
+        "LoyaltyProgram",
+        json!({"program_name": "Points", "company": cid.to_string(), "conversion_factor": "1", "expiry_days": 365, "expense_account": expense.to_string(),
+               "tiers": [{"tier_name": "All", "min_spent": "0", "collection_factor": "10"}]}),
+    )
+    .await;
+    let regular = uid(&t.insert(&a, "Customer", json!({"customer_name": "Regular"})).await);
+    let sold = |n: i64, off: &str, paid: &str| {
+        let mut v = at(n, json!([{"item": widget.to_string(), "qty": "1", "discount_percent": off}]));
+        v["customer"] = json!(regular.to_string());
+        v["payments"] = json!([pay(&card, paid)]);
+        v
+    };
+    let outside = t.sell(&manager, sold(-31, "30", "77")).await;
+    let inside = t.sell(&manager, sold(-30, "20", "88")).await;
+    let unreceipted = json!({"pos_profile": counter.to_string(), "pos_opening_entry": ago.to_string(), "is_return": true, "without_receipt": true,
+                             "items": [line(widget, "-1")]});
+    let back = t.insert(&manager, "PosInvoice", unreceipted).await;
+    assert_eq!(dec(&back["items"][0]["price_list_rate"]), n("80"), "the lowest over the workspace's last 30 days");
+    t.k.delete(&a, "PosInvoice", uid(&back), None).await.expect("drop the draft");
+    // Points that ran out yesterday where the workspace is go; points good until today stay.
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    for (sale, until) in [(&outside, day(-1)), (&inside, day(0))] {
+        sqlx::query("update e_loyalty_point_entry set expiry_date = $3::date where tenant_id = $1 and pos_invoice = $2 and entry_type = 'Earn'")
+            .bind(tenant)
+            .bind(uid(sale))
+            .bind(until)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    ferrum_app_pos::maintenance(&t.k).await.expect("expiry");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    let left: Vec<i64> = sqlx::query_scalar(
+        "select remaining from e_loyalty_point_entry where tenant_id = $1 and pos_invoice = any($2) and entry_type = 'Earn' order by posting_date",
+    )
+    .bind(tenant)
+    .bind(vec![uid(&outside), uid(&inside)])
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    drop(tx);
+    assert_eq!(left, vec![0, 8], "expired yesterday, good until today");
+    // A scan shows the price in force on the workspace's day.
+    let gum = uid(&t.insert(&a, "Item", item("GUM")).await);
+    for (from, upto, rate) in [(day(0), Value::String(day(0)), "7"), (day(1), Value::Null, "8")] {
+        t.insert(&a, "ItemPrice", json!({"item": gum.to_string(), "price_list": selling["id"], "rate": rate, "valid_from": from, "valid_upto": upto})).await;
+    }
+    let ask: std::collections::HashMap<String, String> = [("pos_profile".to_string(), counter.to_string()), ("code".to_string(), "GUM".to_string())].into();
+    let found = ferrum_app_pos::reports()[0].run(&t.k, &colleague, "pos_item_lookup", &ask).await.expect("the lookup");
+    assert_eq!(dec(&found["rows"][0]["rate"]), n("7"), "the price in force on the workspace's day");
 }

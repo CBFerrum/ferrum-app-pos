@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.2-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.3-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.9.2 |
+| **Version** | 0.9.3 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.3.8, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.30.4` (installing Point of Sale installs ERP) |
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.9.3:** a closing books each day's sales, tax and takings on that day; the register's dates and times are the workspace's, not UTC's.
 - [x] **0.9.2:** a gift card sold at the till opens again on today's ERP, its code handed on as ERP keeps it; one SQL file.
 - [x] **0.9.1:** the till's days and times on the workspace's clock, no exchange key, no 0.7.1 price book; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.7.4:** a fix for the shift screen reached from the till, and a register with no default customer asks for one.

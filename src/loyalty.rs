@@ -256,12 +256,14 @@ pub(crate) async fn expire_points(k: &Kernel) -> Result<()> {
         }
         let ctx = Ctx::system(tenant, schema);
         let mut tx = k.db.tenant_tx(tenant).await?;
-        // Served by the partial index on live earnings (sql/001_loyalty.sql): only what is due is read.
+        // Served by the partial index on live earnings (sql/001_loyalty.sql): only what is due is read. Due before the
+        // workspace's day, not the database's (UTC).
         let due: Vec<(Uuid, Uuid, Uuid, Uuid, i64, NaiveDate)> = sqlx::query_as(
             "select id, loyalty_program, customer, company, remaining, expiry_date from e_loyalty_point_entry \
-             where tenant_id = $1 and expiry_date < current_date and remaining > 0 order by expiry_date limit 500 for update skip locked",
+             where tenant_id = $1 and expiry_date < $2 and remaining > 0 order by expiry_date limit 500 for update skip locked",
         )
         .bind(tenant)
+        .bind(ctx.today())
         .fetch_all(&mut *tx)
         .await?;
         for (entry, program, customer, company, remaining, expiry) in &due {
