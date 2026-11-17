@@ -186,7 +186,7 @@ impl DocHook for CashMovementHook {
 
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-        let (on, _) = ledger::reversal_point(hc.tx, hc.ctx.tenant, co.id, doc).await?;
+        let (on, _) = ledger::reversal_point(hc.tx, hc.ctx, co.id, doc).await?;
         ledger::reverse(hc.tx, hc.ctx, "PosCashMovement", id(doc, "id").unwrap_or_default(), on, co.precision).await?;
         Ok(())
     }

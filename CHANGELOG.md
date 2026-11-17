@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.5
+
+Needs ERP 0.32.0 or later and the same platform as 0.9.4. No interface or database change.
+
+- **Builds against ERP 0.32.0.** ERP's `ledger::reversal_point` takes the context instead of the tenant id; the closing, the invoice and the session pass it. No figure in a test changed.
+
 ## 0.9.4
 
 Needs ERP 0.31.0 or later and the same platform as 0.9.3. No interface or database change.

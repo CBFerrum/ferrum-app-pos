@@ -344,7 +344,7 @@ impl DocHook for PosInvoiceHook {
         let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
         let mut co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
         co.allow_negative_stock |= b(&profile.doc, "allow_negative_stock");
-        let (on, ts) = ledger::reversal_point(hc.tx, hc.ctx.tenant, co.id, doc).await?;
+        let (on, ts) = ledger::reversal_point(hc.tx, hc.ctx, co.id, doc).await?;
         stock::reverse_moves(hc.tx, hc.ctx, &co, "PosInvoice", iid, on, ts).await?;
         ledger::reverse(hc.tx, hc.ctx, "PosInvoice", iid, on, co.precision).await?;
         loyalty::on_cancel(hc, doc).await?;
