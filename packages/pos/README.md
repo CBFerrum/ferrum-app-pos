@@ -2,11 +2,11 @@
 
 Registers, cashier sessions, fast POS invoices with split payments and returns, loyalty points,
 cash control, and end-of-day consolidation into sales invoices and the books. Business logic:
-`crates/pkg-pos`. Depends on `core`, `accounting`, `inventory`, `selling`.
+`src/`. Depends on `core`, `accounting`, `inventory`, `selling`.
 
 | Entity | What it is |
 |---|---|
-| `ModeOfPayment` (ERP's, from 0.6.2) | Tender. Point of Sale adds `mode_type` Cash, Bank (card, UPI, wallet), General, Credit (on account), Loyalty Points; stored-value kind and offline limit, and `account` on ERP's accounts per company (Cash/Bank fall back to the company cash/bank account). Seeded: Cash, Card, UPI, Wallet, Credit, Loyalty Points |
+| `ModeOfPayment` (ERP's) | Tender. Point of Sale adds `mode_type` Cash, Bank (card, UPI, wallet), General, Credit (on account), Loyalty Points; stored-value kind and offline limit, and `account` on ERP's accounts per company (Cash/Bank fall back to the company cash/bank account). Seeded: Cash, Card, UPI, Wallet, Credit, Loyalty Points |
 | `PosProfile` | A register: company, warehouse, price list, walk-in customer, tax template, payment methods (default, allowed in returns), invoice prefix, write-off account/limit, cash-difference account, negative stock, cashier discount/price rights, item and customer groups, receipt texts |
 | `PosOpeningEntry` | A cashier's session (submittable): opening float per payment method. One open session per register and cashier |
 | `PosInvoice` | A sale or return (submittable). Stock moves on submit; numbers are `PREFIX-<FY>-000001`, gapless per prefix |
@@ -14,11 +14,16 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 | `PosReceiptEvent` | A copy or gift receipt printed, or a receipt sent: who, when, why, by whose approval (read-only; the address is in the message log) |
 | `PosPriceDifference` | A sale made offline whose totals (the till's, its snapshot's, the recorded one) disagree, waiting for review |
 | `PosClosingEntry` | Ends a session: counted vs expected per payment method, then consolidation |
+| `PosStockShortfall` | Stock a till sold offline beyond what the warehouse held, waiting for a manager to put right |
+| `PosReturnPolicy` | How a register takes returns: the days a sale is taken back within, what a return without a receipt comes back at and is refunded to, restocking fees by condition, and how an exchange carries what comes back to what goes out |
+| `PosRoleLimit` | What a role may do at the till without another person approving it; a row can name one register |
+| `PosReason` | The reasons the till offers for voids, returns, opening the drawer without a sale and reprints |
+| `PosApproval` | One person's approval, by their PIN at the till, of one act another person asked beyond their limits (read-only) |
 | `LoyaltyProgram`, `LoyaltyPointEntry` | Tiers by lifetime spend, points value, expiry; the points ledger (read-only) |
 | `ItemBarcode` | Extra barcodes per item (pack barcodes add several units per scan). `Item.barcode` and `Item.item_code` scan too |
 
 Documents a workspace edits under Settings: `pos.receipt`, `pos.receipt_gift`, `pos.shift_report`, `pos.cash_slip`; message `pos.receipt_sent` (reads `values.company` and `values.currency`).
-Routes: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, besides `/pricebook`, `/limits`, `/returns`, `/exchange`, `/approve`.
+Routes under `/api/app/pos/`: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, `GET /returns`, `GET /returns/{sale}`, `POST /exchange`, `POST /approve`, `POST /pin`, `POST /balance` and `GET /limits`.
 
 Roles: **Cashier** (own sessions, sales, returns, cash movements; may draft the closing count) and
 **POS Manager** (everything, including discounts beyond the register limit, price changes, voids,
@@ -162,13 +167,13 @@ GET /api/app/pos/returns/{sale}?profile=<profile>
    "lines": [{"id", "item", "item_name", "sold", "returned", "left", "serials": […], "note"}],
    "paid_with": [{"mode", "paid", "refunded", "left"}],          // per payment method, cash net of change
    "methods": [{"mode", "name", "kind", "usable", "why"}],       // the register's, with whether it refunds through them
-   "refundable": {"money", "loyalty", "credit"},                 // what the return's check allows, per class
+   "refundable": {"money", "loyalty", "credit", "stored_value"},  // what the return's check allows, per class
    "loyalty": {"factor", "points_left"} | null,                  // points go back as points
    "receipt": {…}}                                               // to print a copy
 ```
 
 These are the figures the return's own check uses (`credit` is cancelled first, `loyalty` goes back as
-points, `money` as cash or to cards), so a client can show what would be refused before it is.
+points, `money` as cash or to cards, `stored_value` onto a card), so a client can show what would be refused before it is.
 
 ### 7. Cash in / out
 
@@ -211,7 +216,7 @@ the session, then consolidates and closes the session.
 
 * **On sale**: stock leaves the register's warehouse with its valuation entry (Dr cost of goods
   sold, Cr stock), exactly as a delivery note — stock value and stock accounts always agree.
-* **On closing** (ERPNext-compatible): the session's paid sales become **one Sales Invoice per
+* **On closing**: the session's paid sales become **one Sales Invoice per
   customer**; a sale with a Credit (pay later) part gets **its own Sales Invoice**, so each unpaid
   sale is a separate receivable with its due date. Returns become **one credit note per customer
   and original invoice**. They never move stock (`update_stock` off). Taxes are the POS taxes as
@@ -249,4 +254,3 @@ expire `expiry_days` after the sale (`maintenance`, every minute). The walk-in c
 * Cash rounding follows the company's `round_total_to`.
 * A named customer with a credit limit is checked at the register against outstanding plus unclosed
   register sales, because the consolidated invoice counts against the limit like any sales invoice.
-* Gift cards / store credit are not included.

@@ -14,7 +14,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-data-336791?style=flat-square&logo=postgresql&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-087ea4?style=flat-square&logo=react&logoColor=white)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-pricing-654ff0?style=flat-square&logo=webassembly&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-18%20Rust%20%C2%B7%20153%20UI-16a34a?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-17%20Rust%20%C2%B7%20155%20UI-16a34a?style=flat-square)
 
 ### A till that keeps selling when the network drops, and closes into your books when the shift ends.
 
@@ -42,10 +42,10 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 | **Version** | 0.9.2 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
-| **Depends on** | Ferrum platform `>=0.3.1, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.30.4` (installing Point of Sale installs ERP) |
+| **Depends on** | Ferrum platform `>=0.3.8, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.30.4` (installing Point of Sale installs ERP) |
 | **Works with** | ERP (items, prices, promotions, stored value, invoices, stock), [Retail](https://github.com/CBFerrum/ferrum-app-retail) (goods sold at a till can be returned at any store), Mail and messages (receipts by message) |
 | **Languages** | English, Arabic (right to left), Hindi |
-| **Tests** | 18 Rust tests, 153 interface tests |
+| **Tests** | 17 Rust tests, 155 interface tests |
 | **Licence** | AGPL-3.0-only |
 
 ## 📸 Screenshots
@@ -141,7 +141,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Change comes only out of cash.** Card, UPI and points cannot exceed what is due. A shortfall up to the register's write-off limit is written off.
 - **On account.** Credit sells to a named customer who pays later, within their credit limit, which counts the register's unclosed sales.
 - **Loyalty points** as a way of paying, with the customer's balance shown.
-- **Stored value.** A gift card or store credit taken in whole or in part, after its balance, state and expiry are read. The code and PIN go in boxes, are sent in the one request and are never kept anywhere.
+- **Stored value.** A gift card or store credit taken in whole or in part, after its balance, state and expiry are read. The code and PIN go in boxes and are sent in the one request; the till keeps neither. A new card's code is kept by ERP under a one-time handle until the sale is submitted, and a PIN is checked when the sale is saved.
 - **Invoice now.** A switch on the payment step for a sale that should get its own sales invoice at once.
 - **A buyer's tax registration.** The buyer can give a tax registration number and name. The customer holding the number is found, or made (the register's choice: Find or Create, or Find Only), in a group you name. Which fields hold a registration, and which numbers are valid for a business, come from the installed country add-ons: this app knows no country.
 - **Tax invoice at the sale.** A registered buyer can get their own sales invoice when the sale is made, or be invoiced with the others at closing. A sale above a limit needs a named buyer.
@@ -341,7 +341,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Held on the device only, per register and cashier; not shared between tills. ⁶ ERP's promotions for the Point of Sale channel and codes; whole-basket rules such as buy-one-get-one are not built. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Held on the device only, per register and cashier; not shared between tills. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -405,7 +405,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 - [ ] Age checks on restricted items.
 - [ ] Salesperson or commission attribution per sale and line.
 - [ ] Loyalty rewards: a free item at a number of points, coupons, stamp cards and birthday offers.
-- [ ] Whole-basket promotions such as spend X get Y off and buy one get one, and time windows.
+- [ ] Promotion codes and first-order promotions priced offline.
 - [ ] Offline returns, customer search and gift-card sales.
 - [ ] A time clock with breaks and hours to payroll.
 - [ ] A phone-sized layout for floor selling.
@@ -480,7 +480,7 @@ npm run test && npm run typecheck && npm run build && npm run check
 
 ```text
 app.yaml          the manifest: id, version, requirements, what it adds to Ferrum
-packages/pos/     metadata: entities, roles, reports, document templates, SQL migrations, a client guide
+packages/pos/     metadata: entities, roles, reports, document templates, SQL, a client guide
 src/              the logic in Rust: invoice, session, closing, returns, limits, snapshot,
                   stored value, loyalty, receipts, buyers, shortfalls, reports, the till's routes
 ui/               the till and its screens (React, TypeScript)
