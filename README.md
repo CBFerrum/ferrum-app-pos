@@ -28,7 +28,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 - 📴 **It sells offline.** The till's page, files and price book stay on the device. Sales wait in a queue with who made them and go when the connection, or the cashier's session, is back.
 - 🧮 **One pricing engine.** ERP's pricing code is compiled to WebAssembly and runs in the till, so prices, promotions and taxes offline match what the server prices again on arrival.
-- 🧾 **It closes into the books.** Closing a shift consolidates the sales into ERP sales invoices and credit notes, with one settlement entry, cash differences booked and every total checked to the unit.
+- 🧾 **It closes into the books.** Closing a shift consolidates the sales into ERP sales invoices and credit notes dated on each sale's day and settled that day, cash differences booked and every total checked to the unit.
 - 🛡️ **Control without friction.** Limits by role, approvals by another person's PIN without signing out, voids with reasons, a log of every reprint, and blind cash counts.
 - ↩️ **Returns that follow the money.** With or without a receipt, exchanges as one transaction, refunds through the way the sale was paid, and a return policy per register.
 - 🎁 **Gift cards, store credit and loyalty** are built in, through ERP's stored value and the app's points ledger with tiers and expiry.
@@ -202,9 +202,9 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 ### 🏦 Closing into the books
 
 - **On sale:** stock leaves the register's warehouse with its valuation entry (cost of goods sold against stock), as a delivery note would.
-- **On closing:** paid sales become one sales invoice per customer. A sale with a credit part gets its own invoice, so each unpaid sale is a separate receivable with its due date. Returns become one credit note per customer and original invoice and never move stock again.
+- **On closing:** paid sales become one sales invoice per customer and day of sale, dated on that day, so a shift that runs past midnight or is closed days later puts each day's revenue and tax in that day's period; a closing whose sales fall in a closed period is refused. A sale with a credit part gets its own invoice, so each unpaid sale is a separate receivable with its due date. Returns become one credit note per customer, original invoice and day and never move stock again.
 - **Exact.** Taxes are the POS taxes as fixed amounts and cash rounding is carried as an amount, so every consolidated total equals its POS invoices. A mismatch refuses the closing.
-- **One settlement entry** debits each payment method's account (cash net of change), the loyalty expense for redeemed points and the write-off account, and credits the receivable.
+- **One settlement entry per day of sale**, dated that day, debits each payment method's account (cash net of change), the loyalty expense for redeemed points and the write-off account, and credits the receivable. What the count found missing or extra is booked on the closing's day.
 - **Cancelling a closing** reverses the settlement, cancels its invoices and credit notes, returns the sales to Paid, Unpaid or Return and reopens the session. It is refused when later credit notes, payments or returns depend on it.
 - **A POS invoice can be voided** only before its session closes. Afterwards, make a return.
 

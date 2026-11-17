@@ -3,17 +3,21 @@
 //!
 //! As in ERPNext, the session's paid sales become one sales invoice per customer and its returns
 //! credit notes per customer (here per customer and original invoice, which a credit note must
-//! name). A sale left partly on account gets an invoice of its own, so each unpaid sale stays a
+//! name), each per day of sale and dated on that day: a session that runs past midnight, or is
+//! closed days later, puts each day's revenue and tax in that day's period, as its stock already
+//! was. A sale left partly on account gets an invoice of its own, so each unpaid sale stays a
 //! separate receivable with its own due date. Consolidated invoices never move stock (the POS
 //! invoices did); they carry the POS taxes as fixed amounts and the cash rounding as an amount,
-//! so each one totals exactly what its POS invoices did (checked). One journal entry of the
-//! closing then settles every consolidated invoice per payment method (cash net of change,
-//! cards, points, write-offs) and books what the count found missing or extra.
+//! so each one totals exactly what its POS invoices did (checked). The closing then settles every
+//! consolidated invoice per payment method (cash net of change, cards, points, write-offs) on its
+//! day, one journal entry a day, so no day ends with its takings owed by the customer; what the
+//! count found missing or extra is booked on the closing's own day.
 
 use crate::logic::{self, Kind, Tender};
 use crate::session::open_key;
 use crate::{Mode, Profile, is_manager, live_session, opt_dec, rows_value};
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use ferrum_app_erp::flow::sync_invoice_outstanding;
 use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{Company, company, d, date, elevated, get, id, money, rows, s, set, sys};
@@ -28,6 +32,8 @@ struct Inv {
     id: Uuid,
     number: Option<String>,
     customer: Uuid,
+    /// The sale's day: its consolidated invoice is dated on it.
+    posting_date: NaiveDate,
     is_return: bool,
     return_against: Option<Uuid>,
     rounded_total: Option<Decimal>,
@@ -68,7 +74,7 @@ struct Takings {
 impl Takings {
     async fn load(tx: &mut Tx, tenant: Uuid, session: Uuid, unconsolidated: bool) -> Result<Takings> {
         let invoices: Vec<Inv> = sqlx::query_as(
-            "select id, number, customer, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
+            "select id, number, customer, posting_date, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
              write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 \
              and docstatus = 1 and ($3 = false or consolidated_invoice is null or (invoiced_at_sale and pos_closing_entry is null)) \
              order by posting_date, posting_time, created_at",
@@ -494,15 +500,15 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
     .bind(&ids)
     .fetch_all(&mut **hc.tx)
     .await?;
-    let mut entry = Entry::new(co.id, on, "PosClosingEntry", cid, s(closing, "number").map(str::to_string));
-    entry.memo = Some(format!("POS closing of session {}", s(&session, "number").unwrap_or_default()));
     let ctx = Consolidation { co: &co, closing, profile: &profile, items: &items, taxes: &taxes, pays: &takings.pays };
     let credit: HashSet<Uuid> = takings.pays.iter().filter(|p| p.kind == Kind::Credit && p.amount > Decimal::ZERO).map(|p| p.invoice).collect();
+    // The settling lines of each day of sale: what a day took is settled on that day, as its invoices are dated.
+    let mut by_day: BTreeMap<NaiveDate, Vec<Line>> = BTreeMap::new();
 
-    // Paid sales per customer; a sale left on account by itself.
-    let mut groups: Vec<((Uuid, Option<Uuid>), Vec<&Inv>)> = Vec::new();
+    // Paid sales per customer and day; a sale left on account by itself.
+    let mut groups: Vec<((Uuid, NaiveDate, Option<Uuid>), Vec<&Inv>)> = Vec::new();
     for inv in takings.invoices.iter().filter(|i| !i.is_return && i.invoiced_at_sale != Some(true)) {
-        let key = (inv.customer, credit.contains(&inv.id).then_some(inv.id));
+        let key = (inv.customer, inv.posting_date, credit.contains(&inv.id).then_some(inv.id));
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.1.push(inv),
             None => groups.push((key, vec![inv])),
@@ -510,9 +516,9 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
     }
     let mut made_for: HashMap<Uuid, Uuid> = HashMap::new();
     let mut marks: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
-    for ((customer, _), group) in &groups {
+    for ((customer, day, _), group) in &groups {
         let m = ctx.make(hc, *customer, group, None).await?;
-        ctx.settle(hc, &mut entry, cid, on, &m, *customer, group).await?;
+        ctx.settle(hc, by_day.entry(*day).or_default(), cid, *day, &m, *customer, group).await?;
         made_for.extend(group.iter().map(|i| (i.id, m.id)));
         marks.push((m.id, group.iter().map(|i| i.id).collect()));
     }
@@ -521,12 +527,12 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
         let si = inv.consolidated_invoice.ok_or_else(|| Error::internal("invoiced at sale without its invoice"))?;
         let debit_to = id(&get(hc.kernel, hc.ctx, hc.tx, "SalesInvoice", si).await?, "debit_to").ok_or_else(|| Error::internal("no receivable"))?;
         let m = Made { id: si, debit_to };
-        ctx.settle(hc, &mut entry, cid, on, &m, inv.customer, &[inv]).await?;
+        ctx.settle(hc, by_day.entry(inv.posting_date).or_default(), cid, inv.posting_date, &m, inv.customer, &[inv]).await?;
         made_for.insert(inv.id, si);
         marks.push((si, vec![inv.id]));
     }
-    // Returns per customer and the invoice that consolidated their sale.
-    let mut returns: Vec<((Uuid, Uuid), Vec<&Inv>)> = Vec::new();
+    // Returns per customer, the invoice that consolidated their sale, and day.
+    let mut returns: Vec<((Uuid, Uuid, NaiveDate), Vec<&Inv>)> = Vec::new();
     for inv in takings.invoices.iter().filter(|i| i.is_return && i.invoiced_at_sale != Some(true)) {
         let orig = inv.return_against.ok_or_else(|| Error::internal("return without its sale"))?;
         let against = match made_for.get(&orig) {
@@ -546,18 +552,18 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
                 })?
             }
         };
-        let key = (inv.customer, against);
+        let key = (inv.customer, against, inv.posting_date);
         match returns.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.1.push(inv),
             None => returns.push((key, vec![inv])),
         }
     }
-    for ((customer, against), group) in &returns {
+    for ((customer, against, day), group) in &returns {
         let m = ctx.make(hc, *customer, group, Some(*against)).await?;
-        ctx.settle(hc, &mut entry, cid, on, &m, *customer, group).await?;
+        ctx.settle(hc, by_day.entry(*day).or_default(), cid, *day, &m, *customer, group).await?;
         marks.push((m.id, group.iter().map(|i| i.id).collect()));
     }
-    // What the count found missing or extra.
+    // What the count found missing or extra, on the closing's day.
     let difference_account = id(&profile.doc, "cash_difference_account").map(Ok).unwrap_or_else(|| co.require("round_off_account", "round off account"))?;
     for r in rows(closing, "payments") {
         let diff = d(&r, "difference");
@@ -565,10 +571,16 @@ async fn consolidate(hc: &mut HookCtx<'_>, closing: &Doc) -> Result<()> {
             continue;
         }
         let mode = Mode::load(hc.kernel, hc.ctx, hc.tx, id(&r, "mode_of_payment").unwrap_or_default()).await?;
-        entry.lines.push(Line::new(mode.account(&co)?, diff, &co.currency_code).remarks(format!("{} counted at closing", mode.name)));
-        entry.lines.push(Line::new(difference_account, -diff, &co.currency_code).remarks(if diff < Decimal::ZERO { "Cash shortage" } else { "Cash excess" }));
+        let lines = by_day.entry(on).or_default();
+        lines.push(Line::new(mode.account(&co)?, diff, &co.currency_code).remarks(format!("{} counted at closing", mode.name)));
+        lines.push(Line::new(difference_account, -diff, &co.currency_code).remarks(if diff < Decimal::ZERO { "Cash shortage" } else { "Cash excess" }));
     }
-    ledger::post(hc.tx, hc.ctx, entry, co.precision).await?;
+    for (day, lines) in by_day {
+        let mut entry = Entry::new(co.id, day, "PosClosingEntry", cid, s(closing, "number").map(str::to_string));
+        entry.memo = Some(format!("POS closing of session {}", s(&session, "number").unwrap_or_default()));
+        entry.lines = lines;
+        ledger::post(hc.tx, hc.ctx, entry, co.precision).await?;
+    }
     for (si, invoices) in marks {
         sqlx::query(
             "update e_pos_invoice set consolidated_invoice = $3, pos_closing_entry = $4, status = 'Consolidated', updated_at = now() \
@@ -599,8 +611,8 @@ struct Consolidation<'a> {
 }
 
 impl Consolidation<'_> {
-    /// One sales invoice (or credit note, with `against`) for `group`, submitted, totalling
-    /// exactly the group's POS invoices.
+    /// One sales invoice (or credit note, with `against`) for `group`, submitted, dated on the
+    /// group's day of sale, totalling exactly the group's POS invoices.
     async fn make(&self, hc: &mut HookCtx<'_>, customer: Uuid, group: &[&Inv], against: Option<Uuid>) -> Result<Made> {
         let co = self.co;
         let ids: HashSet<Uuid> = group.iter().map(|i| i.id).collect();
@@ -669,7 +681,7 @@ impl Consolidation<'_> {
         let shown =
             if numbers.len() > 20 { format!("{} … {}", numbers[..10].join(", "), numbers[numbers.len() - 5..].join(", ")) } else { numbers.join(", ") };
         let input = json!({
-            "company": co.id.to_string(), "customer": customer.to_string(), "posting_date": self.closing.get("posting_date"),
+            "company": co.id.to_string(), "customer": customer.to_string(), "posting_date": group.first().map(|i| i.posting_date),
             "currency": co.currency_id.to_string(), "conversion_rate": "1", "update_stock": false,
             "is_return": against.is_some() || group.iter().any(|i| i.is_return), "return_against": against.map(|a| a.to_string()),
             "return_reason": (against.is_none() && group.iter().any(|i| i.is_return)).then_some("Returned at the register without a receipt"),
@@ -695,33 +707,24 @@ impl Consolidation<'_> {
         Ok(Made { id: si, debit_to: id(&si_doc, "debit_to").ok_or_else(|| Error::internal("sales invoice without receivable account"))? })
     }
 
-    /// Settles a consolidated invoice from its POS payments: each money mode (and redeemed
-    /// points) debited, write-offs debited, the receivable credited and allocated. What was sold
-    /// on account stays open on the invoice.
+    /// Settles a consolidated invoice from its POS payments on `on`, its sales' day, into that
+    /// day's `lines`: each money mode (and redeemed points) debited, write-offs debited, the
+    /// receivable credited and allocated. What was sold on account stays open on the invoice.
     #[allow(clippy::too_many_arguments)]
-    async fn settle(
-        &self,
-        hc: &mut HookCtx<'_>,
-        entry: &mut Entry,
-        closing: Uuid,
-        on: chrono::NaiveDate,
-        m: &Made,
-        customer: Uuid,
-        group: &[&Inv],
-    ) -> Result<()> {
+    async fn settle(&self, hc: &mut HookCtx<'_>, lines: &mut Vec<Line>, closing: Uuid, on: NaiveDate, m: &Made, customer: Uuid, group: &[&Inv]) -> Result<()> {
         let co = self.co;
         let ids: HashSet<Uuid> = group.iter().map(|i| i.id).collect();
         let mut settled = Decimal::ZERO;
         // Stored value paid (or took back) its share when the sale was made, by its own payment entry.
         for p in self.pays.iter().filter(|p| ids.contains(&p.invoice) && !matches!(p.kind, Kind::Credit | Kind::StoredValue) && !p.amount.is_zero()) {
             let account = p.account.ok_or_else(|| Error::internal("a POS payment has no account"))?;
-            entry.lines.push(Line::new(account, p.amount, &co.currency_code));
+            lines.push(Line::new(account, p.amount, &co.currency_code));
             settled += p.amount;
         }
         let write_off: Decimal = group.iter().map(|i| i.write_off_amount.unwrap_or_default()).sum();
         if !write_off.is_zero() {
             let account = id(&self.profile.doc, "write_off_account").map(Ok).unwrap_or_else(|| co.require("round_off_account", "round off account"))?;
-            entry.lines.push(
+            lines.push(
                 Line::new(account, write_off, &co.currency_code)
                     .cost_center(id(&self.profile.doc, "write_off_cost_center"))
                     .remarks("Written off at the register"),
@@ -732,7 +735,7 @@ impl Consolidation<'_> {
             return Ok(());
         }
         ledger::allocate(hc.tx, hc.ctx, co.id, m.id, "PosClosingEntry", closing, on, settled, settled).await?;
-        entry.lines.push(Line::new(m.debit_to, -settled, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
+        lines.push(Line::new(m.debit_to, -settled, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
         sync_invoice_outstanding(hc.kernel, hc.ctx, hc.tx, "SalesInvoice", m.id).await
     }
 }
@@ -744,7 +747,7 @@ impl Consolidation<'_> {
 pub(crate) async fn invoice_now(hc: &mut HookCtx<'_>, sale: Uuid) -> Result<Uuid> {
     let load = |sql: &'static str| sqlx::query_as::<_, Inv>(sql);
     let inv = load(
-        "select id, number, customer, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
+        "select id, number, customer, posting_date, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
          write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and id = $2",
     )
     .bind(hc.ctx.tenant)
@@ -777,7 +780,6 @@ pub(crate) async fn invoice_now(hc: &mut HookCtx<'_>, sale: Uuid) -> Result<Uuid
     .fetch_all(&mut **hc.tx)
     .await?;
     let mut at = Doc::new();
-    at.insert("posting_date".into(), doc.get("posting_date").cloned().unwrap_or(Value::Null));
     at.insert("number".into(), json!(format!("sale {}", inv.number.clone().unwrap_or_default())));
     let ctx = Consolidation { co: &co, closing: &at, profile: &profile, items: &items, taxes: &taxes, pays: &[] };
     let m = ctx.make(hc, inv.customer, &[&inv], against).await?;

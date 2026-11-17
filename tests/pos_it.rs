@@ -8,6 +8,7 @@
 //! register's totals exactly, is cancelled and redone, and a later return is consolidated against
 //! the earlier invoice.
 
+use chrono::Datelike;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
@@ -938,5 +939,67 @@ async fn scenario() {
     assert!(rets["rows"].as_array().unwrap().iter().any(|r| r["reason"] == json!("Wrong colour")), "{rets}");
     let close4 = t.insert(&manager, "PosClosingEntry", json!({"pos_opening_entry": s4.to_string()})).await;
     t.submit(&manager, "PosClosingEntry", uid(&close4)).await;
+    t.books_balance(cid).await;
+
+    // ───────────── a shift across a month's end: each day's sales in that day's books ─────────────
+    // Opened on the last day of last month, a sale before midnight and one after, closed today.
+    let first = a.today().with_day(1).unwrap();
+    let last = first.pred_opt().unwrap();
+    let on_day = |day: chrono::NaiveDate, items: Value, pays: Value| json!({"pos_profile": counter2.to_string(), "posting_date": day.to_string(), "items": items, "payments": pays});
+    let night = t.insert(&other, "PosOpeningEntry", json!({"pos_profile": counter2.to_string(), "posting_date": last.to_string()})).await;
+    let night = uid(&t.submit(&other, "PosOpeningEntry", uid(&night)).await);
+    let before_midnight = t.sell(&other, on_day(last, json!([line(pen, "1")]), json!([pay(&cash, "11")]))).await;
+    let after_midnight = t.sell(&other, on_day(first, json!([line(widget, "1")]), json!([pay(&card, "110")]))).await;
+    let close6 = t.insert(&manager, "PosClosingEntry", json!({"pos_opening_entry": night.to_string()})).await;
+    let close6 = uid(&t.submit(&manager, "PosClosingEntry", uid(&close6)).await);
+    for sale in [&before_midnight, &after_midnight] {
+        let si = t.get("SalesInvoice", t.get("PosInvoice", uid(sale)).await["consolidated_invoice"].as_str().unwrap().parse().unwrap()).await;
+        assert_eq!(si["posting_date"], sale["posting_date"], "its revenue and tax are dated on the day it was sold: {}", si["number"]);
+    }
+    // Revenue and tax per month in the books (this closing's postings) are the register's per month; and the walk-in
+    // customer owes nothing at either month's end: what each day took is settled on that day.
+    let per_month = |account: &'static str| {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+            sqlx::query_as::<_, (String, Decimal)>(
+                "select to_char(l.posting_date, 'YYYY-MM'), sum(l.credit - l.debit) from journal_line l \
+                 join journal_entry e on e.tenant_id = l.tenant_id and e.id = l.entry_id join e_account a on a.tenant_id = l.tenant_id and a.id = l.account_id \
+                 where l.tenant_id = $1 and a.account_name = $3 and (e.source_id = $2 or e.source_id in \
+                 (select consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_closing_entry = $2)) group by 1 order by 1",
+            )
+            .bind(tenant)
+            .bind(close6)
+            .bind(account)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap()
+        }
+    };
+    let month_of = |sale: &Doc| sale["posting_date"].as_str().unwrap()[..7].to_string();
+    for (account, field) in [("Output Tax", "total_taxes"), ("Sales", "net_total")] {
+        let sold: Vec<(String, Decimal)> = [&before_midnight, &after_midnight].into_iter().map(|s| (month_of(s), dec(&s[field]))).collect();
+        assert_eq!(per_month(account).await, sold, "{account} per month, in the books and at the register");
+    }
+    assert!(per_month("Debtors").await.iter().all(|m| m.1.is_zero()), "{:?}", per_month("Debtors").await);
+    // A month closed meanwhile takes no more of its sales: the closing that would book them is refused, as their stock
+    // would have been.
+    let late = t.insert(&other, "PosOpeningEntry", json!({"pos_profile": counter2.to_string(), "posting_date": last.to_string()})).await;
+    let late = uid(&t.submit(&other, "PosOpeningEntry", uid(&late)).await);
+    t.sell(&other, on_day(last, json!([line(pen, "1")]), json!([pay(&cash, "11")]))).await;
+    let month = last.with_day(1).unwrap();
+    let fy = uid(&t
+        .insert(
+            &a,
+            "FiscalYear",
+            json!({"year_name": "Month closed", "company": cid.to_string(), "start_date": month.to_string(), "end_date": last.to_string()}),
+        )
+        .await);
+    t.k.run_action(&a, "FiscalYear", fy, "close_period", json!({"period_start": month.to_string()})).await.expect("the month closed");
+    let close7 = uid(&t.insert(&manager, "PosClosingEntry", json!({"pos_opening_entry": late.to_string()})).await);
+    let refused = t.k.submit(&manager, "PosClosingEntry", close7, None).await;
+    assert!(matches!(refused, Err(Error::Invalid(ref m)) if m.contains("accounting period")), "{refused:?}");
+    t.k.run_action(&a, "FiscalYear", fy, "reopen_period", json!({"period_start": month.to_string()})).await.expect("reopened");
+    t.submit(&manager, "PosClosingEntry", close7).await;
     t.books_balance(cid).await;
 }
