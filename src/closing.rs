@@ -371,7 +371,7 @@ impl DocHook for ClosingHook {
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let cid = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-        let (on, _) = ledger::reversal_point(hc.tx, hc.ctx.tenant, co.id, doc).await?;
+        let (on, _) = ledger::reversal_point(hc.tx, hc.ctx, co.id, doc).await?;
         // Settlements first, so the invoices have nothing allocated when they are cancelled;
         // credit notes before the invoices they settle against.
         ledger::unallocate(hc.kernel, hc.tx, hc.ctx, "PosClosingEntry", cid, on).await?;
