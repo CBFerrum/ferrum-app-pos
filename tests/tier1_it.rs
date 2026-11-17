@@ -157,6 +157,17 @@ async fn scenario() {
     let inr = t.find_one("Currency", json!({"code": "INR"})).await;
     let company = t.insert(&a, "Company", json!({"company_name": "Corner Shop", "abbr": "CS", "default_currency": inr["id"]})).await;
     let cid = uid(&company);
+    // The company comes with its current fiscal year; the sales dated a month back below can fall in the year before (in
+    // a year's first month), which nothing posts into until it is made.
+    let this_year = t.find_one("FiscalYear", json!({"company": cid.to_string()})).await;
+    let year_start = chrono::NaiveDate::parse_from_str(this_year["start_date"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+    t.insert(
+        &a,
+        "FiscalYear",
+        json!({"year_name": "The year before", "company": cid.to_string(), "start_date": (year_start - chrono::Months::new(12)).to_string(),
+               "end_date": year_start.pred_opt().unwrap().to_string()}),
+    )
+    .await;
     let output_tax = uid(&t.find_one("Account", json!({"account_name": "Output Tax", "company": cid.to_string()})).await);
     t.insert(
         &a,

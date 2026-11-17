@@ -18,7 +18,6 @@ use crate::session::open_key;
 use crate::{Mode, Profile, is_manager, live_session, opt_dec, rows_value};
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use ferrum_app_erp::flow::sync_invoice_outstanding;
 use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{Company, company, d, date, elevated, get, id, money, rows, s, set, sys};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result, Tx};
@@ -375,7 +374,7 @@ impl DocHook for ClosingHook {
         let (on, _) = ledger::reversal_point(hc.tx, hc.ctx.tenant, co.id, doc).await?;
         // Settlements first, so the invoices have nothing allocated when they are cancelled;
         // credit notes before the invoices they settle against.
-        ledger::unallocate(hc.tx, hc.ctx, "PosClosingEntry", cid, on).await?;
+        ledger::unallocate(hc.kernel, hc.tx, hc.ctx, "PosClosingEntry", cid, on).await?;
         ledger::reverse(hc.tx, hc.ctx, "PosClosingEntry", cid, on, co.precision).await?;
         let mut made = consolidated(hc, cid).await?;
         made.sort_by_key(|m| !m.1);
@@ -734,9 +733,10 @@ impl Consolidation<'_> {
         if settled.is_zero() {
             return Ok(());
         }
-        ledger::allocate(hc.tx, hc.ctx, co.id, m.id, "PosClosingEntry", closing, on, settled, settled).await?;
+        // The allocation keeps the invoice's outstanding amount and status in step (ERP's ledger does).
+        ledger::allocate(hc.kernel, hc.tx, hc.ctx, co.id, m.id, "PosClosingEntry", closing, on, settled, settled).await?;
         lines.push(Line::new(m.debit_to, -settled, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
-        sync_invoice_outstanding(hc.kernel, hc.ctx, hc.tx, "SalesInvoice", m.id).await
+        Ok(())
     }
 }
 
