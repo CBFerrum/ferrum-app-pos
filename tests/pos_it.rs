@@ -201,6 +201,18 @@ async fn scenario() {
     let inr = t.find_one("Currency", json!({"code": "INR"})).await;
     let company = t.insert(&a, "Company", json!({"company_name": "Corner Shop", "abbr": "CS", "default_currency": inr["id"], "round_total_to": "0.05"})).await;
     let cid = uid(&company);
+    // The company comes with its current fiscal year; the shift across a month's end below can date back into the year
+    // before (in a year's first month), which nothing posts into until it is made.
+    let this_year = t.find_one("FiscalYear", json!({"company": cid.to_string()})).await;
+    let year_start = chrono::NaiveDate::parse_from_str(this_year["start_date"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+    let year_before = t
+        .insert(
+            &a,
+            "FiscalYear",
+            json!({"year_name": "The year before", "company": cid.to_string(), "start_date": (year_start - chrono::Months::new(12)).to_string(),
+                   "end_date": year_start.pred_opt().unwrap().to_string()}),
+        )
+        .await;
     let account = |name: &'static str| {
         let t = &t;
         async move { uid(&t.find_one("Account", json!({"account_name": name, "company": cid.to_string()})).await) }
@@ -988,13 +1000,7 @@ async fn scenario() {
     let late = uid(&t.submit(&other, "PosOpeningEntry", uid(&late)).await);
     t.sell(&other, on_day(last, json!([line(pen, "1")]), json!([pay(&cash, "11")]))).await;
     let month = last.with_day(1).unwrap();
-    let fy = uid(&t
-        .insert(
-            &a,
-            "FiscalYear",
-            json!({"year_name": "Month closed", "company": cid.to_string(), "start_date": month.to_string(), "end_date": last.to_string()}),
-        )
-        .await);
+    let fy = uid(if last >= year_start { &this_year } else { &year_before });
     t.k.run_action(&a, "FiscalYear", fy, "close_period", json!({"period_start": month.to_string()})).await.expect("the month closed");
     let close7 = uid(&t.insert(&manager, "PosClosingEntry", json!({"pos_opening_entry": late.to_string()})).await);
     let refused = t.k.submit(&manager, "PosClosingEntry", close7, None).await;

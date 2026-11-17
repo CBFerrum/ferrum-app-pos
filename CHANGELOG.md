@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.4
+
+Needs ERP 0.31.0 or later and the same platform as 0.9.3. No interface or database change.
+
+- **Builds against ERP 0.31.0.** ERP's ledger takes the kernel to settle an invoice and to take a settlement back, and
+  keeps the invoice's outstanding amount and status in step itself, when a closing settles its invoices and when a
+  cancelled closing takes the settlement back. The closing passes the kernel and no longer brings the invoice in
+  step itself after settling it.
+- The tests make the company's fiscal year before the current one: ERP refuses a posting on a day no accounting
+  period holds, and the month-end shift and the sales dated a month back fall in that year during a year's first
+  month. The month-end test closes the month through the company's own year rather than a year of its own.
+
 ## 0.9.3
 
 Server only. Needs the same platform and ERP as 0.9.2. No interface or database change.
