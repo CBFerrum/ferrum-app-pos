@@ -90,6 +90,10 @@ impl T {
         let res = ferrum_kernel::Site::handle(&ferrum_app_pos::site::PosSite, &self.k, req).await?;
         Ok(serde_json::from_slice(&res.body).unwrap_or(Value::Null))
     }
+    /// An action of a record, as a person's request runs it.
+    async fn act(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value, Error> {
+        self.k.run_action(ctx, entity, id, action, params).await
+    }
 }
 
 impl T {
@@ -460,9 +464,15 @@ async fn scenario() {
     t.insert(&a, "PosRoleLimit", json!({"role": "Cashier", "discount_percent": "10", "reprint": false})).await;
     let e = t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "copy", "reason": "Customer asked for a copy"}))).await.unwrap_err();
     assert!(format!("{e:?}").contains("may not reprint"), "{e:?}");
-    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("a pin");
+    t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "4321"})).await.expect("a pin");
     let approved = t
-        .site(&cashier, "POST", "/approve", Value::Null, json!({"profile": counter.to_string(), "approver": "manager@shop.test", "pin": "4321", "action": "Reprint", "reason": "Asked", "sale": sid.to_string()}))
+        .act(
+            &cashier,
+            "PosOpeningEntry",
+            uid(&open),
+            "approve",
+            json!({"approver": "manager@shop.test", "pin": "4321", "act": "Reprint", "reason": "Asked", "sale": sid.to_string()}),
+        )
         .await
         .expect("approved");
     let with = at(json!({"kind": "copy", "reason": "Customer asked for a copy", "approval": approved["approval"]}));

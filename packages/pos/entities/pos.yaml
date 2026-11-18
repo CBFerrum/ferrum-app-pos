@@ -95,6 +95,17 @@
     - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
+  actions:
+    - name: set_pin
+      label: Set My PIN
+      permission: read
+      hidden: true
+      params:
+        - {name: pin, label: PIN, required: true, secret: true, description: "Four to twelve digits; kept only as a hash"}
+      contract:
+        effect: transactional_action
+        completion: "The caller's own till PIN is replaced; its wrong tries and any lock on it are forgotten"
+        returns: {type: object, properties: {ok: {type: boolean}}}
   list: {columns: [profile_name, company, warehouse], sort: profile_name asc}
 
 - name: PosOpeningBalance
@@ -127,6 +138,26 @@
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
     - {name: open_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: Set while open; the unique index allows one open session per profile and cashier}
     - {name: remarks, type: text}
+  actions:
+    - name: approve
+      label: Approve by PIN
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: an approval is for an open session"
+      params:
+        - {name: approver, label: Approver's Email, required: true}
+        - {name: pin, label: Approver's PIN, required: true, secret: true}
+        - {name: act, label: Act, type: select, required: true,
+           options: [Discount, Price Change, Void Line, Void Sale, Refund, Return Without Receipt, No Sale, Reprint]}
+        - {name: amount, label: Amount, description: "A discount's percent or a refund in money, a decimal as text; empty for an act with no figure"}
+        - {name: reason, label: Reason, required: true}
+        - {name: sale, label: Sale, description: "The id of the sale or draft it is for; empty only for No Sale"}
+      contract:
+        effect: transactional_action
+        completion: "A POS Approval exists for one act on one sale in this session, usable once before it lapses"
+        returns: {type: object, properties: {approval: {type: string, format: uuid, x-ferrum-link: PosApproval}, approver: {type: string}, action: {type: string}}}
   list: {columns: [number, pos_profile, user, posting_date, status], sort: created_at desc}
 
 - name: PosInvoiceItem
@@ -291,9 +322,16 @@
     - {label: Approvals and Voids, collapsible: true, fields: [approvals, voided_lines, void_reason, voided_by]}
     - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, tax_breakdown, tax_registrations, reprints, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
   actions:
-    - {name: void, label: Void Sale, permission: write, condition: "doc.docstatus == 1 && doc.consolidated_invoice == null",
-       confirm: "Void this sale? Its stock comes back and it leaves the session's takings.",
-       params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]}
+    - name: void
+      label: Void Sale
+      permission: write
+      condition: "doc.docstatus == 1 && doc.consolidated_invoice == null"
+      confirm: "Void this sale? Its stock comes back and it leaves the session's takings."
+      params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]
+      contract:
+        effect: transactional_action
+        completion: "The sale is cancelled: its stock is back, it is out of the session's takings, and it keeps who voided it and why"
+        returns: {type: object, properties: {status: {type: string}}}
   rules:
     - {name: named_buyer, check: "!doc.needs_buyer", on: submit,
        message: "This sale is worth more than the register takes without a named buyer: pick the customer, or take the buyer's tax registration"}
@@ -465,8 +503,15 @@
     - {name: resolved_by, type: data, read_only: true}
     - {name: resolved_at, type: datetime, read_only: true}
   actions:
-    - {name: resolve, label: Mark Put Right, permission: write, condition: "doc.status == 'Open'",
-       params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]}
+    - name: resolve
+      label: Mark Put Right
+      permission: write
+      condition: "doc.status == 'Open'"
+      params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]
+      contract:
+        effect: transactional_action
+        completion: "The shortfall is Put Right, with how, by whom and when"
+        returns: {type: object, properties: {status: {type: string}}}
   list: {columns: [item_name, warehouse, qty_short, pos_invoice, status], sort: created_at desc}
 
 - name: PosReturnPolicyMode
@@ -600,6 +645,13 @@
     - {name: resolved_by, type: data, read_only: true}
     - {name: resolved_at, type: datetime, read_only: true}
   actions:
-    - {name: review, label: Mark Reviewed, permission: write, condition: "doc.status == 'Open'",
-       params: [{name: resolution, type: data, label: "What was found and done", required: true}]}
+    - name: review
+      label: Mark Reviewed
+      permission: write
+      condition: "doc.status == 'Open'"
+      params: [{name: resolution, type: data, label: "What was found and done", required: true}]
+      contract:
+        effect: transactional_action
+        completion: "The price difference is Reviewed, with what was found, by whom and when"
+        returns: {type: object, properties: {status: {type: string}}}
   list: {columns: [pos_invoice, till_total, replay_total, sale_total, status], sort: created_at desc}

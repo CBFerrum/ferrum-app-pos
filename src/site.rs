@@ -1,12 +1,12 @@
 //! The register's own endpoints (`/api/app/pos/...`, signed in): the snapshot a till prices with
-//! while offline (`snapshot`), PINs and approvals, stored value balances, exchanges, receipts, the
-//! cashier's limits, and the returns desk's lookups (`returns`).
+//! while offline (`snapshot`), stored value balances, exchanges, receipts, the cashier's limits, and
+//! the returns desk's lookups (`returns`). Setting a PIN and approving by one are operations, not
+//! routes: `set_pin` of a register and `approve` of the cashier's session (limits.rs).
 
 use crate::returns;
 use async_trait::async_trait;
 use ferrum_domain::util::{id, rows, s};
 use ferrum_kernel::{Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, Site, SiteRequest, SiteResponse};
-use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -23,12 +23,7 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["snapshot"]) => Ok(SiteResponse::json(200, &crate::snapshot::snapshot(k, ctx, &req).await?)),
-            ("POST", ["pin"]) => {
-                crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
-                Ok(SiteResponse::json(200, &json!({"ok": true})))
-            }
             ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
-            ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
             ("POST", ["exchange"]) => {
                 let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
                 let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
@@ -169,23 +164,6 @@ pub async fn limits(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
 fn body_str(req: &SiteRequest, key: &str) -> Result<Option<String>> {
     let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
     Ok(v.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string))
-}
-
-/// `POST /approve` `{profile, approver, pin, action, amount?, reason, sale}`: another person's PIN
-/// approves one act on one sale (`sale`: the id the till gives it; none for opening the drawer)
-/// beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
-async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
-    let need = |f: &str| -> Result<String> { body_str(req, f)?.ok_or_else(|| Error::field(f.to_string(), "is required")) };
-    let profile: Uuid = need("profile")?.parse().map_err(|_| Error::field("profile", "is a register's id"))?;
-    let act = crate::logic::Act::parse(&need("action")?).ok_or_else(|| Error::field("action", "is not something that is approved"))?;
-    let amount = match body_str(req, "amount")? {
-        Some(a) => Some(a.parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
-        None => None,
-    };
-    let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
-    let sale = body_str(req, "sale")?.map(|s| s.parse::<Uuid>().map_err(|_| Error::field("sale", "is the sale's id"))).transpose()?;
-    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason, sale };
-    crate::limits::approve(k, ctx, ask).await
 }
 
 /// `POST /balance` `{mode, code, pin?}`: what a card of a stored value payment method holds, its

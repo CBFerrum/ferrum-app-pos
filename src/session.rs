@@ -91,6 +91,14 @@ impl DocHook for OpeningHook {
         v.insert("open_key".into(), Value::Null);
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PosOpeningEntry", id(doc, "id").unwrap_or_default(), v).await
     }
+
+    /// `approve`: another person's PIN approves one act in this session (limits.rs).
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "approve" {
+            return Ok(None);
+        }
+        crate::limits::approve(hc, doc, params).await.map(Some)
+    }
 }
 
 pub struct CashMovementHook;

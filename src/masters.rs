@@ -4,6 +4,7 @@ use crate::Mode;
 use async_trait::async_trait;
 use ferrum_domain::util::{b, get, id, rows, s, set};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
+use serde_json::Value;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -93,6 +94,14 @@ impl DocHook for PosProfileHook {
             errors.push(FieldError::new("payments", "only one payment method can be the default"));
         }
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+    }
+
+    /// `set_pin`: the caller sets their own till PIN (limits.rs).
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, _doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "set_pin" {
+            return Ok(None);
+        }
+        crate::limits::set_pin(hc, params).await.map(Some)
     }
 }
 
