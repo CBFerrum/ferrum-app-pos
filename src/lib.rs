@@ -59,10 +59,10 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
     vec![Arc::new(reports::PosReports)]
 }
 
-/// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
-pub async fn maintenance(k: &Kernel) -> Result<()> {
-    loyalty::expire_points(k).await?;
-    snapshot::forget(k).await
+/// Upkeep for one workspace, called by the platform as it comes due; must be idempotent and cheap.
+pub async fn maintenance(k: &Kernel, tenant: Uuid) -> Result<()> {
+    loyalty::expire_points(k, tenant).await?;
+    snapshot::forget(k, tenant).await
 }
 
 /// POS managers (and engine contexts) may exceed cashier limits and act in anyone's session.

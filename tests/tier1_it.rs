@@ -135,7 +135,6 @@ async fn scenario() {
     hooks.own("pos", &pos_packages);
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("partitions");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "shop".into(),
@@ -746,7 +745,7 @@ async fn scenario() {
             .unwrap();
     }
     tx.commit().await.unwrap();
-    ferrum_app_pos::maintenance(&t.k).await.expect("expiry");
+    ferrum_app_pos::maintenance(&t.k, t.tenant).await.expect("expiry");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     let left: Vec<i64> = sqlx::query_scalar(
         "select remaining from e_loyalty_point_entry where tenant_id = $1 and pos_invoice = any($2) and entry_type = 'Earn' order by posting_date",

@@ -242,50 +242,42 @@ pub(crate) async fn on_cancel(hc: &mut HookCtx<'_>, invoice: &Doc) -> Result<()>
 }
 
 /// Expires earnings past their date (idempotent: an expired earning has nothing remaining).
-pub(crate) async fn expire_points(k: &Kernel) -> Result<()> {
-    let mut sys = k.db.system_tx().await?;
-    let tenants: Vec<Uuid> =
-        sqlx::query_scalar("select t.id from tenant t join installed_package p on p.tenant_id = t.id and p.name = 'pos' where t.status = 'active'")
-            .fetch_all(&mut *sys)
+pub(crate) async fn expire_points(k: &Kernel, tenant: Uuid) -> Result<()> {
+    let schema = k.registry.schema(tenant).await?;
+    if schema.entity("LoyaltyPointEntry").is_none() {
+        return Ok(());
+    }
+    let ctx = Ctx::system(tenant, schema);
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    // Served by the partial index on live earnings (sql/001_loyalty.sql): only what is due is read. Due before the
+    // workspace's day, not the database's (UTC).
+    let due: Vec<(Uuid, Uuid, Uuid, Uuid, i64, NaiveDate)> = sqlx::query_as(
+        "select id, loyalty_program, customer, company, remaining, expiry_date from e_loyalty_point_entry \
+         where tenant_id = $1 and expiry_date < $2 and remaining > 0 order by expiry_date limit 500 for update skip locked",
+    )
+    .bind(tenant)
+    .bind(ctx.today())
+    .fetch_all(&mut *tx)
+    .await?;
+    for (entry, program, customer, company, remaining, expiry) in &due {
+        sqlx::query("update e_loyalty_point_entry set remaining = 0, updated_at = now() where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(entry)
+            .execute(&mut *tx)
             .await?;
-    sys.commit().await?;
-    for tenant in tenants {
-        let schema = k.registry.schema(tenant).await?;
-        if schema.entity("LoyaltyPointEntry").is_none() {
-            continue;
-        }
-        let ctx = Ctx::system(tenant, schema);
-        let mut tx = k.db.tenant_tx(tenant).await?;
-        // Served by the partial index on live earnings (sql/001_loyalty.sql): only what is due is read. Due before the
-        // workspace's day, not the database's (UTC).
-        let due: Vec<(Uuid, Uuid, Uuid, Uuid, i64, NaiveDate)> = sqlx::query_as(
-            "select id, loyalty_program, customer, company, remaining, expiry_date from e_loyalty_point_entry \
-             where tenant_id = $1 and expiry_date < $2 and remaining > 0 order by expiry_date limit 500 for update skip locked",
-        )
-        .bind(tenant)
-        .bind(ctx.today())
-        .fetch_all(&mut *tx)
-        .await?;
-        for (entry, program, customer, company, remaining, expiry) in &due {
-            sqlx::query("update e_loyalty_point_entry set remaining = 0, updated_at = now() where tenant_id = $1 and id = $2")
-                .bind(tenant)
-                .bind(entry)
-                .execute(&mut *tx)
-                .await?;
-            let mut e = Doc::new();
-            e.insert("loyalty_program".into(), json!(program.to_string()));
-            e.insert("customer".into(), json!(customer.to_string()));
-            e.insert("company".into(), json!(company.to_string()));
-            e.insert("entry_type".into(), json!("Expire"));
-            e.insert("points".into(), json!(-remaining));
-            e.insert("remaining".into(), json!(0));
-            e.insert("posting_date".into(), json!((*expiry + Duration::days(1)).to_string()));
-            k.insert_tx(&ctx, &mut tx, "LoyaltyPointEntry", e).await?;
-        }
-        tx.commit().await?;
-        if !due.is_empty() {
-            tracing::info!(%tenant, entries = due.len(), "loyalty points expired");
-        }
+        let mut e = Doc::new();
+        e.insert("loyalty_program".into(), json!(program.to_string()));
+        e.insert("customer".into(), json!(customer.to_string()));
+        e.insert("company".into(), json!(company.to_string()));
+        e.insert("entry_type".into(), json!("Expire"));
+        e.insert("points".into(), json!(-remaining));
+        e.insert("remaining".into(), json!(0));
+        e.insert("posting_date".into(), json!((*expiry + Duration::days(1)).to_string()));
+        k.insert_tx(&ctx, &mut tx, "LoyaltyPointEntry", e).await?;
+    }
+    tx.commit().await?;
+    if !due.is_empty() {
+        tracing::info!(%tenant, entries = due.len(), "loyalty points expired");
     }
     Ok(())
 }

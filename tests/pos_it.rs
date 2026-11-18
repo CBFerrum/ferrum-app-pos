@@ -179,7 +179,6 @@ async fn scenario() {
     }
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("partitions");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "shop".into(),
@@ -798,8 +797,8 @@ async fn scenario() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    ferrum_app_pos::maintenance(&t.k).await.expect("expiry");
-    ferrum_app_pos::maintenance(&t.k).await.expect("expiry is idempotent");
+    ferrum_app_pos::maintenance(&t.k, t.tenant).await.expect("expiry");
+    ferrum_app_pos::maintenance(&t.k, t.tenant).await.expect("expiry is idempotent");
     let after = t.count("select coalesce(sum(points), 0)::bigint from e_loyalty_point_entry where tenant_id = $1 and customer = $2", Some(alice)).await;
     assert_eq!((before, after), (11, 0), "every unused point expires");
     let program = t.find_one("LoyaltyProgram", json!({"program_name": "Rewards"})).await;
