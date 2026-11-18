@@ -176,9 +176,9 @@ describe("taking payment", () => {
   });
 
   it("offers a copy, a gift receipt and sending by message for a sale the register has, not for one kept on the device", () => {
-    const more = draw(<ReceiptMore profile={profile} session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
+    const more = draw(<ReceiptMore session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
     for (const word of ["Print a copy", "Gift receipt", "Send by message"]) expect(more).toContain(word);
-    expect(draw(<ReceiptMore profile={profile} session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
+    expect(draw(<ReceiptMore session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
     const kept = draw(<ReceiptDialog profile={profile} session="s1" sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
     expect(kept).toContain("Print a provisional receipt");
     expect(kept).not.toContain("Print a copy");

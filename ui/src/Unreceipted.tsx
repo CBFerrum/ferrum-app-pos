@@ -19,7 +19,7 @@ import { CardInputs, CodeOnce, makeCode } from "./Card";
 import { Finder, Qty } from "./Pick";
 import type { DeskProps } from "./Returns";
 import { num, str, titleOf, useMoney } from "./fmt";
-import { till } from "./lib/offline";
+import { till, unreachable } from "./lib/offline";
 import { exchange as sendExchange } from "./lib/server";
 import { addItem, invoiceBody, paymentRows, setQty as setCartQty, withMethodNames, type CartLine } from "./lib/pos";
 import { backItems, CONDITIONS, enteredPriceProblem, exchange, parsePolicy, refundPayments, restockingFee, unreceiptedBody, type BackLine, type CardProof, type Condition } from "./lib/returns";
@@ -146,6 +146,8 @@ export default function Unreceipted({
       void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
       onDone(withMethodNames(profile, res.sale));
     } catch (e) {
+      // A refused exchange took its drafts back: the next try makes new ones. A lost answer keeps them, so pressing again repeats it safely.
+      if (exchanging && !unreachable(e)) attempt.current = null;
       setError(errorMessage(e));
       setBusy(false);
     }

@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.11.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.12.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.11.0 |
+| **Version** | 0.12.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
@@ -161,7 +161,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Pick lines and quantities.** The desk shows what each is worth and what would be refused before it is.
 - **The server plans the refund.** What the customer still owes on the sale is cancelled first, points go back as points, and money goes back through the ways the sale was paid where the register allows. What no method can take goes onto store credit or out as cash, as the policy says.
 - **Return without a receipt.** By customer or walk-in, item by item, with the condition of each (which decides the warehouse and the restocking fee), priced by the policy, and refunded as the policy allows, store credit by default.
-- **Exchanges.** What comes back and what goes out are one transaction with one difference to pay or refund. Each side is priced, taxed and moves stock on its own.
+- **Exchanges.** What comes back and what goes out are one transaction with one difference to pay or refund: each side is a draft, and the return's `exchange` action submits both or neither. Each side is priced, taxed and moves stock on its own. Sent again with its answer lost, an exchange is answered, not made twice.
 - **Return policy** (per register): the days a sale is taken back within, the price of a return without a receipt (current price, the lowest in a window, or entered), restocking fees by condition, the refund methods and how an exchange clears. The register names where damaged and scrapped goods go.
 - **Two tills at once.** The sale is locked while a return is checked, so two tills returning the same line are told nothing is left.
 - **Goods return at the cost they left at.** Earned points are taken back pro rata.
@@ -181,7 +181,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **The first printing is given once.** The server hands out the first printing once, with an atomic mark under the sale's lock. A copy says COPY n and is counted.
 - **Copies and gift receipts.** A copy needs a reason where the business has some, and another person's approval where the cashier may not reprint. A gift receipt has no prices.
 - **Receipts by message.** Send a receipt to an address or number with the buyer's consent (this receipt only, or this and later ones). An opt-in puts the address on a named customer's record when it has none.
-- **A log of every reprint** (Receipt Event): who, when, why and by whose approval.
+- **A log of every receipt** (Receipt Event): the first printing, each copy and gift receipt and each message: who, when, why and by whose approval. The till asks for a receipt through its session's actions and prints the page of the event they answer.
 - **Printing is the browser's print dialog.** There is no direct printer or cash drawer support yet.
 
 ### 💵 Cash management
@@ -232,7 +232,7 @@ A cashier who reads only their own sales sees only their own figures.
 
 - **Two roles,** below. Row-level security applies to every table.
 - **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay.
-- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes (snapshot, limits, balance, receipts, returns, exchange) are under `/api/app/pos/`. Setting one's PIN and approving by one are operations with contracts (`pos.pos_profile.set_pin`, `pos.pos_opening_entry.approve`), so an agent or an API client asks them as the till does.
+- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.print_receipt`, `.reprint`, `.send_receipt`) and exchanges (`pos.pos_invoice.exchange`).
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
 ### 🌍 Languages
@@ -278,7 +278,7 @@ Limits live on the server and are kept on the device so the till starts offline 
 | **POS Role Limit** | What a role may do without approval | Discount, price change, voids, refund, returns, drawer, reprint |
 | **POS Reason** | Reasons the till offers | For voids, returns, no sale and reprints |
 | **POS Approval** | One approval by PIN | Approver, action, amount, reason, limits, expiry |
-| **Receipt Event** | A reprint, gift receipt or message | Who, when, why, consent |
+| **Receipt Event** | A first receipt, a reprint, a gift receipt or a message | Who, when, why, consent |
 | **Stock Shortfall** | Stock sold offline beyond the warehouse | Item, quantity, sale, status (Open, Put Right), resolution |
 | **Price Difference** | An offline sale priced differently | The three totals, review |
 | **Loyalty Program, Loyalty Point Entry** | Points rules and ledger | Tiers, factor, expiry, entries |
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.12.0:** receipts and exchanges are operations of the session and the return's draft; the register's own routes only read.
 - [x] **0.11.0:** setting a PIN and approving by one are operations of the register and the cashier's session, through the gate; `void`, `resolve` and `review` say what "done" means.
 - [x] **0.10.0:** upkeep is one workspace's: needs Ferrum 0.4.0.
 - [x] **0.9.5:** builds against ERP 0.32.0, whose ledger takes the context to find a reversal's day.

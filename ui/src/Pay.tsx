@@ -19,7 +19,7 @@ import { Currency, num, titleOf, useMoney, str } from "./fmt";
 import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
 import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
 import { serverDown, till, tillAll, unreachable } from "./lib/offline";
-import { cardBalance, firstReceipt, voidSale } from "./lib/server";
+import { cardBalance, paper, printReceipt, voidSale } from "./lib/server";
 import { allows, type Limits } from "./lib/rights";
 import { cardProblem, codeOk, lastFour, type CardBalance } from "./lib/stored";
 import { printHtml } from "./print";
@@ -603,6 +603,8 @@ export function ReceiptDialog({
   const voidReasons = reasons.filter((r) => r.applies_to === "Void" && r.disabled !== true);
   const [asking, setAsking] = useState(false);
   const [printing, setPrinting] = useState(false);
+  // The first receipt's event, once the server gave it: a second press fetches its page only.
+  const [event, setEvent] = useState<string | null>(null);
   const [note, setNote] = useState<{ tone: "warning" | "error" | "success"; text: string } | null>(null);
   const voidable = !kept && !sale.is_return && !sale.exchange && !!sale.id && !!limits && voidReasons.length > 0;
   const voidIt = async (approval: string | undefined, reason: string | undefined) => {
@@ -627,7 +629,9 @@ export function ReceiptDialog({
     try {
       if (kept || !saleId) return own(kept ? tr("This sale is not on the register yet, so this is the till's own receipt, marked as such. The register's numbered receipt is for a copy once the sale is sent.") : tr("This sale has no number from the register yet, so this is the till's own receipt, marked as such."));
       if (offline || serverDown()) return own(tr("The register cannot be reached, so this is the till's own receipt, marked as such. A copy from the register can be printed once it is back."));
-      printHtml(await firstReceipt(str(profile.id), saleId));
+      const ev = event ?? (await printReceipt(session, saleId)).event;
+      setEvent(ev);
+      printHtml(await paper(ev));
       setNote({ tone: "success", text: tr("Printed. Another is a copy, marked as one.") });
     } catch (e) {
       if (unreachable(e)) own(tr("The register could not be reached, so this is the till's own receipt, marked as such. A copy from the register can be printed once it is back."));
@@ -691,7 +695,7 @@ export function ReceiptDialog({
           {note && <Alert tone={note.tone}>{isolate(note.text)}</Alert>}
           {!kept && !!saleId && !!limits && (
             <Suspense fallback={<ListSkeleton rows={1} />}>
-              <ReceiptMore profile={profile} session={session} sale={sale} limits={limits} reasons={reasons} offline={offline} />
+              <ReceiptMore session={session} sale={sale} limits={limits} reasons={reasons} offline={offline} />
             </Suspense>
           )}
         </div>

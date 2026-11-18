@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.0
+
+No database change: `PosReceiptEvent.kind` takes `Original` too, four actions are added, metadata only. Needs the same
+platform and ERP as 0.11.0. The till's interface is rebuilt.
+
+- **Receipts are operations of the cashier's own open session.** `pos.pos_opening_entry.print_receipt` (the sale's first
+  receipt, once: an event of kind `Original` now says who printed it), `.reprint` (a copy, counted, or a gift receipt, by
+  someone who may reprint or with an approval for that sale in that session, used once) and `.send_receipt` (by message,
+  with the buyer's consent; the address is a secret parameter, so it stays out of the audit entry and the receipt). Each
+  answers its event; the page is `GET /api/app/pos/paper/{event}`, for the person who asked or someone who may read the
+  event. A colleague who may reprint still gives a copy of another cashier's sale, from their own session.
+- **An exchange is the action of the return's draft.** `pos.pos_invoice.exchange` takes the sale going out's draft, carries
+  what came back to it through the Exchange Clearing method and submits both, or neither. The same exchange sent again
+  under its key is answered with what was made; until now it was refused.
+- **The register's own routes only read.** The first receipt's `GET /receipt/{sale}`, `POST /reprint`, `POST /send` and
+  `POST /exchange` are gone; the snapshot's cache of the versions it gave out is the one thing the site still keeps.
+- The till prints a receipt from the event's page (a second press fetches the same page), sends with one key per address
+  and consent until it goes through, and makes an exchange in four steps that each repeat safely; a refused exchange
+  takes its two drafts back and says "That did not go through, and nothing was exchanged."
+
 ## 0.11.0
 
 No database change: two actions and three contracts in the package, metadata only. Needs the same platform and ERP as

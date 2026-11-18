@@ -2,17 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The answers below are the ones a walk against a running server recorded (gapwalk a4, "Shapes for the
 // till"), trimmed to what the till reads; the requests are what that walk sent.
-const sent = vi.hoisted(() => ({ calls: [] as { path: string; o: Record<string, unknown> }[], answer: undefined as unknown }));
-vi.mock("./offline", () => ({
+// `answers` are given one per call before `answer`; an Error among them is thrown, as a refusal or a lost connection would be.
+const sent = vi.hoisted(() => ({ calls: [] as { path: string; o: Record<string, unknown> }[], answer: undefined as unknown, answers: [] as unknown[] }));
+vi.mock("./offline", async (actual) => ({
+  ...(await actual<typeof import("./offline")>()),
   till: async (path: string, o: Record<string, unknown> = {}) => {
     sent.calls.push({ path, o });
-    return sent.answer;
+    const next = sent.answers.length ? sent.answers.shift() : sent.answer;
+    if (next instanceof Error) throw next;
+    return next;
   },
 }));
 
 import { approvalProblem } from "./approval";
 import { parseLimits } from "./rights";
-import { approve, cardBalance, exchange, firstReceipt, madeCode, paperOf, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
+import { approve, cardBalance, exchange, madeCode, paper, paperOf, printReceipt, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
 import { cardProblem } from "./stored";
 import { makeCode } from "../Card";
 
@@ -21,6 +25,7 @@ const answer = (a: unknown) => (sent.answer = a);
 
 beforeEach(() => {
   sent.calls.length = 0;
+  sent.answers.length = 0;
 });
 
 describe("what the server was seen to take and answer", () => {
@@ -75,14 +80,37 @@ describe("what the server was seen to take and answer", () => {
     expect(last().o.body).toEqual({ reason: "reason-1" });
   });
 
-  it("sends an exchange as the walk did, and finds the new sale in the answer", async () => {
+  // The exchange's four steps (pos-2): each half a draft under its own id, the return's action, the sale read back.
+  const back = { id: "ret-1", pos_profile: "reg1", return_against: "bought", items: [{ item: "widget", qty: "-1" }], payments: [] };
+  const out = { id: "sale-2", pos_profile: "reg1", items: [{ item: "widget", qty: "2" }], payments: [{ mode_of_payment: "cash", amount: "110" }] };
+
+  it("makes an exchange in four steps, each repeatable under its own key, and reads the sale back", async () => {
     const sale = { id: "sale-2", number: "POS-2", status: "Paid", rounded_total: "220", total_taxes: "20", exchange: "ret-1", items: [], payments: [{ mode_of_payment: "cash", amount: "110" }] };
-    answer({ carried: "110", due: "110", refund: "0", return: { id: "ret-1", rounded_total: "-110", exchange: "sale-2" }, sale });
-    const back = { pos_profile: "reg1", return_against: "bought", items: [{ item: "widget", qty: "-1" }], payments: [] };
-    const out = { pos_profile: "reg1", items: [{ item: "widget", qty: "2" }], payments: [{ mode_of_payment: "cash", amount: "110" }] };
+    sent.answers.push({ id: "ret-1" }, { id: "sale-2" }, { return: "ret-1", sale: "sale-2", sale_number: "POS-2", carried: "110", due: "110", refund: "0" }, sale);
     const done = await exchange(back, out);
-    expect(last()).toEqual({ path: "/api/app/pos/exchange", o: { method: "POST", body: { back, out } } });
-    expect([done.sale.id, done.sale.rounded_total, done.carried, done.due, done.refund]).toEqual(["sale-2", "220", "110", "110", "0"]);
+    expect(sent.calls.map((c) => [c.path, c.o.method ?? "GET", c.o.idempotencyKey])).toEqual([
+      ["/api/v1/PosInvoice", "POST", "ret-1"],
+      ["/api/v1/PosInvoice", "POST", "sale-2"],
+      ["/api/v1/PosInvoice/ret-1/actions/exchange", "POST", "exchange:ret-1"],
+      ["/api/v1/PosInvoice/sale-2", "GET", undefined],
+    ]);
+    expect([sent.calls[0].o.body, sent.calls[1].o.body, sent.calls[2].o.body]).toEqual([{ ...back, is_return: true }, out, { out: "sale-2" }]);
+    expect([done.sale.id, done.sale.rounded_total, done.carried, done.due, done.refund, done.return]).toEqual(["sale-2", "220", "110", "110", "0", "ret-1"]);
+  });
+
+  it("takes both drafts back when the exchange is refused, and says nothing was exchanged", async () => {
+    sent.answers.push({ id: "ret-1" }, { id: "sale-2" }, Object.assign(new Error("insufficient payment: 160 received of 220 due"), { status: 422 }));
+    await expect(exchange(back, out)).rejects.toThrow(/nothing was exchanged\. insufficient payment/);
+    expect(sent.calls.slice(3).map((c) => [c.path, c.o.method])).toEqual([
+      ["/api/v1/PosInvoice/sale-2", "DELETE"],
+      ["/api/v1/PosInvoice/ret-1", "DELETE"],
+    ]);
+  });
+
+  it("keeps the drafts when the server cannot be reached, so pressing again repeats every step", async () => {
+    sent.answers.push({ id: "ret-1" }, new TypeError("Failed to fetch"));
+    await expect(exchange(back, out)).rejects.toThrow("Failed to fetch");
+    expect(sent.calls.some((c) => c.o.method === "DELETE")).toBe(false);
   });
 });
 
@@ -100,19 +128,29 @@ describe("what the server was seen to refuse, in the cashier's words", () => {
   });
 });
 
-describe("what 0.7.0's routes take and answer (read from the server's code: src/receipt.rs, src/returns.rs, src/site.rs)", () => {
-  it("asks for the first receipt as a page, once, and for a copy or a gift receipt with the reason and approval it was given", async () => {
+describe("what the receipts, the refund plan and the papers take and answer (read from the server's code: src/receipt.rs, src/returns.rs, src/site.rs)", () => {
+  it("prints the first receipt through the session's action under the sale's own key, then fetches its paper", async () => {
+    answer({ event: "ev-1", kind: "Original" });
+    expect((await printReceipt("sess-1", "sale-1")).event).toBe("ev-1");
+    expect(last()).toEqual({ path: "/api/v1/PosOpeningEntry/sess-1/actions/print_receipt", o: { method: "POST", body: { sale: "sale-1" }, idempotencyKey: "print:sale-1" } });
     answer("<div>RECEIPT</div>");
-    expect(await firstReceipt("reg1", "sale 1")).toBe("<div>RECEIPT</div>");
-    expect(last()).toEqual({ path: "/api/app/pos/receipt/sale%201", o: { query: { profile: "reg1" }, accept: "text/html" } });
-    await reprint({ profile: "reg1", sale: "s1", kind: "copy", reason: "r1", approval: "ap1" });
-    expect(last()).toEqual({ path: "/api/app/pos/reprint", o: { method: "POST", body: { profile: "reg1", sale: "s1", kind: "copy", reason: "r1", approval: "ap1" }, accept: "text/html" } });
+    expect(await paper("ev 1")).toBe("<div>RECEIPT</div>");
+    expect(last()).toEqual({ path: "/api/app/pos/paper/ev%201", o: { accept: "text/html" } });
   });
 
-  it("sends the receipt by message with the consent the buyer chose", async () => {
-    answer({ event: "e1", sent: [{ channel: "email" }], receipt: null });
-    expect((await sendReceipt({ profile: "reg1", sale: "s1", to: "a@b.test", consent: "opt_in" })).sent[0].channel).toBe("email");
-    expect(last()).toEqual({ path: "/api/app/pos/send", o: { method: "POST", body: { profile: "reg1", sale: "s1", to: "a@b.test", consent: "opt_in" } } });
+  it("asks for a copy or a gift receipt with the reason and approval it was given, a new key for each press", async () => {
+    answer({ event: "ev-2", kind: "Copy", copy_no: 1 });
+    expect((await reprint("sess-1", { sale: "s1", kind: "copy", reason: "r1", approval: "ap1" })).copy_no).toBe(1);
+    const { path, o } = last();
+    expect([path, o.method, o.body]).toEqual(["/api/v1/PosOpeningEntry/sess-1/actions/reprint", "POST", { sale: "s1", kind: "copy", reason: "r1", approval: "ap1" }]);
+    await reprint("sess-1", { sale: "s1", kind: "gift" });
+    expect([typeof o.idempotencyKey, last().o.idempotencyKey === o.idempotencyKey]).toEqual(["string", false]);
+  });
+
+  it("sends the receipt by message with the consent the buyer chose, under the key it is given", async () => {
+    answer({ event: "e1", channels: ["email"], attached: false });
+    expect((await sendReceipt("sess-1", { sale: "s1", to: "a@b.test", consent: "opt_in" }, "send-key-1")).channels).toEqual(["email"]);
+    expect(last()).toEqual({ path: "/api/v1/PosOpeningEntry/sess-1/actions/send_receipt", o: { method: "POST", body: { sale: "s1", to: "a@b.test", consent: "opt_in" }, idempotencyKey: "send-key-1" } });
   });
 
   it("asks the register to plan a refund for lines and quantities", async () => {
