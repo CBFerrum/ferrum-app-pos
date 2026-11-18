@@ -284,6 +284,20 @@ describe("hold and keys", () => {
     expect(card).toContain("Needs the card&#x27;s code again: it is never kept.");
   });
 
+  it("says whose a held sale is, which the register does not have yet, and when only this device's are shown", () => {
+    const held = [
+      { key: "a", customer: { id: null }, lines: [{ key: "t", item: "t", item_name: "Tea", qty: 1 }], at: "2026-11-19T10:00:00Z", sent: true, by: "ravi@shop.test" },
+      { key: "b", customer: { id: null }, lines: [{ key: "c", item: "c", item_name: "Cake", qty: 1 }], at: "2026-11-19T10:01:00Z" },
+      { key: "c", customer: { id: null, title: "Acme" }, lines: [], at: "2026-11-19T10:02:00Z", sent: true, erased: true },
+    ];
+    const html = draw(<HeldDialog held={held} note="away" onResume={() => {}} onDiscard={() => {}} onClose={() => {}} />);
+    expect(html).toContain("Held by ravi@shop.test");
+    expect(html).toContain("Not sent to the register yet");
+    expect(html).toContain("Showing what is on this device.");
+    expect(html).toContain("Its basket was erased: it can only be discarded.");
+    expect(html.match(/>Resume</g)?.length).toBe(2);
+  });
+
   it("names the shortcuts", () => {
     const html = draw(<KeysDialog onClose={() => {}} />);
     for (const k of ["F2", "F4", "F8", "F9", "F10", "Delete"]) expect(html).toContain(k);

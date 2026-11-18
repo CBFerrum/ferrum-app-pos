@@ -1,16 +1,32 @@
-// Sales set aside at this till, to serve the next customer first. They live on this device (so
-// they work offline and cost the server nothing), per register and cashier; resuming one brings
-// its lines and customer back, and re-prices them, so a price that changed meanwhile is the new one.
+// Sales set aside, to serve the next customer first. They live on this device first (so they work
+// offline), per register and cashier, and on the register too once it has them, where the cashier's
+// other tills and a manager see them; resuming one brings its lines and customer back, and re-prices
+// them, so a price that changed meanwhile is the new one.
 
 import { formatMoment, t, isolate } from "@ferrum/client";
-import { Button, Dialog, StatePanel } from "@ferrum/kit";
+import { Button, Dialog, Spinner, StatePanel } from "@ferrum/kit";
 import { useMoney } from "./fmt";
 import { heldSummary, type HeldSale } from "./lib/held";
 
-export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldSale[]; onResume: (key: string) => void; onDiscard: (key: string) => void; onClose: () => void }) {
+/** `note`: the register's list is being read (`loading`), or cannot be reached (`away`: only this device's rows show). */
+export function HeldDialog({
+  held,
+  note = null,
+  onResume,
+  onDiscard,
+  onClose,
+}: {
+  held: HeldSale[];
+  note?: "loading" | "away" | null;
+  onResume: (key: string) => void;
+  onDiscard: (key: string) => void;
+  onClose: () => void;
+}) {
   const money = useMoney();
   return (
     <Dialog open onClose={onClose} title={t("Sales on hold")} footer={<Button onClick={onClose}>{t("Close")}</Button>}>
+      {note === "loading" && <Spinner small />}
+      {note === "away" && <p className="muted">{t("Showing what is on this device.")}</p>}
       {held.length === 0 ? (
         <StatePanel kind="empty" title={t("Nothing on hold")}>
           {t("Press Hold to set a sale aside while you serve someone else.")}
@@ -29,10 +45,15 @@ export function HeldDialog({ held, onResume, onDiscard, onClose }: { held: HeldS
                   </span>
                   <span className="faint pos-held-items">{isolate(s.lines.map((l) => `${l.qty} × ${l.item_name}`).join(", "))}</span>
                   {s.cardAgain && <span className="faint">{t("Needs the card's code again: it is never kept.")}</span>}
+                  {s.by && <span className="faint">{t("Held by {who}", { who: s.by })}</span>}
+                  {!s.sent && <span className="faint">{t("Not sent to the register yet")}</span>}
+                  {s.erased && <span className="faint">{t("Its basket was erased: it can only be discarded.")}</span>}
                 </div>
-                <Button variant="primary" className="pos-btn" onClick={() => onResume(s.key)}>
-                  {t("Resume")}
-                </Button>
+                {!s.erased && (
+                  <Button variant="primary" className="pos-btn" onClick={() => onResume(s.key)}>
+                    {t("Resume")}
+                  </Button>
+                )}
                 <Button variant="danger" className="pos-btn" aria-label={t("Discard the sale of {who}", { who })} onClick={() => onDiscard(s.key)}>
                   {t("Discard")}
                 </Button>

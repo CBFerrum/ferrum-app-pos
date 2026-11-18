@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.13.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.14.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,9 +39,9 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.13.0 |
+| **Version** | 0.14.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
-| **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
+| **What it adds** | 31 entities (16 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
 | **Works with** | ERP (items, prices, promotions, stored value, invoices, stock), [Retail](https://github.com/CBFerrum/ferrum-app-retail) (goods sold at a till can be returned at any store), Mail and messages (receipts by message) |
 | **Languages** | English, Arabic (right to left), Hindi |
@@ -123,7 +123,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Change a line where it stands.** Quantity, a discount, a price where the register allows it, and a note that prints under the line. What a cashier may change follows their limits, shown before they type.
 - **A discount on the whole sale.** A percent typed under the lines, applied when the field is left or Enter is pressed. It counts with the lines' own discounts against the cashier's limits, so what goes past them asks another person's PIN first. It is kept with a sale on hold, priced on the device offline as the server prices it again, and printed on the receipt. An amount off the whole sale is not there yet.
 - **The keyboard does the rest.** F2 scan box, F4 pay, F9 hold, F10 sales on hold, F8 returns, F3 change the picked line, arrows to pick a line, + and − for its quantity, Delete to remove it.
-- **Sales on hold.** Set a sale aside to serve the next customer and bring it back from On hold. Held sales are kept on the device, per register and cashier, so they work offline, and a resumed sale is priced again.
+- **Sales on hold.** Set a sale aside to serve the next customer and bring it back from On hold. A held sale is kept on the device first, so holding works offline, and on the register too once it has it (`PosHeldSale`): the cashier sees it on their other tills and a POS Manager sees everyone's. Resuming one the register has deletes it there first, so only one till takes it; a resumed sale is priced again, and another person's approvals do not come back with it. Held sales are not shared with every cashier.
 - **Customer.** Pick or search a customer, or sell to the walk-in customer. A register with no default customer asks for one.
 - **The sale survives a reload.** The sale on screen comes back after a reload, and a phone keeps the total and Pay at the bottom.
 - **Touch first.** Every key is at least 44 px.
@@ -232,7 +232,7 @@ A cashier who reads only their own sales sees only their own figures.
 ### 🔐 Roles, privacy and APIs
 
 - **Two roles,** below. Row-level security applies to every table.
-- **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay.
+- **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay; a held sale's basket and name are erased with its customer. A held sale for the walk-in customer with a typed buyer is matched by no customer: it lives until it is resumed or discarded.
 - **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.print_receipt`, `.reprint`, `.send_receipt`) and exchanges (`pos.pos_invoice.exchange`).
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
@@ -280,6 +280,7 @@ Limits live on the server and are kept on the device so the till starts offline 
 | **POS Reason** | Reasons the till offers | For voids, returns, no sale and reprints |
 | **POS Approval** | One approval by PIN | Approver, action, amount, reason, limits, expiry |
 | **Receipt Event** | A first receipt, a reprint, a gift receipt or a message | Who, when, why, consent |
+| **Held Sale** | A sale set aside at a till, until it is resumed or discarded | Register, held by, customer, when, total, basket |
 | **Stock Shortfall** | Stock sold offline beyond the warehouse | Item, quantity, sale, status (Open, Put Right), resolution |
 | **Price Difference** | An offline sale priced differently | The three totals, review |
 | **Loyalty Program, Loyalty Point Entry** | Points rules and ledger | Tiers, factor, expiry, entries |
@@ -342,7 +343,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Held on the device only, per register and cashier; not shared between tills. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -368,6 +369,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.14.0:** held sales kept by the server too, seen on the cashier's other tills and by a manager, resumed by one till only; holding still works offline.
 - [x] **0.13.0:** a discount on the whole sale at the till: a percent, held to the cashier's limits, kept on hold and priced offline.
 - [x] **0.12.0:** receipts and exchanges are operations of the session and the return's draft; the register's own routes only read.
 - [x] **0.11.0:** setting a PIN and approving by one are operations of the register and the cashier's session, through the gate; `void`, `resolve` and `review` say what "done" means.
@@ -400,7 +402,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 - [ ] Arabic and Hindi for the newest sentences.
 
 **Selling**
-- [ ] Held sales shared across tills and recalled by any cashier.
+- [ ] Held sales recalled by any cashier at the register (the holder's own tills and managers have them since 0.14.0).
 - [ ] Several tills under one register told apart, with a till id on every sale.
 - [ ] Special orders and layaway: a deposit now, the balance later, stock reserved.
 - [ ] Serial and batch entry on the sale.

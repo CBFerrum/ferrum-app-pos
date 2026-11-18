@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.0
+
+Database: one new entity, `PosHeldSale` (an existing workspace gets an empty table; each device sends its held sales on its
+first pass). Needs the same platform and ERP as 0.13.0. The till's interface is rebuilt.
+
+- **Held sales are kept by the server too.** A held sale is a record (`pos.pos_held_sale.create`, `.list`, `.delete`, the
+  entity's own operations): the cashier who held it sees it on their other tills, a POS Manager sees everyone's, and an
+  agent does the same. `cashier` is always the caller; the register must admit them; the basket is 1 to 500 lines of an
+  item and a quantity, at most 256 KB, and never holds a card's code or PIN. An erasure by customer blanks the basket and
+  the name on it.
+- **The device stays the first copy.** Holding saves on the device, then sends the record under `held:{key}`; offline it
+  waits and goes with the next pass (on opening, when the connection comes back, every 15 seconds). Resuming or
+  discarding one the register has deletes it there first, so only one till takes it: another till that already did is
+  said plainly. A delete whose answer is lost resumes from the device's copy and is sent again later. A sale another
+  person held comes back without their approvals.
+- The list says who held a sale, which the register does not have yet, and when only this device's are shown.
+
 ## 0.13.0
 
 The till only: no server, database or package change. The till's interface is rebuilt.

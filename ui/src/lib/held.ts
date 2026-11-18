@@ -2,7 +2,8 @@
 // the next customer and calls it back; a page reload, a crash or a lost connection never costs the
 // sale being rung up. Both are stored per register and cashier, in the browser's own storage
 // (they need no server, so they work offline), and every read or write survives storage that is
-// empty, full, corrupt or blocked.
+// empty, full, corrupt or blocked. A held sale is also sent to the register (`PosHeldSale`) when it can
+// be, so the cashier's other tills and a manager see it: the device's copy stays the first one.
 
 import { t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
@@ -39,12 +40,20 @@ export interface HeldSale extends Cart {
   at: string;
   /** What it came to then, for the list. */
   total?: string;
+  /** The register has it: it was sent, or it came from the register. */
+  sent?: boolean;
+  /** Who held it, when it is not the person signed in (a manager sees everyone's). */
+  by?: string;
+  /** The register's copy lost its basket to an erasure: it can only be discarded. */
+  erased?: boolean;
 }
 
 type Store = Pick<Storage, "getItem" | "setItem">;
 
 const HELD = "ferrum.pos.held";
 const CART = "ferrum.pos.cart";
+/** Keys of held sales taken off this device whose register copy is still to be deleted. */
+const GONE = "ferrum.pos.held.gone";
 
 /** Whose sales these are: one register's, one cashier's. */
 export const ownerOf = (profile: string, email: string) => `${profile}:${email.toLowerCase()}`;
@@ -116,3 +125,111 @@ export const totalOf = (doc: Doc | null | undefined): string | undefined => {
   const v = doc?.rounded_total ?? doc?.grand_total;
   return v == null || v === "" ? undefined : String(v);
 };
+
+// ── the register's copy ──
+
+/** Keys whose register copy is still to be deleted (resumed or discarded here, the delete not yet answered). */
+export function loadGone(owner: string, storage: Store | undefined = globalThis.localStorage): string[] {
+  const list = read<unknown>(GONE, storage)[owner];
+  return Array.isArray(list) ? list.filter((k): k is string => typeof k === "string") : [];
+}
+
+export function saveGone(owner: string, keys: string[], storage: Store | undefined = globalThis.localStorage): boolean {
+  const all = read<string[]>(GONE, storage);
+  if (keys.length) all[owner] = keys;
+  else delete all[owner];
+  return write(GONE, all, storage);
+}
+
+/** The register's record of a held sale (`pos.pos_held_sale.create`): its key as the id, the basket as the till keeps it. A
+ *  card's code is never in a basket (`cardAgain` only says it is to be asked for again). */
+export function heldBody(sale: HeldSale, profile: string): Doc {
+  const { at, total, sent: _sent, by: _by, erased: _erased, ...cart } = sale;
+  return {
+    id: sale.key,
+    pos_profile: profile,
+    customer: sale.customer.id,
+    customer_title: sale.customer.title ?? null,
+    held_at: at,
+    ...(total ? { total } : {}),
+    cart,
+  };
+}
+
+const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+
+/** A held sale as the register lists it, read as untrusted: only what the till knows is taken, a malformed row is dropped
+ *  (null), and one whose basket was erased comes back to be discarded only. `me` is the person signed in. */
+export function fromServer(row: Doc, me: string): HeldSale | null {
+  const key = text(row.id);
+  const at = text(row.held_at);
+  if (!key || !at) return null;
+  const by = text(row.cashier);
+  const base = {
+    key,
+    at,
+    sent: true,
+    ...(row.total != null && row.total !== "" ? { total: String(row.total) } : {}),
+    ...(by && by.toLowerCase() !== me.toLowerCase() ? { by } : {}),
+  };
+  const customer: Customer = { id: text(row.customer) ?? null, ...(text(row.customer_title) ? { title: text(row.customer_title) } : {}) };
+  if (row.cart == null) return { ...base, customer, lines: [], erased: true };
+  const c = row.cart as Partial<Cart>;
+  const lines = Array.isArray(c.lines) ? c.lines : null;
+  const line = (l: unknown): l is CartLine =>
+    !!l && typeof l === "object" && !!text((l as CartLine).key) && !!text((l as CartLine).item) && typeof (l as CartLine).qty === "number" && (l as CartLine).qty > 0;
+  if (!lines || !lines.length || !lines.every(line)) return null;
+  return {
+    ...base,
+    customer: c.customer && typeof c.customer === "object" && "id" in c.customer ? { id: text(c.customer.id) ?? null, ...(text(c.customer.title) ? { title: text(c.customer.title) } : {}) } : customer,
+    lines: lines.map((l) => ({ key: l.key, item: l.item, item_name: text(l.item_name) ?? l.item, qty: l.qty, ...(text(l.discount) ? { discount: l.discount } : {}), ...(text(l.price) ? { price: l.price } : {}), ...(text(l.note) ? { note: l.note } : {}) })),
+    ...(Array.isArray(c.approvals) ? { approvals: c.approvals } : {}),
+    ...(Array.isArray(c.voided) ? { voided: c.voided } : {}),
+    ...(c.buyer && typeof c.buyer === "object" ? { buyer: c.buyer } : {}),
+    ...(Array.isArray(c.codes) ? { codes: c.codes.filter((x): x is string => typeof x === "string") } : {}),
+    ...(text(c.discount) ? { discount: c.discount } : {}),
+    ...(c.cardAgain === true ? { cardAgain: true } : {}),
+  };
+}
+
+/** What the till shows: the device's held sales, then the register's that the device does not hold and has not taken. A
+ *  device row the register had (`sent`) that a complete answer no longer lists was resumed or discarded elsewhere: it goes.
+ *  `complete`: the register's answer was its whole list (fewer rows than asked for). */
+export function mergeHeld(device: HeldSale[], server: HeldSale[], gone: string[], complete: boolean): { device: HeldSale[]; shown: HeldSale[] } {
+  const listed = new Set(server.map((s) => s.key));
+  const kept = device.filter((s) => !(s.sent && complete && !listed.has(s.key)));
+  const here = new Set(kept.map((s) => s.key));
+  return { device: kept, shown: [...kept, ...server.filter((s) => !here.has(s.key) && !gone.includes(s.key))] };
+}
+
+/** Takes a held sale off this device to resume or discard it. One the register has is deleted there first, its key kept in
+ *  `gone` (saved before the delete goes) until the delete is answered: done, it is taken; not found, another till took it and
+ *  the device's copy goes too; the register out of reach, it is taken from the device's copy and the delete waits in `gone`
+ *  for the next pass; refused for another reason, nothing changes and the refusal is thrown. */
+export async function takeHeld(
+  key: string,
+  list: HeldSale[],
+  gone: string[],
+  io: { del: (key: string) => Promise<unknown>; lost: (e: unknown) => boolean; keepGone: (keys: string[]) => void },
+): Promise<{ taken: boolean; why?: "missing" | "elsewhere"; sale?: HeldSale; list: HeldSale[]; gone: string[] }> {
+  const sale = list.find((s) => s.key === key);
+  if (!sale) return { taken: false, why: "missing", list, gone };
+  const rest = list.filter((s) => s.key !== key);
+  if (!sale.sent) return { taken: true, sale, list: rest, gone };
+  const without = gone.filter((k) => k !== key);
+  const waiting = [...without, key];
+  io.keepGone(waiting);
+  try {
+    await io.del(key);
+  } catch (e) {
+    if ((e as { status?: number } | null)?.status === 404) {
+      io.keepGone(without);
+      return { taken: false, why: "elsewhere", list: rest, gone: without };
+    }
+    if (io.lost(e)) return { taken: true, sale, list: rest, gone: waiting };
+    io.keepGone(gone);
+    throw e;
+  }
+  io.keepGone(without);
+  return { taken: true, sale, list: rest, gone: without };
+}

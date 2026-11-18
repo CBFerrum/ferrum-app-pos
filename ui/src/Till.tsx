@@ -23,12 +23,13 @@ import { HeldDialog, KeysDialog } from "./Held";
 import { PayDialog, ReceiptDialog } from "./Pay";
 import { Currency, fine, myEmail, num, str, titleOf, useMoney } from "./fmt";
 import { useCalc, useOutbox } from "./hooks";
-import { loadCart, loadHeld, ownerOf, putAside, saveCart, saveHeld, takeOut, totalOf, type Customer, type HeldSale } from "./lib/held";
+import { fromServer, heldBody, loadCart, loadGone, loadHeld, mergeHeld, ownerOf, putAside, saveCart, saveGone, saveHeld, takeHeld, totalOf, type Customer, type HeldSale } from "./lib/held";
 import { listPrices, scanBook, searchBook, serverDown, till, unreachable, type PriceBook } from "./lib/offline";
 import { momentIn, notAvailable } from "./lib/pricing";
 import { tally } from "./lib/pay";
 import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
 import { allows, asksFor, beyond, lineProblem, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
+import { dropHeld, HELD_PAGE, heldSales, holdSale } from "./lib/server";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -349,20 +350,119 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   };
 
   // ── hold and resume ──
+  // A held sale is the device's first, then the register's too (`PosHeldSale`), so the cashier's other tills and a manager
+  // see it. Resuming one the register has deletes it there first: one till only takes it.
   const now = () => new Date().toISOString();
+  const [remote, setRemote] = useState<HeldSale[]>([]);
+  const [heldNote, setHeldNote] = useState<"loading" | "away" | null>(null);
+  const shownHeld = mergeHeld(held, remote, loadGone(owner), false).shown;
+  const current = (): HeldSale => ({ lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}), at: now(), ...(totalOf(calc.doc) ? { total: totalOf(calc.doc) } : {}) });
+  // Marks a held sale as the register's once it has it.
+  const sentOne = (key: string) => {
+    const next = loadHeld(owner).map((x) => (x.key === key ? { ...x, sent: true } : x));
+    if (saveHeld(owner, next)) setHeld(next);
+  };
+  const push = async (sale: HeldSale): Promise<void> => {
+    try {
+      await holdSale(heldBody(sale, profileId));
+      sentOne(sale.key);
+    } catch (e) {
+      if ((e as { status?: number }).status === 409) return sentOne(sale.key);
+      if (unreachable(e)) return void toast(tr("It is on this device and reaches the register when the connection is back."));
+      toast(errorMessage(e), "error");
+    }
+  };
+  // What is not sent goes, what was taken here is deleted there, and the register's list is read: on opening, when the
+  // connection comes back and every 15 seconds, never two at once. Out of reach, the device's own rows are shown.
+  const syncing = useRef(false);
+  const syncHeld = useCallback(async () => {
+    if (syncing.current || !navigator.onLine) return;
+    syncing.current = true;
+    setHeldNote((n) => n ?? "loading");
+    const status = (e: unknown) => (e as { status?: number } | null)?.status;
+    try {
+      for (const sale of loadHeld(owner).filter((x) => !x.sent)) {
+        try {
+          await holdSale(heldBody(sale, profileId));
+        } catch (e) {
+          if (unreachable(e)) throw e;
+          if (status(e) !== 409) continue;
+        }
+        const next = loadHeld(owner).map((x) => (x.key === sale.key ? { ...x, sent: true } : x));
+        saveHeld(owner, next);
+      }
+      for (const key of loadGone(owner)) {
+        try {
+          await dropHeld(key);
+        } catch (e) {
+          if (unreachable(e)) throw e;
+          if (status(e) !== 404) continue;
+        }
+        saveGone(owner, loadGone(owner).filter((k) => k !== key));
+      }
+      const { rows } = await heldSales(profileId);
+      const server = rows.map((r) => fromServer(r, email)).filter((x): x is HeldSale => x !== null);
+      const merged = mergeHeld(loadHeld(owner), server, loadGone(owner), rows.length < HELD_PAGE);
+      saveHeld(owner, merged.device);
+      setHeld(merged.device);
+      setRemote(server);
+      setHeldNote(null);
+    } catch (e) {
+      setHeldNote(unreachable(e) ? "away" : null);
+      if (unreachable(e)) setRemote([]);
+    } finally {
+      syncing.current = false;
+    }
+  }, [owner, profileId, email]);
+  useEffect(() => {
+    void syncHeld();
+    const timer = setInterval(() => void syncHeld(), 15_000);
+    const back = () => void syncHeld();
+    window.addEventListener("online", back);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", back);
+    };
+  }, [syncHeld]);
   const hold = () => {
     if (!lines.length) return;
-    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+    const sale = current();
+    const next = putAside(held, sale, sale.at, sale.total);
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
     toast(cardOn ? tr("Sale put on hold. The card's code is not kept: you will be asked for the card again when you resume it.") : tr("Sale put on hold"));
     focusScan();
+    if (!(away || serverDown())) void push(sale);
+  };
+  // Takes a held sale off this device (deleting the register's copy first when it has one); the register's own rows come
+  // onto the device first. Null when it was not taken, after saying why.
+  const unhold = async (sale: HeldSale): Promise<HeldSale | null> => {
+    const device = loadHeld(owner);
+    const list = device.some((x) => x.key === sale.key) ? device : [sale, ...device];
+    let took: Awaited<ReturnType<typeof takeHeld>>;
+    try {
+      took = await takeHeld(sale.key, list, loadGone(owner), { del: dropHeld, lost: unreachable, keepGone: (keys) => void saveGone(owner, keys) });
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      return null;
+    }
+    if (!took.taken) {
+      if (saveHeld(owner, took.list)) setHeld(took.list);
+      setRemote((r) => r.filter((x) => x.key !== sale.key));
+      if (took.why === "elsewhere") toast(tr("This sale was already resumed or discarded on another till."), "error");
+      return null;
+    }
+    setRemote((r) => r.filter((x) => x.key !== sale.key));
+    if (!saveHeld(owner, took.list)) toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
+    setHeld(took.list);
+    return took.sale ?? null;
   };
   const resume = async (key: string) => {
-    const { sale, rest } = takeOut(held, key);
-    if (!sale) return;
-    let next = rest;
+    const picked = shownHeld.find((s) => s.key === key);
+    if (!picked) return;
+    if (picked.erased) return void toast(tr("Its basket was erased: it can only be discarded."), "error");
+    let aside: HeldSale | null = null;
     if (lines.length) {
       const ok = await confirmDialog({
         title: tr("Put the sale on screen on hold?"),
@@ -371,12 +471,19 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
-      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+      aside = current();
     }
-    if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
-    setHeld(next);
+    const sale = await unhold(picked);
+    if (!sale) return;
+    if (aside) {
+      const next = putAside(loadHeld(owner), aside, aside.at, aside.total);
+      if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
+      setHeld(next);
+      if (!(away || serverDown())) void push(aside);
+    }
     setLines(sale.lines);
-    setApprovals(sale.approvals ?? []);
+    // Another person's approvals were for their own session: they do not come back.
+    setApprovals(sale.by ? [] : (sale.approvals ?? []));
     setVoided(sale.voided ?? []);
     setBuyer(sale.buyer ?? null);
     setCodes(sale.codes ?? []);
@@ -389,12 +496,11 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     if (sale.cardAgain) toast(cardAgain(), "error");
   };
   const discard = async (key: string) => {
-    const sale = held.find((s) => s.key === key);
+    const sale = shownHeld.find((s) => s.key === key);
     if (!sale) return;
     const ok = await confirmDialog({ title: tr("Discard this held sale?"), message: (sale.lines.length === 1 ? tr("{length} line will be forgotten.", { length: sale.lines.length }) : tr("{length} lines will be forgotten.", { length: sale.lines.length })), confirmLabel: tr("Discard"), danger: true });
     if (!ok) return;
-    const { rest } = takeOut(held, key);
-    if (saveHeld(owner, rest)) setHeld(rest);
+    await unhold(sale);
   };
 
   // ── selling ──
@@ -523,7 +629,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         <span className="spacer" />
         <Button className="pos-btn" onClick={() => setDialog("held")}>
           {tr("On hold")}
-          {held.length > 0 && <Badge tone="blue">{held.length}</Badge>}
+          {shownHeld.length > 0 && <Badge tone="blue">{shownHeld.length}</Badge>}
         </Button>
         <Button className="pos-btn" onClick={openReturns} title={away ? tr("Returns need a connection") : undefined}>
           {tr("Return")}
@@ -695,7 +801,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           onComplete={complete}
         />
       )}
-      {dialog === "held" && <HeldDialog held={held} onResume={(k) => void resume(k)} onDiscard={(k) => void discard(k)} onClose={() => setDialog(null)} />}
+      {dialog === "held" && <HeldDialog held={shownHeld} note={heldNote} onResume={(k) => void resume(k)} onDiscard={(k) => void discard(k)} onClose={() => setDialog(null)} />}
       {dialog === "keys" && <KeysDialog onClose={() => setDialog(null)} />}
       {dialog === "returns" && (
         <Guard

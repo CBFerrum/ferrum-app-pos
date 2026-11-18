@@ -19,6 +19,7 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 | `PosRoleLimit` | What a role may do at the till without another person approving it; a row can name one register |
 | `PosReason` | The reasons the till offers for voids, returns, opening the drawer without a sale and reprints |
 | `PosApproval` | One person's approval, by their PIN at the till, of one act another person asked beyond their limits (read-only) |
+| `PosHeldSale` | A sale set aside at a till: its basket, until it is resumed or discarded (its holder's, and every POS Manager's; made and deleted, never edited) |
 | `LoyaltyProgram`, `LoyaltyPointEntry` | Tiers by lifetime spend, points value, expiry; the points ledger (read-only) |
 | `ItemBarcode` | Extra barcodes per item (pack barcodes add several units per scan). `Item.barcode` and `Item.item_code` scan too |
 

@@ -16,7 +16,7 @@ vi.mock("./offline", async (actual) => ({
 
 import { approvalProblem } from "./approval";
 import { parseLimits } from "./rights";
-import { approve, cardBalance, exchange, madeCode, paper, paperOf, printReceipt, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
+import { approve, cardBalance, dropHeld, exchange, heldSales, holdSale, madeCode, paper, paperOf, printReceipt, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
 import { cardProblem } from "./stored";
 import { makeCode } from "../Card";
 
@@ -111,6 +111,22 @@ describe("what the server was seen to take and answer", () => {
     sent.answers.push({ id: "ret-1" }, new TypeError("Failed to fetch"));
     await expect(exchange(back, out)).rejects.toThrow("Failed to fetch");
     expect(sent.calls.some((c) => c.o.method === "DELETE")).toBe(false);
+  });
+});
+
+describe("held sales at the register (pos-4)", () => {
+  it("holds under `held:{key}`, lists the register's newest first, and deletes by key", async () => {
+    answer({ id: "k1" });
+    await holdSale({ id: "k1", pos_profile: "reg1", held_at: "t", cart: { lines: [] } });
+    expect(last()).toEqual({ path: "/api/v1/PosHeldSale", o: { method: "POST", body: { id: "k1", pos_profile: "reg1", held_at: "t", cart: { lines: [] } }, idempotencyKey: "held:k1" } });
+    answer({ rows: [] });
+    await heldSales("reg1");
+    const { path, o } = last();
+    expect(path).toBe("/api/v1/PosHeldSale");
+    expect(o.query).toEqual({ filters: JSON.stringify({ pos_profile: "reg1" }), fields: "id,cashier,customer,customer_title,held_at,total,cart", limit: 200, sort: "held_at desc" });
+    answer(undefined);
+    await dropHeld("k 1");
+    expect(last()).toEqual({ path: "/api/v1/PosHeldSale/k%201", o: { method: "DELETE" } });
   });
 });
 

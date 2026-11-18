@@ -32,6 +32,23 @@ export const setPin = (profile: string, pin: string) =>
 export const cardBalance = (mode: string, code: string, pin?: string) =>
   till<CardBalance>("/api/app/pos/balance", { method: "POST", body: { mode, code, ...(pin ? { pin } : {}) } });
 
+/** A held sale's record at the register (`pos.pos_held_sale.create`), under `held:{key}`: sent again it is answered; made
+ *  meanwhile under another key, it is refused as there already (409). */
+export const holdSale = (body: Doc) => till<Doc>(docPath("PosHeldSale"), { method: "POST", body, idempotencyKey: `held:${String(body.id)}` });
+
+/** The most held sales a register's list is read with: an answer with fewer is the whole list. */
+export const HELD_PAGE = 200;
+
+/** The register's held sales the person may see (their own; a manager, everyone's), newest first. */
+export const heldSales = (profile: string, signal?: AbortSignal) =>
+  till<{ rows: Doc[] }>(docPath("PosHeldSale"), {
+    query: { filters: JSON.stringify({ pos_profile: profile }), fields: "id,cashier,customer,customer_title,held_at,total,cart", limit: HELD_PAGE, sort: "held_at desc" },
+    signal,
+  });
+
+/** A held sale resumed or discarded (`pos.pos_held_sale.delete`); a second delete is "not found". */
+export const dropHeld = (key: string) => till<unknown>(docPath("PosHeldSale", key), { method: "DELETE" });
+
 /** The kind's `prove` for an issue with no code: the server makes one and answers it once,
  *  `{proof, code, expires_in_minutes}` (the proof is not used: the card is sold, or loaded, by its code on the sale). */
 export const madeCode = (kind: string) =>
