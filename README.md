@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.15.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.16.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.15.0 |
+| **Version** | 0.16.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 31 entities (16 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
@@ -191,7 +191,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Safe drop** to the register's safe account, never more than the drawer holds.
 - **Slips.** Each movement prints its cash slip.
 - **Counting.** A counter for notes and coins by denomination, a difference per method, and over and short booked to the cash difference account.
-- **Tips.** A register that names a **Tips Account** (a liability) takes tips: what a customer adds on top of a sale (`tip_amount`), paid in cash or by card, never in points, on account or with stored value. A tip is outside the sale's totals, so it is not taxed, earns no points and is not invoiced as revenue; the closing books it as owed from that account, which a manager pays out with a **Cash Out** to it. A return never gives a tip back. The till neither taxes nor shares tips (that is a business's or a country's rule); the takings reports include them, since they are in the drawer and on the card terminal.
+- **Tips.** A register that names a **Tips Account** (a liability) takes tips: what a customer adds on top of a sale (`tip_amount`), paid in cash or by card, never in points, on account or with stored value. A tip is outside the sale's totals, so it is not taxed, earns no points and is not invoiced as revenue; the closing books it as owed from that account, which a manager pays out with a **Cash Out** to it. A return never gives a tip back. The till neither taxes nor shares tips (that is a business's or a country's rule); the takings reports include them, since they are in the drawer and on the card terminal. At the till the pay window asks for it under the total when the register takes tips, shows what is to pay with it, works out the change on both, and says so when only points, credit or a card's stored value would pay it; a sale made offline carries it too.
 
 ### 🎁 Loyalty
 
@@ -328,7 +328,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Loyalty points | ✅ | ✅ | 🟡 | 🟡 | ✅ |
 | Promotions and discount codes | 🟡⁶ | ✅ | ✅ | ✅ | ✅ |
 | Whole-sale discount at the till | 🟡¹¹ | ✅ | ✅ | ✅ | ✅ |
-| Tips | 🟡¹² | ✅ | ✅ | 🟡 | ✅ |
+| Tips | ✅ | ✅ | ✅ | 🟡 | ✅ |
 | Cash drawer: float, drops, blind count, Z report | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Receipt layout the owner edits | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Receipt by email or message | 🟡⁷ | ✅ | ✅ | ✅ | ✅ |
@@ -344,7 +344,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² On the sale, owed in the books at closing and on the receipt and shift report; typed at the till in the next version.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -370,6 +370,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.16.0:** tips typed at the till: the pay window adds the tip to what is to pay, online and offline.
 - [x] **0.15.0:** tips on the sale, owed in the books at closing (never income), on the receipt and the shift report.
 - [x] **0.14.0:** held sales kept by the server too, seen on the cashier's other tills and by a manager, resumed by one till only; holding still works offline.
 - [x] **0.13.0:** a discount on the whole sale at the till: a percent, held to the cashier's limits, kept on hold and priced offline.
@@ -393,7 +394,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 **Hardware and payments**
 - [ ] Direct receipt printing and a cash drawer that opens on a cash sale and on no sale.
 - [ ] A card terminal in the sale flow, and UPI payment requests with a QR the customer scans.
-- [ ] An amount off the whole sale (a percent is there since 0.13.0), and tips with presets.
+- [ ] An amount off the whole sale (a percent is there since 0.13.0), and tip presets (a tip is typed since 0.16.0).
 
 **Cashier**
 - [ ] Staff PIN sign-in and quick user switch on a shared till.

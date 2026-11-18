@@ -16,7 +16,7 @@ import { LinkInput, type Doc } from "@ferrum/records";
 import { AskDialog } from "./Approval";
 import { CardInputs } from "./Card";
 import { Currency, num, titleOf, useMoney, str } from "./fmt";
-import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, type Paid } from "./lib/pay";
+import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, tipProblem, type Paid } from "./lib/pay";
 import { fallbackReceiptHtml, quickCash, type Buyer, type Tender } from "./lib/pos";
 import { serverDown, till, tillAll, unreachable } from "./lib/offline";
 import { cardBalance, paper, printReceipt, voidSale } from "./lib/server";
@@ -68,8 +68,8 @@ export interface PayProps {
   /** The buyer rule the till holds offline (from the snapshot): above this a walk-in sale needs a named buyer. */
   namedAbove?: string | null;
   onClose: () => void;
-  /** Sells; the answer is what went wrong, or null once it is done. */
-  onComplete: (tenders: Tender[], o: { invoiceNow: boolean }) => Promise<string | null>;
+  /** Sells; the answer is what went wrong, or null once it is done. `tip`: what the customer adds on top of the total. */
+  onComplete: (tenders: Tender[], o: { invoiceNow: boolean; tip?: string }) => Promise<string | null>;
 }
 
 type Added = Tender & { left?: number };
@@ -145,10 +145,18 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
   const [buyerName, setBuyerName] = useState(buyer?.name ?? "");
   const [asking, setAsking] = useState(!!buyer);
   const [promo, setPromo] = useState("");
+  // A tip, at a register that names a Tips Account (not on a return): on top of what is due, paid in money with the rest.
+  const takesTips = !!str(profile.tip_account) && doc?.is_return !== true;
+  const [tipText, setTipText] = useState("");
+  const tipTyped = tipText.trim() === "" ? 0 : Number(tipText);
+  const tipInvalid = takesTips && !(Number.isFinite(tipTyped) && tipTyped >= 0);
+  const tip = takesTips && !tipInvalid ? round(tipTyped, precision) : 0;
+  // What the customer pays: the sale's total and the tip. Points and stored value still pay the goods only.
+  const payable = round(due + tip, precision);
   // The sale's price changes when a code is taken or a buyer found: what is still due starts again from it, until a payment is added.
   useEffect(() => {
-    if (!added.length) setAmount(String(due));
-  }, [due]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!added.length) setAmount(String(payable));
+  }, [payable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kindOf = (id: string) => methods.find((m) => m.id === id)?.kind ?? "General";
   const paidOf = (list: Tender[]): Paid[] => list.map((t) => ({ kind: kindOf(t.mode_of_payment), amount: num(t.amount) }));
@@ -170,9 +178,12 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
         }
       : null;
   const everything: Added[] = pending ? [...added, pending] : added;
-  const t = tally(due, paidOf(everything), writeOff, precision);
-  const before = stillDue(due, paidOf(added), precision);
-  const rows = perTender(due, paidOf(everything), precision);
+  const t = tally(payable, paidOf(everything), writeOff, precision);
+  const before = stillDue(payable, paidOf(added), precision);
+  // What the goods still need: points and stored value pay no tip.
+  const beforeGoods = stillDue(due, paidOf(added), precision);
+  const rows = perTender(payable, paidOf(everything), precision);
+  const tipWhy = tipProblem(due, tip, paidOf(everything), precision);
   const rounding = round(due - grand, precision);
 
   // The buyer the server found or made for the registration: made only in its preview, so a customer it cannot read is one it would make.
@@ -195,7 +206,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
   // What the register asks of a sale of this size: the server says so when it prices it; offline, the snapshot's rule is held to.
   const needsBuyer = !buyer && walkIn && (doc?.needs_buyer === true || (offline && !!namedAbove && due > Number(namedAbove)));
   const heldBack = needsBuyer && offline ? tr("This register asks for a named buyer on a sale this size, and it cannot be checked until the connection is back: pick the customer on the sale, or sell it when the register is online.") : null;
-  const covered = !noBuyer && t.left === 0 && !t.problem && !heldBack && !problem && !pricing;
+  const covered = !noBuyer && t.left === 0 && !t.problem && !heldBack && !problem && !pricing && !tipInvalid && !tipWhy;
   const applyBuyer = () => {
     if (!taxId.trim()) return;
     onBuyer({ taxId: taxId.trim(), ...(buyerName.trim() ? { name: buyerName.trim() } : {}) });
@@ -219,7 +230,8 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
   };
   const choose = (id: string) => {
     setMethod(id);
-    setAmount(String(before));
+    const kind = methods.find((m) => m.id === id)?.kind;
+    setAmount(String(kind === "Stored Value" || kind === "Loyalty Points" ? beforeGoods : before));
     setReference("");
     setPoints("");
     forgetCard();
@@ -247,7 +259,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
     setAdded(list);
     const next = methods.find((m) => m.id !== method && usable(m) && m.kind !== "Loyalty Points") ?? current;
     setMethod(next?.id ?? method);
-    setAmount(String(stillDue(due, paidOf(list), precision)));
+    setAmount(String(stillDue(payable, paidOf(list), precision)));
     setReference("");
     setPoints("");
     forgetCard();
@@ -261,7 +273,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
   };
   const complete = async () => {
     setBusy(true);
-    setError(await onComplete(everything.map(({ left: _left, ...t }) => t), { invoiceNow: named && invoiceNow }));
+    setError(await onComplete(everything.map(({ left: _left, ...t }) => t), { invoiceNow: named && invoiceNow, ...(tip > 0 ? { tip: String(tip) } : {}) }));
     setBusy(false);
   };
   const submit = (e: FormEvent) => {
@@ -271,8 +283,8 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
     else add();
   };
 
-  const status = t.problem ? (
-    <p className="pos-status pos-status-bad">{isolate(t.problem)}</p>
+  const status = t.problem || tipWhy ? (
+    <p className="pos-status pos-status-bad">{isolate(t.problem ?? tipWhy ?? "")}</p>
   ) : t.left > 0 ? (
     <p className="pos-status pos-status-due">{tr("Still due")} <strong>{isolate(money(t.left))}</strong></p>
   ) : t.change > 0 ? (
@@ -309,6 +321,27 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
           <span className="muted">{tr("Total due")}</span>
           <strong>{isolate(money(due))}</strong>
         </p>
+        {takesTips && (
+          <Field label={tr("Tip")} htmlFor="pos-tip" error={tipInvalid ? tr("Type a tip of zero or more.") : undefined}>
+            <input
+              id="pos-tip"
+              className="input pos-amount"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="0"
+              value={tipText}
+              aria-invalid={tipInvalid || undefined}
+              disabled={busy}
+              onChange={(e) => setTipText(e.target.value)}
+            />
+          </Field>
+        )}
+        {tip > 0 && (
+          <p className="pos-due" aria-live="polite">
+            <span className="muted">{tr("To pay")}</span>
+            <strong>{isolate(money(payable))}</strong>
+          </p>
+        )}
         {rounding !== 0 && (
           <p className="faint pos-rounding">
             {tr("Rounded from")} {isolate(money(grand))} ({rounding > 0 ? "+" : "−"}
@@ -522,7 +555,7 @@ export function PayDialog({ profile, modes, due, grand, walkIn, noBuyer = false,
                 onFocus={(e) => e.target.select()}
                 onChange={(e) => setPoints(e.target.value.replace(/\D/g, ""))}
               />
-              <Button onClick={() => setPoints(String(pointsFor(before, available, factor, precision)))}>{tr("As many as the bill allows")}</Button>
+              <Button onClick={() => setPoints(String(pointsFor(beforeGoods, available, factor, precision)))}>{tr("As many as the bill allows")}</Button>
             </div>
           </Field>
         )}
@@ -672,6 +705,11 @@ export function ReceiptDialog({
           <p>
             {kept ? <Badge tone="amber">{tr("Not sent yet")}</Badge> : <strong>{isolate(str(sale.number))}</strong>} · {isolate(money(sale.rounded_total ?? sale.grand_total))}
           </p>
+          {num(sale.tip_amount) > 0 && (
+            <p className="muted">
+              {tr("Tip")} <strong>{isolate(money(sale.tip_amount))}</strong>
+            </p>
+          )}
           {!kept && (str(sale.buyer_tax_id) || sale.tax_invoice === true) && (
             <p className="muted">
               {tr("Buyer {name}", { name: str(sale.customer_name) })}

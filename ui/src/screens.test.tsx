@@ -151,6 +151,15 @@ describe("taking payment", () => {
     expect(draw(<PayDialog {...props} offline namedAbove="200" walkIn={false} customer="c1" />)).not.toContain("asks for a named buyer on a sale this size");
   });
 
+  it("asks for a tip where the register takes them, and not on a return", () => {
+    expect(draw(<PayDialog {...props} />)).not.toContain('id="pos-tip"');
+    const tips = { ...profile, tip_account: "acct-tips" };
+    const html = draw(<PayDialog {...props} profile={tips} />);
+    expect(html).toContain('id="pos-tip"');
+    expect(html).toContain(">Tip<");
+    expect(draw(<PayDialog {...props} profile={tips} doc={{ is_return: true }} />)).not.toContain('id="pos-tip"');
+  });
+
   it("lists each way of paying with what it takes of the bill as it is typed (the change and a card's balance are perTender's and leftOnCard's, tested in pay.test.ts)", () => {
     const html = draw(<PayDialog {...props} />);
     expect(html).toMatch(/aria-label="Payments"><li><span>Cash<\/span><strong>252\.95<\/strong>/);

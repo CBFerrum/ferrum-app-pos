@@ -37,6 +37,16 @@ export function tally(due: number, paid: Paid[], writeOffLimit = 0, precision = 
   return { tendered, left: 0, change: round(tendered - due, precision), writeOff: 0, problem: null };
 }
 
+/** Ways of paying a tip cannot come from (the server's rule): points, a sale on account, stored value. */
+const NOT_MONEY = ["Credit", "Loyalty Points", "Stored Value"];
+
+/** Why these tenders cannot pay a tip on top of `due`, or null: they may pay the goods, never the tip. */
+export function tipProblem(due: number, tip: number, paid: Paid[], precision = 2): string | null {
+  if (!(tip > 0)) return null;
+  const other = round(paid.filter((p) => NOT_MONEY.includes(p.kind) && p.amount > 0).reduce((s, p) => s + p.amount, 0), precision);
+  return other > due ? t("A tip is paid in cash or by card.") : null;
+}
+
 /** What a method added next should start at: what is still due after the others. */
 export function stillDue(due: number, paid: Paid[], precision = 2): number {
   return Math.max(0, round(due - paid.reduce((s, p) => s + (p.amount > 0 ? p.amount : 0), 0), precision));

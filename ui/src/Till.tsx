@@ -504,14 +504,14 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   };
 
   // ── selling ──
-  const complete = async (tenders: Tender[], o: { invoiceNow: boolean }): Promise<string | null> => {
+  const complete = async (tenders: Tender[], o: { invoiceNow: boolean; tip?: string }): Promise<string | null> => {
     if (noBuyer) return tr("Choose the customer first: this register has no customer of its own for a sale nobody is named on.");
     const at = new Date();
     // When it was sold, not when it reaches the server: on the clock its prices are for (the company's, else the workspace's),
     // which the server prices it again at. The sale has its own id, made when it began.
     const [day, hm] = momentIn(book?.time_zone, at).split(" ");
     const sale: Doc = {
-      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes, discount }),
+      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes, discount, tip: o.tip }),
       posting_date: day,
       posting_time: `${hm}:${String(at.getUTCSeconds()).padStart(2, "0")}`,
     };
@@ -527,7 +527,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       // The sale is the device's only copy: if the device would not keep it, it stays on screen.
       if (!outbox.add(queued)) return tr("This device could not keep the sale: its storage is full or blocked. Connect to send it now, or free some space and try again.");
       const paid = tenders.map((t) => ({ kind: str(modes.find((m) => m.id === t.mode_of_payment)?.mode_type), amount: num(t.amount) }));
-      const change = tally(due, paid, num(profile.write_off_limit), precision).change;
+      // The change handed back is worked out on the total and the tip; the queued sale's own total stays the goods'.
+      const change = tally(due + num(o.tip), paid, num(profile.write_off_limit), precision).change;
       // A receipt now, marked as not yet sent; the server numbers the sale when it arrives.
       setReceipt(keptReceipt(profile, calc.doc, sale, { customer: customer.title, due, change }));
       clearSale();

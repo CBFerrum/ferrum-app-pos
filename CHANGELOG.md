@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **Tips at the till.** At a register that names a Tips Account the pay window has a "Tip" field under "Total due"
+  (not on a return). A tip shows "To pay" with the total and the tip; cash, change, what is still due and the quick cash
+  amounts are worked out on both, while points and a card's stored value still pay the goods only. Paid with points,
+  on account or with stored value beyond the goods, it says "A tip is paid in cash or by card." and the sale cannot be
+  completed, as the server would refuse it. The sale is sent with `tip_amount`, online or from the outbox, and a queued
+  sale's `till_total` stays the goods' total. The receipt window and the device's own receipt show the tip.
+
 ## 0.15.0
 
 Database: four new nullable fields (`PosProfile.tip_account`, `PosInvoice.tip_amount` and `tip_account`, `PosClosingEntry.tips`).
