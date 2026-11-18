@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.0
+
+Database: four new nullable fields (`PosProfile.tip_account`, `PosInvoice.tip_amount` and `tip_account`, `PosClosingEntry.tips`).
+An existing workspace names no Tips Account, so nothing changes until it sets one. Server and papers only; the till's tip
+entry follows.
+
+- **Tips.** A register that names a Tips Account takes a tip on a sale (`tip_amount`): settled with the sale's tenders
+  against the total plus the tip (change and write-off included), paid in money only ("a tip is paid in cash or by card"),
+  refused on a return and where the register names no account. The account is fixed on the sale when it is submitted.
+- **Owed, never income.** The tip is outside every total, so it is not taxed, earns no points and is not invoiced. The
+  closing debits the tenders as before and credits the tip to the account the sale fixed, settling the consolidated
+  invoice for what paid for the goods only; a cancelled closing takes it back with the rest; a voided sale books none.
+  `PosClosingEntry.tips` sums the shift's tips (blanked while a blind count is open).
+- **A return never refunds the tip.** What a sale can give back in money is what paid for the goods: the tip comes off
+  its money tenders (`logic::net_of_tip`), so points never come back as cash through a tip.
+- The receipt shows the tip under the total, and the shift report the shift's tips.
+
 ## 0.14.0
 
 Database: one new entity, `PosHeldSale` (an existing workspace gets an empty table; each device sends its held sales on its

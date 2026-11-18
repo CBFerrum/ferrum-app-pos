@@ -45,6 +45,9 @@ struct Inv {
     /// Its own sales invoice was made when it was sold (`invoice_now`); the closing only settles it.
     invoiced_at_sale: Option<bool>,
     consolidated_invoice: Option<Uuid>,
+    /// What the customer added on top of the total, and the account it is owed from (fixed when the sale was made).
+    tip_amount: Option<Decimal>,
+    tip_account: Option<Uuid>,
 }
 
 impl Inv {
@@ -74,7 +77,7 @@ impl Takings {
     async fn load(tx: &mut Tx, tenant: Uuid, session: Uuid, unconsolidated: bool) -> Result<Takings> {
         let invoices: Vec<Inv> = sqlx::query_as(
             "select id, number, customer, posting_date, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
-             write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 \
+             write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice, tip_amount, tip_account from e_pos_invoice where tenant_id = $1 and pos_opening_entry = $2 \
              and docstatus = 1 and ($3 = false or consolidated_invoice is null or (invoiced_at_sale and pos_closing_entry is null)) \
              order by posting_date, posting_time, created_at",
         )
@@ -281,11 +284,12 @@ impl DocHook for ClosingHook {
         set(doc, "net_total", money(sum(|i| i.net_total)));
         set(doc, "total_taxes", money(sum(|i| i.total_taxes)));
         set(doc, "grand_total", money(sum(|i| i.rounded_total)));
+        set(doc, "tips", money(sum(|i| i.tip_amount)));
         set(doc, "total_difference", money(rows_.iter().map(|r| d(r, "difference")).sum()));
         // Counting blind: until every way of paying is counted, the closing says nothing a cashier could work an
         // expected figure out of (what the shift sold, refunded, taxed, moved and came out over or short).
         if blind && rows_.iter().any(|r| r.get("closing_amount").is_none_or(Value::is_null)) {
-            for f in ["net_total", "total_taxes", "grand_total", "refund_total", "paid_in", "paid_out", "safe_drops", "total_difference"] {
+            for f in ["net_total", "total_taxes", "grand_total", "refund_total", "paid_in", "paid_out", "safe_drops", "tips", "total_difference"] {
                 set(doc, f, Value::Null);
             }
             set(doc, "tax_rows", json!([]));
@@ -733,9 +737,20 @@ impl Consolidation<'_> {
         if settled.is_zero() {
             return Ok(());
         }
-        // The allocation keeps the invoice's outstanding amount and status in step (ERP's ledger does).
-        ledger::allocate(hc.kernel, hc.tx, hc.ctx, co.id, m.id, "PosClosingEntry", closing, on, settled, settled).await?;
-        lines.push(Line::new(m.debit_to, -settled, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
+        // The tips in what was taken are owed, from the account each sale fixed, never income or the customer's credit.
+        let mut tips = Decimal::ZERO;
+        for inv in group.iter().filter(|i| i.tip_amount.is_some_and(|t| t > Decimal::ZERO)) {
+            let tip = inv.tip_amount.unwrap_or_default();
+            let account = inv.tip_account.ok_or_else(|| Error::internal("a tipped sale has no tips account"))?;
+            lines.push(Line::new(account, -tip, &co.currency_code).remarks("Tips taken at the register"));
+            tips += tip;
+        }
+        // What paid for the goods settles the invoice. The allocation keeps its outstanding amount and status in step (ERP's ledger does).
+        let invoiced = settled - tips;
+        if !invoiced.is_zero() {
+            ledger::allocate(hc.kernel, hc.tx, hc.ctx, co.id, m.id, "PosClosingEntry", closing, on, invoiced, invoiced).await?;
+            lines.push(Line::new(m.debit_to, -invoiced, &co.currency_code).customer(Some(customer)).against("SalesInvoice", m.id));
+        }
         Ok(())
     }
 }
@@ -748,7 +763,7 @@ pub(crate) async fn invoice_now(hc: &mut HookCtx<'_>, sale: Uuid) -> Result<Uuid
     let load = |sql: &'static str| sqlx::query_as::<_, Inv>(sql);
     let inv = load(
         "select id, number, customer, posting_date, is_return, return_against, rounded_total, net_total, total_taxes, rounding_adjustment, change_amount, \
-         write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice from e_pos_invoice where tenant_id = $1 and id = $2",
+         write_off_amount, tax_template, invoiced_at_sale, consolidated_invoice, tip_amount, tip_account from e_pos_invoice where tenant_id = $1 and id = $2",
     )
     .bind(hc.ctx.tenant)
     .bind(sale)

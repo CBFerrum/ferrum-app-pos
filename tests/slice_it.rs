@@ -970,6 +970,36 @@ async fn scenario() {
     let after = t.k.get(&a, "PosInvoice", uid(&one), false).await.unwrap();
     assert!(after["buyer_name"].is_null() && after["buyer_tax_id"].is_null(), "{out} {after:?}");
     assert_eq!((after["rounded_total"].clone(), after["customer"].clone()), (sold["rounded_total"].clone(), sold["customer"].clone()));
+
+    // receipt_and_shift_report_show_the_tip: at a register that takes tips, the receipt shows the tip under the total and the
+    // shift report the shift's tips.
+    let liabilities = uid(&t.find_one("Account", json!({"account_name": "Current Liabilities", "company": cid.to_string()})).await);
+    let tips = t
+        .insert(
+            &a,
+            "Account",
+            json!({"account_name": "Tips Payable", "company": cid.to_string(), "parent_account": liabilities.to_string(), "root_type": "Liability"}),
+        )
+        .await;
+    let corner = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Tips Corner", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(),
+                   "invoice_prefix": "TC", "payments": [{"mode_of_payment": cash["id"], "is_default": true}], "tip_account": tips["id"]}),
+        )
+        .await);
+    let shift = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": corner.to_string()})).await;
+    let shift = uid(&t.k.submit(&cashier, "PosOpeningEntry", uid(&shift), None).await.expect("a session at the corner"));
+    let tipped = t.sell(&cashier, json!({"pos_profile": corner.to_string(), "items": widgets("1"), "payments": [pay(&cash, "500")], "tip_amount": "7"})).await;
+    let printed = t.act(&cashier, "PosOpeningEntry", shift, "print_receipt", json!({"sale": tipped["id"]})).await.expect("printed");
+    let receipt = t.paper(&cashier, &printed).await.expect("its page");
+    assert!(receipt.contains("<td>Tip</td>") && receipt.contains("7.00"), "receipt_and_shift_report_show_the_tip: {receipt}");
+    let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": shift.to_string()})).await;
+    assert_eq!(dec(&close["tips"]), n("7"), "receipt_and_shift_report_show_the_tip: {close:?}");
+    let report = String::from_utf8_lossy(&t.k.render_document(&manager, "pos.shift_report", uid(&close), None, false).await.expect("the shift report").bytes)
+        .to_string();
+    assert!(report.contains("<td>Tips</td>") && report.contains("7.00"), "receipt_and_shift_report_show_the_tip: {report}");
 }
 
 async fn plan_for(t: &T, who: &Ctx, profile: Uuid, sale: Uuid, line: &Value) -> Value {

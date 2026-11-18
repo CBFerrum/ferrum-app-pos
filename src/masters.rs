@@ -61,7 +61,7 @@ impl DocHook for PosProfileHook {
         {
             errors.push(FieldError::new("tax_template", "belongs to another company"));
         }
-        for f in ["write_off_account", "cash_difference_account"] {
+        for f in ["write_off_account", "cash_difference_account", "tip_account"] {
             if let Some(a) = id(doc, f)
                 && !same_company(hc, "Account", a, company).await?
             {

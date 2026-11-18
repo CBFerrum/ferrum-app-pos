@@ -185,6 +185,7 @@ documents:
           {% else %}{% for t in doc.taxes or [] %}<tr><td>{{ t.description }}</td><td class="n">{{ t.tax_amount|amount }}</td></tr>{% endfor %}{% endfor %}
           {% if doc.rounding_adjustment|float != 0 %}<tr><td>Rounding</td><td class="n">{{ doc.rounding_adjustment|amount }}</td></tr>{% endif %}
           <tr><td><b>Total</b></td><td class="n"><b>{{ doc.rounded_total|amount }}</b></td></tr>
+          {% if doc.tip_amount|float > 0 %}<tr><td>Tip</td><td class="n">{{ doc.tip_amount|amount }}</td></tr>{% endif %}
           </table>
           <div class="rule"></div>
           <table>
@@ -256,6 +257,7 @@ documents:
           <tr><td>Paid in</td><td class="n">{{ doc.paid_in|amount }}</td></tr>
           <tr><td>Paid out</td><td class="n">{{ doc.paid_out|amount }}</td></tr>
           <tr><td>Dropped to the safe</td><td class="n">{{ doc.safe_drops|amount }}</td></tr>
+          {% if doc.tips|float > 0 %}<tr><td>Tips</td><td class="n">{{ doc.tips|amount }}</td></tr>{% endif %}
           </table>
           {% else %}<div>Counted blind: the figures show once every way of paying is counted.</div>{% endif %}
           <div class="rule"></div>

@@ -34,6 +34,11 @@ fn tenders(payments: &[Doc], sign: Decimal) -> Vec<Tender> {
     payments.iter().map(|p| Tender { kind: kind_of(p).unwrap_or(Kind::General), amount: sign * d(p, "amount") }).collect()
 }
 
+/// What the customer added on top of the total (`tip_amount`; none below zero).
+fn tip_of(doc: &Doc) -> Decimal {
+    d(doc, "tip_amount").max(Decimal::ZERO)
+}
+
 fn credit_of(doc: &Doc) -> Decimal {
     rows(doc, "payments").iter().filter(|p| kind_of(p) == Some(Kind::Credit)).map(|p| d(p, "amount")).sum()
 }
@@ -139,6 +144,13 @@ impl DocHook for PosInvoiceHook {
             errors.push(FieldError::new("posting_date", format!("must be within the session, from {opened} to today")));
         }
         let ret = b(doc, "is_return");
+        if tip_of(doc) > Decimal::ZERO {
+            if ret {
+                errors.push(FieldError::new("tip_amount", "a return carries no tip"));
+            } else if id(&profile.doc, "tip_account").is_none() {
+                errors.push(FieldError::new("tip_amount", "this register takes no tips: set its Tips Account"));
+            }
+        }
         let walk_in = id(&profile.doc, "customer");
         match id(doc, "customer") {
             None => errors.push(FieldError::new("customer", "choose a customer (the register has no default customer)")),
@@ -248,8 +260,16 @@ impl DocHook for PosInvoiceHook {
         let payments = rows(doc, "payments");
         let short_total: Decimal = short.iter().map(|x| x.0).sum();
         let total = d(doc, "rounded_total");
-        let st = logic::settle_sale(total, &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit") + short_total)
+        let tip = tip_of(doc);
+        let st = logic::settle_sale(total + tip, &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit") + short_total)
             .map_err(|m| Error::field("payments", m))?;
+        // A tip is money the staff are owed: paid in points, on account or with stored value it would be owed out of a debt.
+        let not_money: Decimal = tenders(&payments, Decimal::ONE).iter().filter(|t| !t.kind.is_money() && t.amount > Decimal::ZERO).map(|t| t.amount).sum();
+        if tip > Decimal::ZERO && not_money > total {
+            return Err(Error::field("payments", "a tip is paid in cash or by card"));
+        }
+        // The account it is owed from is fixed now, as each payment's is, so a closing posts what the cashier saw.
+        set(doc, "tip_account", if tip > Decimal::ZERO { profile.doc.get("tip_account").cloned().unwrap_or(Value::Null) } else { Value::Null });
         let system = ferrum_domain::util::elevated(hc.ctx);
         for (amount, account) in short {
             let row = json!({"pos_invoice": id(doc, "id"), "pos_profile": profile.id, "company": co.id, "amount_short": money(amount),
@@ -525,6 +545,7 @@ pub(crate) async fn taken(tx: &mut Tx, tenant: Uuid, orig: &Doc, except: Option<
     let pays = rows(orig, "payments");
     let mut net = tenders(&pays, Decimal::ONE);
     logic::net_of_change(d(orig, "change_amount"), &mut net);
+    logic::net_of_tip(tip_of(orig), &mut net);
     let mut out: Vec<Taken> = Vec::new();
     for (p, t) in pays.iter().zip(net) {
         let Some(mode) = id(p, "mode_of_payment") else { continue };
@@ -647,7 +668,7 @@ async fn derive_payments(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile,
     let (change, write_off) = if ret {
         (Decimal::ZERO, Decimal::ZERO)
     } else {
-        logic::settle_sale(d(doc, "rounded_total"), &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit"))
+        logic::settle_sale(d(doc, "rounded_total") + tip_of(doc), &tenders(&payments, Decimal::ONE), d(&profile.doc, "write_off_limit"))
             .map(|st| (st.change, st.write_off))
             .unwrap_or_default()
     };

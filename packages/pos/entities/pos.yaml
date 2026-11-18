@@ -60,6 +60,8 @@
     - {name: write_off_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
     - {name: write_off_limit, type: currency, default: 0, min: "0", description: Largest unpaid difference written off automatically}
     - {name: cash_difference_account, type: link, to: Account, link_filters: {is_group: false}, description: Shortages and excesses found when counting at closing; defaults to the company round-off account}
+    - {name: tip_account, type: link, to: Account, link_filters: {is_group: false}, label: Tips Account,
+       description: "The register takes tips when this is set: what customers add on top of a sale is owed from this account (a liability) until it is paid out. Empty: no tips"}
     - {name: allow_negative_stock, type: check, description: Sell even when the system shows no stock}
     - {name: offline_shortfall, type: select, options: [Record and reconcile, Refuse], default: Record and reconcile, label: Sold Offline Beyond Stock,
        description: "A sale made while the till could not reach the server that takes more than the warehouse holds when it arrives: recorded, with a Stock Shortfall to put right (the customer paid and took the goods), or refused like a sale made online"}
@@ -88,7 +90,7 @@
     - {name: disabled, type: check, in_filter: true}
   form:
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
-    - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
+    - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account, tip_account]}
     - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
     - {label: Buyers and Cash, collapsible: true, fields: [buyer_customer, buyer_group, registered_buyer, named_buyer_above, blind_close, safe_account]}
     - {label: Returns, collapsible: true, fields: [return_policy, damaged_warehouse, scrap_warehouse]}
@@ -329,6 +331,9 @@
     - {name: paid_amount, type: currency, currency: currency, read_only: true}
     - {name: change_amount, type: currency, currency: currency, read_only: true, description: Cash handed back}
     - {name: write_off_amount, type: currency, currency: currency, read_only: true}
+    - {name: tip_amount, type: currency, currency: currency, min: "0", no_copy: true, label: Tip,
+       description: "What the customer added on top of the total. Not part of the sale's totals; paid with cash or a card"}
+    - {name: tip_account, type: link, to: Account, read_only: true, hidden: true, no_copy: true}
     - {name: loyalty_program, type: link, to: LoyaltyProgram, read_only: true, no_copy: true}
     - {name: loyalty_points_earned, type: int, read_only: true, no_copy: true}
     - {name: loyalty_points_redeemed, type: int, read_only: true, no_copy: true}
@@ -363,7 +368,7 @@
     - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, return_reason, cashier]}
     - {label: Items, fields: [items, discount_percent]}
     - {label: Buyer and Promotions, collapsible: true, fields: [buyer_tax_id, buyer_name, tax_invoice, promotion_codes, applied_promotions, price_snapshot, till_total]}
-    - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
+    - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount, tip_amount]}
     - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}
     - {label: Approvals and Voids, collapsible: true, fields: [approvals, voided_lines, void_reason, voided_by]}
     - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, tax_breakdown, tax_registrations, reprints, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
@@ -477,6 +482,7 @@
     - {name: paid_out, type: currency, read_only: true, label: Paid Out}
     - {name: safe_drops, type: currency, read_only: true, label: Dropped to the Safe}
     - {name: refund_total, type: currency, read_only: true, label: Returns}
+    - {name: tips, type: currency, read_only: true, label: Tips}
     - {name: tax_rows, type: table, of: PosClosingTax, read_only: true, label: Tax by Rate}
     - {name: invoice_count, type: int, read_only: true}
     - {name: return_count, type: int, read_only: true}
