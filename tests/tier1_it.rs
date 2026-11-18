@@ -270,6 +270,45 @@ async fn scenario() {
     let e = t.refused(&cashier, back.clone()).await;
     assert!(messages(&e).contains("more than the 50 you may give"), "{e:?}");
 
+    // whole_sale_discount_within_the_limit: the sale's own discount counts with its lines' against the cashier's 5% here; within
+    // it the sale is taken, and the discount is that share of the total.
+    let whole = |pct: &str, pays: Value| {
+        let mut v = sale(json!([line(widget, "1")]), pays);
+        v["discount_percent"] = json!(pct);
+        v
+    };
+    let within = t.sell(&cashier, whole("5", json!([pay(&card, "104.50")]))).await;
+    assert_eq!(
+        (dec(&within["total"]), dec(&within["discount_amount"]), dec(&within["rounded_total"])),
+        (n("100"), n("5"), n("104.50")),
+        "whole_sale_discount_within_the_limit: {within:?}"
+    );
+    // whole_sale_discount_beyond_the_limit_needs_an_approval: 8% is past it; another person's approval of that discount for that
+    // sale lets it through.
+    let past = Uuid::now_v7().to_string();
+    let mut beyond = whole("8", json!([pay(&card, "101.20")]));
+    beyond["id"] = json!(past);
+    let e = t.refused(&cashier, beyond.clone()).await;
+    assert!(messages(&e).contains("exceeds"), "whole_sale_discount_beyond_the_limit_needs_an_approval: {e:?}");
+    t.act(&a, "PosProfile", counter, "set_pin", json!({"pin": "86420"})).await.expect("the administrator's PIN");
+    let approval = json!({"approver": "admin@shop.test", "pin": "86420", "act": "Discount", "amount": "8", "reason": "a regular", "sale": past});
+    let ok =
+        t.act(&cashier, "PosOpeningEntry", uid(&open), "approve", approval).await.expect("whole_sale_discount_beyond_the_limit_needs_an_approval: approved");
+    beyond["approvals"] = json!([{"approval": ok["approval"]}]);
+    let approved = t.sell(&cashier, beyond).await;
+    assert_eq!(dec(&approved["discount_amount"]), n("8"), "whole_sale_discount_beyond_the_limit_needs_an_approval: {approved:?}");
+    // offline_sale_with_a_whole_sale_discount_agrees: sold offline with the register's snapshot and the sale's discount, the
+    // server prices it again with the same discount and finds no difference.
+    let snap = t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("the snapshot");
+    let mut gone = whole("5", json!([pay(&card, "104.50")]));
+    gone["sold_offline"] = json!(true);
+    gone["price_snapshot"] = snap["version"].clone();
+    gone["till_total"] = json!("104.50");
+    let gone = t.sell(&cashier, gone).await;
+    assert_eq!(dec(&gone["replay_total"]), n("104.50"), "offline_sale_with_a_whole_sale_discount_agrees: {gone:?}");
+    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"pos_invoice": gone["id"]})).unwrap(), ..Default::default() };
+    assert!(t.k.list(&a, "PosPriceDifference", &q).await.unwrap().rows.is_empty(), "offline_sale_with_a_whole_sale_discount_agrees: a difference was recorded");
+
     // ───────────── 2. approval by another person's PIN, voids with reasons ─────────────
     // Both are operations, as an agent or an API client asks them too: `set_pin` of a register, and `approve` of the
     // cashier's own open session. The register's site has no route for either.

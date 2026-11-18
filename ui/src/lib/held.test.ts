@@ -12,6 +12,18 @@ const cart = (key: string, ...names: string[]): Cart => ({
   lines: names.map((n) => ({ key: n, item: n, item_name: n, qty: 1 })),
 });
 
+describe("a held sale keeps its discount", () => {
+  it("gives it back when resumed, and a sale kept without one still loads", () => {
+    const list = putAside([], { ...cart("a", "Tea"), discount: "7.5" }, "t");
+    expect(takeOut(list, "a").sale?.discount).toBe("7.5");
+    const storage = memory();
+    const mine = ownerOf("p1", "asha@shop.test");
+    expect(saveHeld(mine, putAside([], cart("b", "Cake"), "t"), storage)).toBe(true);
+    const back = loadHeld(mine, storage);
+    expect([back.length, back[0].discount]).toEqual([1, undefined]);
+  });
+});
+
 describe("sales set aside", () => {
   it("keeps the newest first and leaves an empty basket out", () => {
     let list = putAside([], cart("a", "Tea"), "2026-11-01T10:00:00Z", "20.00");

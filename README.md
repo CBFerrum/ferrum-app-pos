@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.12.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.13.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.12.0 |
+| **Version** | 0.13.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
@@ -121,6 +121,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **A scan box that is always ready.** A scanner types into it wherever you last tapped, and a code sells at once from the price book on the device. `3*8901234` sells three. Pack barcodes and an item's extra barcodes scan too.
 - **Search and tiles.** Search items by name or code, or tap a tile with its price.
 - **Change a line where it stands.** Quantity, a discount, a price where the register allows it, and a note that prints under the line. What a cashier may change follows their limits, shown before they type.
+- **A discount on the whole sale.** A percent typed under the lines, applied when the field is left or Enter is pressed. It counts with the lines' own discounts against the cashier's limits, so what goes past them asks another person's PIN first. It is kept with a sale on hold, priced on the device offline as the server prices it again, and printed on the receipt. An amount off the whole sale is not there yet.
 - **The keyboard does the rest.** F2 scan box, F4 pay, F9 hold, F10 sales on hold, F8 returns, F3 change the picked line, arrows to pick a line, + and − for its quantity, Delete to remove it.
 - **Sales on hold.** Set a sale aside to serve the next customer and bring it back from On hold. Held sales are kept on the device, per register and cashier, so they work offline, and a resumed sale is priced again.
 - **Customer.** Pick or search a customer, or sell to the walk-in customer. A register with no default customer asks for one.
@@ -324,7 +325,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Gift cards and store credit | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Loyalty points | ✅ | ✅ | 🟡 | 🟡 | ✅ |
 | Promotions and discount codes | 🟡⁶ | ✅ | ✅ | ✅ | ✅ |
-| Whole-sale discount at the till | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Whole-sale discount at the till | 🟡¹¹ | ✅ | ✅ | ✅ | ✅ |
 | Tips | ❌ | ✅ | ✅ | 🟡 | ✅ |
 | Cash drawer: float, drops, blind count, Z report | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Receipt layout the owner edits | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -341,7 +342,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Held on the device only, per register and cashier; not shared between tills. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Held on the device only, per register and cashier; not shared between tills. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -356,7 +357,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 - 🖨️ **Hardware.** Direct receipt printing, cash drawers, card terminals, weighing scales and customer displays.
 - 📱 **A friendlier counter.** Item grids with categories and pictures, a variant picker, a camera scan and quick staff switching.
-- 💳 **Selling more.** Tips, a whole-sale discount, special orders and layaway, and bundles.
+- 💳 **Selling more.** Tips, an amount off the whole sale, special orders and layaway, and bundles.
 - 🕒 **Staff.** A time clock, and staff PIN sign-in.
 - 🧾 **Compliance.** Certified fiscal devices by country.
 
@@ -367,6 +368,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.13.0:** a discount on the whole sale at the till: a percent, held to the cashier's limits, kept on hold and priced offline.
 - [x] **0.12.0:** receipts and exchanges are operations of the session and the return's draft; the register's own routes only read.
 - [x] **0.11.0:** setting a PIN and approving by one are operations of the register and the cashier's session, through the gate; `void`, `resolve` and `review` say what "done" means.
 - [x] **0.10.0:** upkeep is one workspace's: needs Ferrum 0.4.0.
@@ -387,7 +389,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 **Hardware and payments**
 - [ ] Direct receipt printing and a cash drawer that opens on a cash sale and on no sale.
 - [ ] A card terminal in the sale flow, and UPI payment requests with a QR the customer scans.
-- [ ] A whole-sale discount at the till, and tips with presets.
+- [ ] An amount off the whole sale (a percent is there since 0.13.0), and tips with presets.
 
 **Cashier**
 - [ ] Staff PIN sign-in and quick user switch on a shared till.

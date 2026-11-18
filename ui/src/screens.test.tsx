@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { resetBootstrap, setTimeZone } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { fakeBootstrap } from "@ferrum/testing";
-import { CartLines, Totals } from "./Cart";
+import { CartLines, SaleDiscount, Totals } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
 import { AskDialog, SetPinDialog } from "./Approval";
 import { CardLine } from "./Card";
@@ -313,6 +313,18 @@ describe("the till", () => {
 
   it("says when it is selling offline", () => {
     expect(draw(<Till profile={profile} session={{ id: "s1", number: "" }} modes={modes} book={null} manager={false} offline />)).toContain("Offline");
+  });
+
+  it("offers a discount on the sale once it has a line, with the cashier's own limit, and says when a figure makes no sense", () => {
+    expect(draw(till)).not.toContain("Discount on the sale (%)");
+    saveCart(ownerOf("p1", "asha@shop.test"), { key: "sale-1", customer: { id: null }, lines: [{ key: "tea", item: "tea", item_name: "Masala tea", qty: 1 }], discount: "5" });
+    const html = draw(till);
+    expect(html).toContain("Discount on the sale (%)");
+    expect(html).toContain("Up to 10% on your own.");
+    expect(html).toMatch(/id="pos-sale-discount"[^>]*value="5"|value="5"[^>]*id="pos-sale-discount"/);
+    const wrong = draw(<SaleDiscount value="150" limit={10} onApply={() => {}} />);
+    expect(wrong).toContain("A discount is between 0 and 100 percent.");
+    expect(wrong).toContain('aria-invalid="true"');
   });
 });
 

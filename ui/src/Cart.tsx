@@ -6,9 +6,9 @@
 // takes the card's code.
 
 import { Minus, Plus } from "lucide-react";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { formatMoment, t, isolate } from "@ferrum/client";
-import { Button, placed } from "@ferrum/kit";
+import { Button, Field, placed } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { CardLine } from "./Card";
 import { num, str, useMoney } from "./fmt";
@@ -258,6 +258,56 @@ function LineEditor({
         </Button>
       </div>
     </div>
+  );
+}
+
+/** The discount on the whole sale, typed as a percent. It is applied when the field is left or Enter is pressed (so an approval
+ *  is never asked for half a number), through `onApply`, which applies it or asks another person first; until then, and when
+ *  the asking is cancelled, the field shows the discount applied. Escape puts that back. */
+export function SaleDiscount({ value, limit, disabled, onApply, onDone }: { value: string; limit: number; disabled?: boolean; onApply: (v: string) => void; onDone?: () => void }) {
+  const [typed, setTyped] = useState(value);
+  // What the field holds now, also for a blur that follows Enter before the next render.
+  const now = useRef(value);
+  now.current = typed;
+  useEffect(() => setTyped(value), [value]);
+  const problem = typed.trim() ? lineProblem({ discount: typed }) : null;
+  const apply = () => {
+    const v = now.current.trim();
+    if ((v && lineProblem({ discount: v })) || v === value.trim()) return;
+    now.current = value;
+    setTyped(value);
+    onApply(v);
+  };
+  return (
+    <Field
+      label={t("Discount on the sale (%)")}
+      htmlFor="pos-sale-discount"
+      hint={limit >= 100 ? t("No limit for you.") : t("Up to {n}% on your own.", { n: plain(limit) })}
+      error={problem ?? undefined}
+    >
+      <input
+        id="pos-sale-discount"
+        className="input pos-amount"
+        inputMode="decimal"
+        autoComplete="off"
+        placeholder="0"
+        value={typed}
+        disabled={disabled}
+        aria-invalid={!!problem || undefined}
+        onChange={(e) => setTyped(e.target.value)}
+        onBlur={apply}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            apply();
+            onDone?.();
+          } else if (e.key === "Escape") {
+            e.stopPropagation();
+            setTyped(value);
+          }
+        }}
+      />
+    </Field>
   );
 }
 

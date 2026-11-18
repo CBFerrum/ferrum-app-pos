@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **A discount on the whole sale at the till.** "Discount on the sale (%)" under the lines, with the cashier's own limit as
+  its hint, applied when the field is left or Enter is pressed. It counts with the lines' discounts against the limits
+  as the server counts them; past them, another person's PIN approves it first (cancelled, the field goes back). The sale
+  is sent with `discount_percent` (only above zero), online or from the outbox, and the till prices it offline with the
+  same engine, so the server finds no difference when it prices the sale again. A held sale and a reloaded page keep it.
+- Three tests pin what the till relies on: a discount within the limit, one past it with an approval, and an offline sale
+  with one that the server prices the same.
+
 ## 0.12.0
 
 No database change: `PosReceiptEvent.kind` takes `Original` too, four actions are added, metadata only. Needs the same

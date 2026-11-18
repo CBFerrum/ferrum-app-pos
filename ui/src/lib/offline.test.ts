@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import fixtures from "./pricing.fixtures.json";
 import { downloadSnapshot, listPrices, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, unreachable, type PriceBook } from "./offline";
-import { loadPricing, type Basket, type Priced, type PricingSnapshot } from "./pricing";
+import { loadPricing, priceBasket, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
 // An ERP fixture (pricing/tests: three items, three promotions, taxes of 8% and 10%) as the till keeps it: the snapshot plus what the till shows.
 const fixture = fixtures.cases[0] as unknown as { request: { snapshot: PricingSnapshot; basket: Basket }; priced: Priced };
@@ -54,6 +54,17 @@ describe("selling offline", () => {
     // A blank box is no typed value.
     const blank = await priceOffline(book, [{ key: "a", item: "i2", item_name: "Bun", qty: 1, price: "  ", discount: "" }], { at: when });
     expect(only(blank)).toEqual(only(plain));
+  });
+
+  it("the engine is given the sale's discount, and its discount is the sale's", async () => {
+    const when = at(fixture.request.basket.at);
+    const lines = [{ key: "a", item: "i2", item_name: "Bun", qty: 2 }];
+    const doc = await priceOffline(book, lines, { at: when, discount: "10" });
+    const engine = await priceBasket({ snapshot: book, basket: { lines: [{ item: "i2", qty: "2", price: null, discount_percent: null }], at: fixture.request.basket.at, discount_percent: "10" } });
+    expect([doc.discount_amount, doc.rounded_total]).toEqual([engine.totals.discount_amount, engine.totals.rounded_total]);
+    expect(Number(doc.discount_amount)).toBeGreaterThan(0);
+    const none = await priceOffline(book, lines, { at: when });
+    expect(Number(none.discount_amount)).toBe(0);
   });
 
   it("will not price what the snapshot cannot: an item it does not hold, a schema it does not know, a day it does not cover", async () => {

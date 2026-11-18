@@ -18,7 +18,7 @@ import { Badge, Button, confirmDialog, Dialog, ListSkeleton, Menu, MenuItem, Sav
 import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { SetPinDialog, useAsk } from "./Approval";
-import { CartLines, Totals, type Base } from "./Cart";
+import { CartLines, SaleDiscount, Totals, type Base } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
 import { PayDialog, ReceiptDialog } from "./Pay";
 import { Currency, fine, myEmail, num, str, titleOf, useMoney } from "./fmt";
@@ -28,7 +28,7 @@ import { listPrices, scanBook, searchBook, serverDown, till, unreachable, type P
 import { momentIn, notAvailable } from "./lib/pricing";
 import { tally } from "./lib/pay";
 import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
-import { allows, asksFor, beyond, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
+import { allows, asksFor, beyond, lineProblem, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -107,6 +107,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   // The registration the buyer gave and the promotion codes: the server finds the buyer and checks the codes when it prices the sale.
   const [buyer, setBuyer] = useState<Buyer | null>(restored?.buyer ?? null);
   const [codes, setCodes] = useState<string[]>(restored?.codes ?? []);
+  // The discount on the whole sale as applied (a percent as typed; empty for none): held, restored and sent with the sale.
+  const [discount, setDiscount] = useState(restored?.discount ?? "");
   // A card's code and PIN: in memory for this sale only, never saved, held or queued.
   const [cards, setCards] = useState<LineCards>({});
   const [held, setHeld] = useState<HeldSale[]>(() => loadHeld(owner));
@@ -120,8 +122,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   // Whether a card's code is on a line: kept aside or reloaded, the sale says the card is to be asked for again, never the code.
   const cardOn = Object.values(cards).some((c) => !!c.code);
   useEffect(() => {
-    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) });
-  }, [owner, lines, customer, approvals, voided, buyer, codes, cardOn]);
+    saveCart(owner, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}) });
+  }, [owner, lines, customer, approvals, voided, buyer, codes, discount, cardOn]);
   useEffect(() => {
     if (restored?.cardAgain) toast(cardAgain(), "error");
   }, [restored]);
@@ -174,9 +176,10 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             cards,
             buyer,
             codes,
+            discount,
           })
         : null,
-    [lines, customer.id, profileId, session.id, approvals, cards, buyer, codes],
+    [lines, customer.id, profileId, session.id, approvals, cards, buyer, codes, discount],
   );
   const calc = useCalc(body, lines, book);
   const priced = useMemo(() => (calc.doc?.items as Doc[] | undefined) ?? [], [calc.doc]);
@@ -230,16 +233,38 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
 
   // When the server refuses the sale as beyond the person's limits (the whole sale's discount, a
   // cart that came back from a reload), the same sum shows what to ask for.
-  const saleAsks: Ask[] = (() => {
-    if (!calc.error || !lines.length) return [];
+  // What the lines ask of the limits, priced from what is known of each; null while a line's list price is not known yet.
+  const lineAsks = (): LineAsk[] | null => {
     const asks: LineAsk[] = [];
     for (const l of lines) {
       const b = baseOf(l);
-      if (!b) return [];
+      if (!b) return null;
       asks.push({ qty: l.qty, list: b.list, rule: b.rule, price: l.price ? Number(l.price) : undefined, discount: l.discount ? Number(l.discount) : undefined });
     }
-    return asksFor(beyond(limits, asks), approvals);
+    return asks;
+  };
+  const saleAsks: Ask[] = (() => {
+    if (!calc.error || !lines.length) return [];
+    const asks = lineAsks();
+    return asks ? asksFor(beyond(limits, asks, Number(discount) || 0), approvals) : [];
   })();
+  // The discount on the whole sale counts with the lines' against the limits: what goes past them is applied once another
+  // person approves it. A line whose list price is not known yet leaves the judging to the server.
+  const applyDiscount = (value: string) => {
+    if (value && lineProblem({ discount: value })) return;
+    const asks = lineAsks();
+    const need = asks ? asksFor(beyond(limits, asks, Number(value) || 0), approvals) : [];
+    if (!need.length) return setDiscount(value);
+    asker.ask({
+      title: tr("Approval for this sale"),
+      sale: saleKey.current,
+      steps: need,
+      done: (got) => {
+        setApprovals((a) => [...a, ...got]);
+        setDiscount(value);
+      },
+    });
+  };
 
   // ── changing the sale ──
   const add = useCallback((item: { id: string; name: string }, qty = 1) => {
@@ -257,6 +282,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     setCards({});
     setBuyer(null);
     setCodes([]);
+    setDiscount("");
     saleKey.current = newKey();
   }, []);
   const changeQty = (key: string, qty: number) => setLines((l) => setQty(l, key, qty));
@@ -326,7 +352,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const now = () => new Date().toISOString();
   const hold = () => {
     if (!lines.length) return;
-    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+    const next = putAside(held, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sale aside: its storage is full or blocked."), "error");
     setHeld(next);
     clearSale();
@@ -345,7 +371,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         cancelLabel: tr("Keep it"),
       });
       if (!ok) return;
-      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
+      next = putAside(rest, { lines, customer, key: saleKey.current, approvals, voided, buyer, codes, ...(discount ? { discount } : {}), ...(cardOn ? { cardAgain: true } : {}) }, now(), totalOf(calc.doc));
     }
     if (!saveHeld(owner, next)) return void toast(tr("This device could not keep the sales on hold: its storage is full or blocked."), "error");
     setHeld(next);
@@ -354,6 +380,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     setVoided(sale.voided ?? []);
     setBuyer(sale.buyer ?? null);
     setCodes(sale.codes ?? []);
+    setDiscount(sale.discount ?? "");
     setCards({});
     setCustomer(sale.customer);
     setSelected(sale.lines.at(-1)?.key ?? null);
@@ -378,7 +405,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     // which the server prices it again at. The sale has its own id, made when it began.
     const [day, hm] = momentIn(book?.time_zone, at).split(" ");
     const sale: Doc = {
-      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes }),
+      ...invoiceBody({ id: saleKey.current, profile: profileId, session: session.id, customer: customer.id, lines, tenders, approvals: approvals.map((a) => a.id), voided, invoiceNow: o.invoiceNow, cards, buyer, codes, discount }),
       posting_date: day,
       posting_time: `${hm}:${String(at.getUTCSeconds()).padStart(2, "0")}`,
     };
@@ -598,6 +625,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             onRemove={remove}
           />
         )}
+        {lines.length > 0 && <SaleDiscount value={discount} limit={limits.discount_percent} disabled={dialog !== null} onApply={applyDiscount} onDone={focusScan} />}
         {calc.error && (
           <p role="alert" className="pos-error">
             {isolate(calc.error)}

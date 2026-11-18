@@ -202,7 +202,7 @@ export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
 export async function priceOffline(
   book: PriceBook,
   lines: { key: string; item: string; item_name: string; qty: number; discount?: string; price?: string }[],
-  o: { customer?: string | null; at?: Date } = {},
+  o: { customer?: string | null; at?: Date; discount?: string | null } = {},
 ): Promise<Doc> {
   if (book.schema !== PRICING_SCHEMA) throw new Error(notAvailable());
   const held = new Set(book.items.map((i) => i.id));
@@ -216,6 +216,8 @@ export async function priceOffline(
       at: momentIn(book.time_zone, o.at),
       // The walk-in customer is the snapshot's own; another is named, and their group is the server's to know.
       customer: o.customer && o.customer !== book.customer ? o.customer : null,
+      // The discount on the whole sale, as the server prices it again (the engine takes none as no discount).
+      ...(o.discount ? { discount_percent: o.discount } : {}),
     },
   });
   const names = new Map(book.catalog.map((i) => [i.id, i.name || i.code] as const));

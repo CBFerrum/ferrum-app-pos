@@ -148,6 +148,8 @@ export function invoiceBody(o: {
   buyer?: Buyer | null;
   /** Promotion codes the buyer gave (`promotion_codes`, space separated): the server checks them. */
   codes?: string[];
+  /** The discount on the whole sale, a percent as typed (`discount_percent`); sent only when above zero. */
+  discount?: string;
 }): Doc {
   return {
     ...(o.id ? { id: o.id } : {}),
@@ -168,6 +170,7 @@ export function invoiceBody(o: {
     ...(o.invoiceNow ? { invoice_now: true } : {}),
     ...(o.buyer?.taxId.trim() ? { buyer_tax_id: o.buyer.taxId.trim(), ...(o.buyer.name?.trim() ? { buyer_name: o.buyer.name.trim() } : {}) } : {}),
     ...(o.codes?.length ? { promotion_codes: o.codes.join(" ") } : {}),
+    ...(o.discount && Number(o.discount) > 0 ? { discount_percent: o.discount.trim() } : {}),
   };
 }
 

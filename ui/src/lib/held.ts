@@ -27,6 +27,8 @@ export interface Cart {
   /** The tax registration the buyer gave, and the promotion codes (neither is a secret; the server checks both again). */
   buyer?: Buyer | null;
   codes?: string[];
+  /** The discount on the whole sale, a percent as typed; none when there is none (a sale kept before 0.13.0 has none). */
+  discount?: string;
   /** A card's code was on a line when this was kept. The code is not (a card's code is never kept on the
    *  device), so the card is asked for again; this only says that it is to be. */
   cardAgain?: boolean;

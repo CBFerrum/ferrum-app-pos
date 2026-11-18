@@ -218,6 +218,11 @@ describe("what a sale carries beyond its lines", () => {
   const lines = [{ key: "gift", item: "i-card", item_name: "Gift card", qty: 1 }];
   const base = { id: "sale-1", profile: "p", session: "s", customer: "c", lines };
 
+  it("a whole-sale discount goes on the sale, and only when there is one", () => {
+    expect(invoiceBody({ ...base, tenders: [], discount: "5" }).discount_percent).toBe("5");
+    for (const discount of [undefined, "", "0", "0.00"]) expect("discount_percent" in invoiceBody({ ...base, tenders: [], discount })).toBe(false);
+  });
+
   it("names the approvals it uses, the lines taken off with why, and the invoice at once", () => {
     const body = invoiceBody({
       ...base,
