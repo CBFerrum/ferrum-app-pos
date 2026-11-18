@@ -21,10 +21,11 @@ export interface Note {
   text: string;
 }
 
-/** Copies and gift receipts of a sale: asks the approval and the reason the register's rules want, then prints what the server renders. */
-export function useReprint(profile: Doc, limits: Limits, reasons: Doc[], offline: boolean) {
+/** Copies and gift receipts of a sale: asks the approval (in the cashier's open `session`) and the reason the register's rules want, then
+ *  prints what the server renders. */
+export function useReprint(profile: Doc, session: string, limits: Limits, reasons: Doc[], offline: boolean) {
   const profileId = str(profile.id);
-  const asker = useAsk(profileId, () => offline || serverDown());
+  const asker = useAsk(session, () => offline || serverDown());
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
   const sending = useRef(false);
@@ -126,8 +127,8 @@ function SendDialog({ profile, sale, number, onClose }: { profile: string; sale:
 }
 
 /** Copy, gift receipt and send, under a finished sale. */
-export default function ReceiptMore({ profile, sale, limits, reasons, offline }: { profile: Doc; sale: Doc; limits: Limits; reasons: Doc[]; offline: boolean }) {
-  const r = useReprint(profile, limits, reasons, offline);
+export default function ReceiptMore({ profile, session, sale, limits, reasons, offline }: { profile: Doc; session: string; sale: Doc; limits: Limits; reasons: Doc[]; offline: boolean }) {
+  const r = useReprint(profile, session, limits, reasons, offline);
   const [sending, setSending] = useState(false);
   const id = str(sale.id);
   const number = str(sale.number);

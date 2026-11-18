@@ -205,7 +205,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
     };
   }, [book, wanted, needed]);
 
-  const asker = useAsk(profileId, () => away || serverDown());
+  const asker = useAsk(session.id, () => away || serverDown());
   const anyOpen = dialog !== null || receipt !== null || asker.open;
   useEffect(() => {
     if (!anyOpen) focusScan();
@@ -692,9 +692,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           </Suspense>
         </Guard>
       )}
-      {dialog === "pin" && <SetPinDialog offline={away || serverDown()} onClose={() => setDialog(null)} />}
+      {dialog === "pin" && <SetPinDialog profile={profileId} offline={away || serverDown()} onClose={() => setDialog(null)} />}
       {asker.node}
-      {receipt && <ReceiptDialog profile={profile} sale={receipt} limits={limits} reasons={reasons} offline={away || serverDown()} onClose={() => setReceipt(null)} />}
+      {receipt && <ReceiptDialog profile={profile} session={session.id} sale={receipt} limits={limits} reasons={reasons} offline={away || serverDown()} onClose={() => setReceipt(null)} />}
     </div>
   );
   return <Currency.Provider value={{ precision, code }}>{view}</Currency.Provider>;

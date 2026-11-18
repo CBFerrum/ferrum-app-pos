@@ -578,7 +578,24 @@ const ReceiptMore = lazy(() => import("./ReceiptMore"));
 /** What is shown once a sale is done: the change to hand back, the receipt to print (the server's, once; copies, a gift
  *  receipt and sending it by message are ReceiptMore's), the next sale. A sale not yet closed into the books can be voided
  *  here, with a reason, by someone who may or with another person's approval (online only: the sale is the server's). */
-export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = false, onClose }: { profile: Doc; sale: Doc; limits?: Limits; reasons?: Doc[]; offline?: boolean; onClose: () => void }) {
+export function ReceiptDialog({
+  profile,
+  session,
+  sale,
+  limits,
+  reasons = [],
+  offline = false,
+  onClose,
+}: {
+  profile: Doc;
+  /** The cashier's open session, where an approval for a void or a copy is asked. */
+  session: string;
+  sale: Doc;
+  limits?: Limits;
+  reasons?: Doc[];
+  offline?: boolean;
+  onClose: () => void;
+}) {
   const money = useMoney();
   const change = num(sale.change_amount);
   const kept = sale.pending === true;
@@ -674,14 +691,14 @@ export function ReceiptDialog({ profile, sale, limits, reasons = [], offline = f
           {note && <Alert tone={note.tone}>{isolate(note.text)}</Alert>}
           {!kept && !!saleId && !!limits && (
             <Suspense fallback={<ListSkeleton rows={1} />}>
-              <ReceiptMore profile={profile} sale={sale} limits={limits} reasons={reasons} offline={offline} />
+              <ReceiptMore profile={profile} session={session} sale={sale} limits={limits} reasons={reasons} offline={offline} />
             </Suspense>
           )}
         </div>
       </Dialog>
       {asking && limits && (
         <AskDialog
-          profile={str(profile.id)}
+          session={session}
           sale={str(sale.id)}
           title={tr("Void sale {number}", { number: str(sale.number) })}
           steps={allows(limits, "Void Sale") ? [] : [{ act: "Void Sale", figure: 0, why: tr("you may not void sales") }]}

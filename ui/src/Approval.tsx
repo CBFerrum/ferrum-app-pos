@@ -26,7 +26,8 @@ const ACT_WORDS: Record<Act, () => string> = {
 };
 
 export interface AskProps {
-  profile: string;
+  /** The cashier's open session: an approval is asked in it, and lapses with it. */
+  session: string;
   /** The sale (its own id) the approvals are for. */
   sale: string;
   title: string;
@@ -40,7 +41,7 @@ export interface AskProps {
   onClose: () => void;
 }
 
-export function AskDialog({ profile, sale, title, steps, reasons, offline, onDone, onClose }: AskProps) {
+export function AskDialog({ session, sale, title, steps, reasons, offline, onDone, onClose }: AskProps) {
   const [got, setGot] = useState<Approval[]>([]);
   const [reason, setReason] = useState(str(reasons?.[0]?.id));
   const [why, setWhy] = useState("");
@@ -64,7 +65,7 @@ export function AskDialog({ profile, sale, title, steps, reasons, offline, onDon
     setBusy(true);
     setError(null);
     try {
-      const res = await approve({ profile, approver: approver.trim(), pin: secret, action: step.act, reason: text, sale, ...(step.figure && !step.money ? { amount: String(step.figure) } : {}) });
+      const res = await approve({ session, approver: approver.trim(), pin: secret, action: step.act, reason: text, sale, ...(step.figure && !step.money ? { amount: String(step.figure) } : {}) });
       const next = [...got, { id: res.approval, act: step.act, figure: step.figure, ...(step.money ? { money: true } : {}), by: approver.trim() }];
       if (next.length < steps.length) {
         setGot(next);
@@ -134,12 +135,12 @@ export function AskDialog({ profile, sale, title, steps, reasons, offline, onDon
 }
 
 /** Opens the dialog for one question at a time; `node` is drawn once, wherever the screen likes. */
-export function useAsk(profile: string, offline: () => boolean) {
-  const [open, setOpen] = useState<Omit<AskProps, "profile" | "offline" | "onClose" | "onDone"> & { done: AskProps["onDone"] } | null>(null);
+export function useAsk(session: string, offline: () => boolean) {
+  const [open, setOpen] = useState<Omit<AskProps, "session" | "offline" | "onClose" | "onDone"> & { done: AskProps["onDone"] } | null>(null);
   const ask = useCallback((q: NonNullable<typeof open>) => setOpen(q), []);
   const node: ReactNode = open && (
     <AskDialog
-      profile={profile}
+      session={session}
       offline={offline()}
       sale={open.sale}
       title={open.title}
@@ -155,8 +156,8 @@ export function useAsk(profile: string, offline: () => boolean) {
   return { ask, node, open: open !== null };
 }
 
-/** Setting one's own PIN, which another cashier's till then accepts as approval when the limits allow. */
-export function SetPinDialog({ offline, onClose }: { offline: boolean; onClose: () => void }) {
+/** Setting one's own PIN (at the register `profile`), which another cashier's till then accepts as approval when the limits allow. */
+export function SetPinDialog({ profile, offline, onClose }: { profile: string; offline: boolean; onClose: () => void }) {
   const [pin, setPin] = useState("");
   const [again, setAgain] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +173,7 @@ export function SetPinDialog({ offline, onClose }: { offline: boolean; onClose: 
     setBusy(true);
     setError(null);
     try {
-      await sendPin(secret);
+      await sendPin(profile, secret);
       toast(tr("Your PIN is set"));
       onClose();
     } catch (err) {

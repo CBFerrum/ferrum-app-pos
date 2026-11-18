@@ -178,9 +178,9 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const attempt = useRef<{ json: string; key: string; outKey: string } | null>(null);
-  const asker = useAsk(profileId, () => false);
+  const asker = useAsk(session, () => false);
   // A copy of the sale's receipt is the server's: marked COPY, counted, and asked for with the reason and approval the register wants.
-  const copies = useReprint(profile, limits, reasons, false);
+  const copies = useReprint(profile, session, limits, reasons, false);
 
   const data = sheet.data;
   const items = useMemo(() => (data ? returnItems(data, picks) : []), [data, picks]);

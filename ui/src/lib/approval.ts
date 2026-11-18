@@ -1,7 +1,8 @@
-// Asking another person to approve what is beyond the cashier's limits (`POST /approve`) and setting
-// one's own PIN (`POST /pin`): what is checked before the request, and the server's refusals in
-// words for the cashier. A PIN is typed, sent in the one request, and dropped; it is never part of
-// a record the till keeps, a queued sale or a log.
+// Asking another person to approve what is beyond the cashier's limits (the `approve` action of the
+// cashier's session) and setting one's own PIN (the `set_pin` action of the register): what is checked
+// before the request, and the server's refusals in words for the cashier. A PIN is typed, sent in the
+// one request as the action's secret parameter, and dropped; it is never part of a record the till
+// keeps, a queued sale or a log.
 
 import { t } from "@ferrum/client";
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.11.0
+
+No database change: two actions and three contracts in the package, metadata only. Needs the same platform and ERP as
+0.10.0. The till's interface is rebuilt.
+
+- **Setting a PIN and approving by one are operations.** `pos.pos_profile.set_pin` (a register's action: the caller
+  sets their own PIN; read on the register is enough) and `pos.pos_opening_entry.approve` (an action of the cashier's
+  open session: another person's PIN approves one act on one sale) are in the catalog with contracts, go through the
+  gate and are audited, so an agent or an API client asks them exactly as the till does. The PIN is their secret
+  parameter: the platform keeps it out of the audit entry, the receipt and error texts. The register's own routes no
+  longer take either; the till calls the actions, with a new key for each press.
+- **An approval is asked in one's own session.** Another cashier does not find the session, and a manager, who may
+  write it, is refused; a closed session refuses it in its own words before any PIN is checked. A wrong PIN is still
+  counted whatever becomes of the action and leaves no approval and no receipt, so the same key may try again; the same
+  key with the same request is answered with the approval already made.
+- **`void`, `resolve` and `review` say what "done" means** and that they answer the record's new status.
+
 ## 0.10.0
 
 No database or interface change. Needs Ferrum 0.4.0 (apps' upkeep runs one workspace at a time, on whichever replica is free).
@@ -225,7 +242,7 @@ Arabic and Hindi for the new words (translated by the model, to be reviewed by n
 What a business varies at the till, server side (the till's screens follow in a later version; the till of 0.5.2 keeps working, and what it already sends is checked as before).
 
 - **Limits by role** (`PosRoleLimit`): the largest discount by percent and per sale in money, price changes, voiding a line and a sale, the largest refund, returns without a receipt, opening the drawer without a sale, reprints; per role, a register's own row before the row for every register, the most generous of a person's roles applying; a second row for the same role and register (or for every register) is refused when saved. A person none of whose roles has a row keeps the register's discount and price settings (a POS Manager, no limit), so nothing changes on upgrade. `GET /api/app/pos/limits?profile=` gives the till the same record to check before it asks.
-- **Approval by another person's PIN** (`POST /pin`, `POST /approve`): a manager, or anyone whose limits allow it, approves one act on the cashier's till without the cashier signing out. The PIN is kept only as an argon2id hash, five wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's audited parameters. The approval (`PosApproval`: who asked, who approved, what, how much, why, the approver's limits then) is for one sale or draft (`sale`: the id the till gives it; none only for opening the drawer) and one act, covers at most the amount approved (a sale changed beyond it needs a new one), is used once, and lapses after the register's Approval Lasts (Minutes) (5 by default) or when the cashier's session closes, which is what handing the till over is. Offline there is no approval: a short PIN cannot be checked on the device without giving it away, so an act beyond the cashier's own limits waits for the connection.
+- **Approval by another person's PIN** (since 0.11.0 the operations `set_pin` of a register and `approve` of a session): a manager, or anyone whose limits allow it, approves one act on the cashier's till without the cashier signing out. The PIN is kept only as an argon2id hash, five wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's audited parameters. The approval (`PosApproval`: who asked, who approved, what, how much, why, the approver's limits then) is for one sale or draft (`sale`: the id the till gives it; none only for opening the drawer) and one act, covers at most the amount approved (a sale changed beyond it needs a new one), is used once, and lapses after the register's Approval Lasts (Minutes) (5 by default) or when the cashier's session closes, which is what handing the till over is. Offline there is no approval: a short PIN cannot be checked on the device without giving it away, so an act beyond the cashier's own limits waits for the connection.
 - **Voids with reasons** (`PosReason`, seeded): lines taken off before payment are sent in `voided_lines` with a reason; a sale not yet closed is voided by the `void` action with a reason, by someone who may or with an approval, and keeps who and why.
 - **Stored value at the till**, through ERP 0.20's stored value: a gift card or store credit sold or topped up on a line (by its code), taken as a tender in whole or in part (by its code and PIN; `POST /balance` tells the balance, state and expiry first), refunded onto on a return. Such a sale is invoiced when it is submitted (`invoiced_at_sale`), so a card sold at ten is spendable at eleven; the closing only settles it. A card's part of a sale goes back only onto stored value; cash may go back as store credit. Codes are kept as their last four characters (and ERP's hash). Offline, a stored value payment method is refused unless it states an amount it may take offline (`offline_limit`); what the card no longer holds when the sale arrives is written off on the sale and recorded as a shortfall (`PosStockShortfall.amount_short`).
 - **Invoice now**: a sale marked `invoice_now` gets its own sales invoice at once and is not invoiced again at closing.

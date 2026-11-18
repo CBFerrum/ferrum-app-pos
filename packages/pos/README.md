@@ -23,7 +23,8 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 | `ItemBarcode` | Extra barcodes per item (pack barcodes add several units per scan). `Item.barcode` and `Item.item_code` scan too |
 
 Documents a workspace edits under Settings: `pos.receipt`, `pos.receipt_gift`, `pos.shift_report`, `pos.cash_slip`; message `pos.receipt_sent` (reads `values.company` and `values.currency`).
-Routes under `/api/app/pos/`: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, `GET /returns`, `GET /returns/{sale}`, `POST /exchange`, `POST /approve`, `POST /pin`, `POST /balance` and `GET /limits`.
+Routes under `/api/app/pos/`: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, `GET /returns`, `GET /returns/{sale}`, `POST /exchange`, `POST /balance` and `GET /limits`.
+Operations with contracts (`POST /api/v1/{entity}/{id}/actions/{action}` with an `Idempotency-Key`, or the capability catalog): `pos.pos_profile.set_pin` `{pin}` (the caller's own PIN), `pos.pos_opening_entry.approve` `{approver, pin, act, amount?, reason, sale?}` on the caller's own open session (answers `{approval, approver, action}`), and `pos.pos_invoice.void`, `pos.pos_stock_shortfall.resolve`, `pos.pos_price_difference.review`.
 
 Roles: **Cashier** (own sessions, sales, returns, cash movements; may draft the closing count) and
 **POS Manager** (everything, including discounts beyond the register limit, price changes, voids,

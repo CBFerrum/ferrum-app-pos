@@ -2,17 +2,18 @@
 // server recorded (path, method, body, and what comes back). Every component goes through here, so
 // that these shapes are written once and pinned by `server.test.ts` with the recorded answers.
 
-import { docPath } from "@ferrum/client";
+import { docPath, newKey } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { till } from "./offline";
 import type { Act } from "./rights";
 import type { CardBalance } from "./stored";
 
-/** `POST /approve`: another person's PIN approves one act on one sale (`sale`: the id the till gives the sale
- *  and sends again as the sale's `id`). `amount` is a discount's percent or a refund in money; a void, and a
- *  discount counted in money on the whole sale, send none. */
+/** The `approve` action of the cashier's open session (`session`): another person's PIN approves one act on one sale
+ *  (`sale`: the id the till gives the sale and sends again as the sale's `id`). `amount` is a discount's percent or a
+ *  refund in money; a void, and a discount counted in money on the whole sale, send none. A new key for each press: a
+ *  resend of the same request is answered once, and an approval whose answer was lost lapses unused. */
 export interface ApproveAsk {
-  profile: string;
+  session: string;
   approver: string;
   pin: string;
   action: Act;
@@ -20,10 +21,12 @@ export interface ApproveAsk {
   reason: string;
   sale: string;
 }
-export const approve = (body: ApproveAsk) => till<{ action: string; approval: string; approver: string }>("/api/app/pos/approve", { method: "POST", body });
+export const approve = ({ session, action, ...rest }: ApproveAsk) =>
+  till<{ action: string; approval: string; approver: string }>(docPath("PosOpeningEntry", session, "actions", "approve"), { method: "POST", body: { ...rest, act: action }, idempotencyKey: newKey() });
 
-/** `POST /pin`: the signed-in person sets their own PIN (4 to 12 digits). */
-export const setPin = (pin: string) => till<{ ok: boolean }>("/api/app/pos/pin", { method: "POST", body: { pin } });
+/** The `set_pin` action of a register (`profile`): the signed-in person sets their own PIN (4 to 12 digits). */
+export const setPin = (profile: string, pin: string) =>
+  till<{ ok: boolean }>(docPath("PosProfile", profile, "actions", "set_pin"), { method: "POST", body: { pin }, idempotencyKey: newKey() });
 
 /** `POST /balance`: what a card of a Stored Value payment method (`mode`) holds. */
 export const cardBalance = (mode: string, code: string, pin?: string) =>

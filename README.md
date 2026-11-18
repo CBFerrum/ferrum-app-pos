@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.10.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.11.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,7 +39,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.10.0 |
+| **Version** | 0.11.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
@@ -232,7 +232,7 @@ A cashier who reads only their own sales sees only their own figures.
 
 - **Two roles,** below. Row-level security applies to every table.
 - **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay.
-- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes (snapshot, limits, approvals, balance, receipts, returns, exchange) are under `/api/app/pos/`.
+- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes (snapshot, limits, balance, receipts, returns, exchange) are under `/api/app/pos/`. Setting one's PIN and approving by one are operations with contracts (`pos.pos_profile.set_pin`, `pos.pos_opening_entry.approve`), so an agent or an API client asks them as the till does.
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
 ### 🌍 Languages
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.11.0:** setting a PIN and approving by one are operations of the register and the cashier's session, through the gate; `void`, `resolve` and `review` say what "done" means.
 - [x] **0.10.0:** upkeep is one workspace's: needs Ferrum 0.4.0.
 - [x] **0.9.5:** builds against ERP 0.32.0, whose ledger takes the context to find a reversal's day.
 - [x] **0.9.4:** builds against ERP 0.31.0, whose ledger keeps a settled invoice's outstanding amount in step.

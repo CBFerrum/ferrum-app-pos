@@ -24,17 +24,26 @@ beforeEach(() => {
 });
 
 describe("what the server was seen to take and answer", () => {
-  it("approves one act on one sale: the body the walk sent, the approval read from the answer", async () => {
+  it("approves one act on one sale through the session's approve action: the act as `act`, a new key for each press, the approval read from the answer", async () => {
     answer({ action: "Discount", approval: "01a1ce9d-bb9e-74e2-ac87-4a219f4742cf", approver: "manager@walk.test" });
-    const ask = { profile: "reg1", approver: "manager@walk.test", pin: "4321", action: "Discount" as const, amount: "20", reason: "regular customer", sale: "sale-1" };
+    const ask = { session: "sess-1", approver: "manager@walk.test", pin: "4321", action: "Discount" as const, amount: "20", reason: "regular customer", sale: "sale-1" };
     expect((await approve(ask)).approval).toBe("01a1ce9d-bb9e-74e2-ac87-4a219f4742cf");
-    expect(last()).toEqual({ path: "/api/app/pos/approve", o: { method: "POST", body: ask } });
+    const { path, o } = last();
+    expect(path).toBe("/api/v1/PosOpeningEntry/sess-1/actions/approve");
+    expect(o.method).toBe("POST");
+    expect(o.body).toEqual({ approver: "manager@walk.test", pin: "4321", act: "Discount", amount: "20", reason: "regular customer", sale: "sale-1" });
+    const key = o.idempotencyKey;
+    expect(typeof key === "string" && key.length >= 8).toBe(true);
+    await approve(ask);
+    expect(last().o.idempotencyKey).not.toBe(key);
   });
 
-  it("sets a PIN with just the PIN", async () => {
+  it("sets a PIN through the register's set_pin action, with just the PIN and a key", async () => {
     answer({ ok: true });
-    expect((await setPin("4321")).ok).toBe(true);
-    expect(last()).toEqual({ path: "/api/app/pos/pin", o: { method: "POST", body: { pin: "4321" } } });
+    expect((await setPin("reg1", "4321")).ok).toBe(true);
+    const { path, o } = last();
+    expect(path).toBe("/api/v1/PosProfile/reg1/actions/set_pin");
+    expect([o.method, o.body, typeof o.idempotencyKey]).toEqual(["POST", { pin: "4321" }, "string"]);
   });
 
   it("reads a card's balance from the recorded answer, leaving the PIN out when there is none", async () => {

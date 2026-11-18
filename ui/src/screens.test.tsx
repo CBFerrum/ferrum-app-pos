@@ -160,14 +160,14 @@ describe("taking payment", () => {
   it("offers to void a finished sale, with a reason, but not a kept one, a return or an exchange", () => {
     const sale = { id: "s1", number: "C1-9", rounded_total: "20", payments: [] };
     const reasons = [{ id: "r1", reason: "Wrong item rung", applies_to: "Void" }];
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
-    for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
+    for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} session="s1" sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
   });
 
   it("tells a finished sale's buyer, how each way paid, and what is left on a card", () => {
     const sale = { id: "s1", number: "C1-9", rounded_total: "100", customer_name: "Acme Traders", buyer_tax_id: "TL-4242", tax_invoice: true, change_amount: "0", payments: [{ mode_of_payment: "gift", amount: "100", stored_value_balance: "400.00", _titles: { mode_of_payment: "Gift card" } }] };
-    const html = draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} onClose={() => {}} />);
+    const html = draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} onClose={() => {}} />);
     expect(html).toContain("Buyer Acme Traders");
     expect(html).toContain("TL-4242");
     expect(html).toContain("tax invoice issued");
@@ -176,18 +176,18 @@ describe("taking payment", () => {
   });
 
   it("offers a copy, a gift receipt and sending by message for a sale the register has, not for one kept on the device", () => {
-    const more = draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
+    const more = draw(<ReceiptMore profile={profile} session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
     for (const word of ["Print a copy", "Gift receipt", "Send by message"]) expect(more).toContain(word);
-    expect(draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
-    const kept = draw(<ReceiptDialog profile={profile} sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
+    expect(draw(<ReceiptMore profile={profile} session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
+    const kept = draw(<ReceiptDialog profile={profile} session="s1" sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
     expect(kept).toContain("Print a provisional receipt");
     expect(kept).not.toContain("Print a copy");
   });
 
   it("shows a receipt with the change, and a kept sale as not yet sent", () => {
     const sale = { number: "C1-9", rounded_total: "252.95", change_amount: "47.05", payments: [] };
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} onClose={() => {}} />)).toMatch(/Change.*47\.05/);
-    const kept = draw(<ReceiptDialog profile={profile} sale={{ ...sale, pending: true, number: "Not sent yet" }} onClose={() => {}} />);
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} onClose={() => {}} />)).toMatch(/Change.*47\.05/);
+    const kept = draw(<ReceiptDialog profile={profile} session="s1" sale={{ ...sale, pending: true, number: "Not sent yet" }} onClose={() => {}} />);
     expect(kept).toContain("Sale kept on this device");
     expect(kept).toContain("Not sent yet");
   });
@@ -400,7 +400,7 @@ describe("the return desk", () => {
 describe("approval at the till", () => {
   const step = { act: "Discount" as const, figure: 12.5, why: "a 12.5% discount exceeds the 10% allowed" };
   const ask = (over: Partial<Parameters<typeof AskDialog>[0]> = {}) => (
-    <AskDialog profile="p1" sale="sale-1" title="Approval for this line" steps={[step]} offline={false} onDone={() => {}} onClose={() => {}} {...over} />
+    <AskDialog session="s1" sale="sale-1" title="Approval for this line" steps={[step]} offline={false} onDone={() => {}} onClose={() => {}} {...over} />
   );
 
   it("asks who approves, their PIN (masked) and why, and says what is being approved", () => {
@@ -427,10 +427,10 @@ describe("approval at the till", () => {
   });
 
   it("sets one's own PIN, twice, online only", () => {
-    const html = draw(<SetPinDialog offline={false} onClose={() => {}} />);
+    const html = draw(<SetPinDialog profile="p1" offline={false} onClose={() => {}} />);
     expect(html).toContain("Set my PIN");
     expect(html).toContain("Type it again");
-    expect(draw(<SetPinDialog offline onClose={() => {}} />)).toContain("Setting a PIN needs a connection.");
+    expect(draw(<SetPinDialog profile="p1" offline onClose={() => {}} />)).toContain("Setting a PIN needs a connection.");
   });
 
   it("takes a card's code for a card line, offering to make one only online", () => {

@@ -58,7 +58,7 @@ export default function Unreceipted({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const attempt = useRef<{ json: string; back: string; out: string } | null>(null);
-  const asker = useAsk(profileId, () => false);
+  const asker = useAsk(session, () => false);
   const exchanging = mode === "exchange";
 
   const methods = ((profile.payments as Doc[] | undefined) ?? []).map((r) => {
