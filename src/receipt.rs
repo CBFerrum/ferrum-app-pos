@@ -1,7 +1,8 @@
 //! The receipt (PS-10, PS-53, PS-54, PS-57, PS-58): the sale's first printing, copies marked and counted, gift
-//! receipts, and the receipt sent to the buyer as a message. What the paper says is the document template
-//! (`pos.receipt`, `pos.receipt_gift`) and the message template (`pos.receipt_sent`) the workspace edits; this
-//! module decides who may have one and keeps the record of it.
+//! receipts, and the receipt sent to the buyer as a message, each an action of the caller's own open session naming the
+//! sale (`print_receipt`, `reprint`, `send_receipt`) and kept as a `PosReceiptEvent`; the page of an event is a read
+//! (`GET /paper/{event}`). What the paper says is the document template (`pos.receipt`, `pos.receipt_gift`) and the
+//! message template (`pos.receipt_sent`) the workspace edits; this module decides who may have one and keeps the record.
 //!
 //! The first printing is once per sale (an atomic mark under the sale's lock, so two tills never print two
 //! originals); everything after is a copy: who asked, when, for what reason and by whose approval is a
@@ -9,21 +10,17 @@
 
 use crate::logic::Act;
 use crate::site::param;
-use crate::{Profile, is_manager, open_session_in};
+use crate::{Profile, is_manager};
 use ferrum_domain::util::{b, elevated, get, id, s, sys};
 use ferrum_kernel::documents::{Generate, generate};
 use ferrum_kernel::messages::{self, Message, Recipient};
-use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, SiteRequest, SiteResponse};
+use ferrum_kernel::{Ctx, Doc, Error, HookCtx, Kernel, Result, SiteRequest, SiteResponse};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 const RECEIPT: &str = "pos.receipt";
 const GIFT: &str = "pos.receipt_gift";
 const MESSAGE: &str = "pos.receipt_sent";
-
-fn body(req: &SiteRequest) -> Result<Value> {
-    serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))
-}
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty())
@@ -34,16 +31,17 @@ fn uuid_of(v: &Value, key: &str) -> Result<Uuid> {
 }
 
 /// The page or file `key` renders for `sale`, as the response to the till.
-async fn render(k: &Kernel, ctx: &Ctx, key: &str, sale: Uuid, language: Option<&str>, pdf: bool, headers: Vec<(String, String)>) -> Result<SiteResponse> {
+async fn render(k: &Kernel, ctx: &Ctx, key: &str, sale: Uuid, language: Option<&str>, pdf: bool) -> Result<SiteResponse> {
     let r = k.render_document(&elevated(ctx), key, sale, language, pdf && k.pdf_enabled()).await?;
-    Ok(SiteResponse { status: 200, content_type: r.content_type, headers, body: r.bytes })
+    Ok(SiteResponse { status: 200, content_type: r.content_type, headers: vec![], body: r.bytes })
 }
 
 /// The register, for a person who works at it.
-async fn register(k: &Kernel, ctx: &Ctx, tx: &mut ferrum_kernel::Tx, profile: Uuid) -> Result<Profile> {
+async fn register(hc: &mut HookCtx<'_>, profile: Uuid) -> Result<Profile> {
+    let ctx = hc.ctx;
     ctx.require("PosInvoice", ferrum_kernel::Action::Create)?;
-    k.get(ctx, "PosProfile", profile, false).await?;
-    let profile = Profile::load(k, ctx, tx, profile).await?;
+    hc.kernel.get_tx(ctx, hc.tx, "PosProfile", profile, false).await?;
+    let profile = Profile::load(hc.kernel, ctx, hc.tx, profile).await?;
     if !profile.admits(&ctx.email) && !is_manager(ctx) {
         return Err(Error::Forbidden(format!("{} is not allowed at register {}", ctx.email, profile.name())));
     }
@@ -51,8 +49,8 @@ async fn register(k: &Kernel, ctx: &Ctx, tx: &mut ferrum_kernel::Tx, profile: Uu
 }
 
 /// A submitted sale of the register's company, locked.
-async fn sale_of(k: &Kernel, ctx: &Ctx, tx: &mut ferrum_kernel::Tx, profile: &Profile, sale: Uuid) -> Result<Doc> {
-    let doc = k.get_tx(&sys(ctx), tx, "PosInvoice", sale, true).await.map_err(|_| Error::NotFound("sale".into()))?;
+async fn sale_of(hc: &mut HookCtx<'_>, profile: &Profile, sale: Uuid) -> Result<Doc> {
+    let doc = hc.kernel.get_tx(&sys(hc.ctx), hc.tx, "PosInvoice", sale, true).await.map_err(|_| Error::NotFound("sale".into()))?;
     if doc.get("docstatus").and_then(Value::as_i64) != Some(1) || id(&doc, "company") != id(&profile.doc, "company") {
         return Err(Error::NotFound("sale".into()));
     }
@@ -63,14 +61,34 @@ fn own_sale(ctx: &Ctx, sale: &Doc) -> bool {
     s(sale, "cashier").is_some_and(|c| c.eq_ignore_ascii_case(&ctx.email))
 }
 
-/// `GET /receipt/{sale}?profile=&format=pdf&language=`: the sale's first receipt, once. The cashier who made the sale
-/// (or a manager) has it; a second ask is a copy, which has its own request and its record.
-pub async fn first(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Result<SiteResponse> {
-    let profile: Uuid = param(req, "profile").and_then(|v| v.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let reg = register(k, ctx, &mut tx, profile).await?;
-    let doc = sale_of(k, ctx, &mut tx, &reg, sale).await?;
-    if !own_sale(ctx, &doc) && !is_manager(ctx) {
+/// What each receipt action starts from: the caller's own open session (the kernel has checked it is open and holds its
+/// row), the register it is at, and the sale named, locked.
+async fn start(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<(Profile, Doc, Uuid)> {
+    // A manager may write anyone's session; a receipt is still given in one's own.
+    if s(session, "user").is_none_or(|u| u.to_lowercase() != hc.ctx.email.to_lowercase()) {
+        return Err(Error::Forbidden("receipts are given in your own session".into()));
+    }
+    let sale = uuid_of(params, "sale")?;
+    let reg = register(hc, id(session, "pos_profile").ok_or_else(|| Error::internal("a session without a register"))?).await?;
+    let doc = sale_of(hc, &reg, sale).await?;
+    Ok((reg, doc, sale))
+}
+
+/// Keeps a receipt event of the sale `doc` by the caller, with `more` (its kind and what else it says): its id.
+async fn record(hc: &mut HookCtx<'_>, doc: &Doc, more: Value) -> Result<Value> {
+    let mut row = json!({"pos_invoice": id(doc, "id"), "company": id(doc, "company"), "cashier": hc.ctx.email.to_lowercase(), "printed_at": chrono::Utc::now().to_rfc3339()});
+    if let (Some(r), Some(m)) = (row.as_object_mut(), more.as_object()) {
+        r.extend(m.clone());
+    }
+    let made = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "PosReceiptEvent", row.as_object().cloned().unwrap_or_default()).await?;
+    Ok(made.get("id").cloned().unwrap_or(Value::Null))
+}
+
+/// `print_receipt` of the caller's open session: the sale's first receipt, once. The cashier who made the sale (or a manager)
+/// has it; a second ask is a copy, which is `reprint`.
+pub(crate) async fn print(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let (_, doc, sale) = start(hc, session, params).await?;
+    if !own_sale(hc.ctx, &doc) && !is_manager(hc.ctx) {
         return Err(Error::Forbidden("the receipt is printed at the till that made the sale; another asks for a copy".into()));
     }
     if b(&doc, "receipt_printed") {
@@ -78,9 +96,27 @@ pub async fn first(k: &Kernel, ctx: &Ctx, req: &SiteRequest, sale: Uuid) -> Resu
     }
     let mut mark = Doc::new();
     mark.insert("receipt_printed".into(), json!(true));
-    k.set_values_tx(&elevated(ctx), &mut tx, "PosInvoice", sale, mark).await?;
-    tx.commit().await?;
-    render(k, ctx, RECEIPT, sale, param(req, "language"), param(req, "format") == Some("pdf"), vec![]).await
+    hc.kernel.set_values_tx(&elevated(hc.ctx), hc.tx, "PosInvoice", sale, mark).await?;
+    let event = record(hc, &doc, json!({"kind": "Original"})).await?;
+    Ok(json!({"event": event, "kind": "Original"}))
+}
+
+/// `GET /paper/{event}?language=&format=pdf`: the page of a receipt event (the first receipt, a copy, a gift receipt), for the
+/// person who asked for it or someone who may read the event as themselves. A message has no paper. Nothing changes.
+pub async fn paper(k: &Kernel, ctx: &Ctx, req: &SiteRequest, event: Uuid) -> Result<SiteResponse> {
+    let nothing = || Error::NotFound("page".into());
+    let ev = k.get(&sys(ctx), "PosReceiptEvent", event, false).await.map_err(|_| nothing())?;
+    let key = match s(&ev, "kind") {
+        Some("Original" | "Copy") => RECEIPT,
+        Some("Gift") => GIFT,
+        _ => return Err(nothing()),
+    };
+    let asked = s(&ev, "cashier").is_some_and(|c| c.eq_ignore_ascii_case(&ctx.email));
+    if !asked && k.get(ctx, "PosReceiptEvent", event, false).await.is_err() {
+        return Err(nothing());
+    }
+    let sale = id(&ev, "pos_invoice").ok_or_else(nothing)?;
+    render(k, ctx, key, sale, param(req, "language"), param(req, "format") == Some("pdf")).await
 }
 
 /// What reprints are given, as the business has them: when it has reasons, one of them is chosen.
@@ -101,54 +137,41 @@ async fn reason_of(tx: &mut ferrum_kernel::Tx, tenant: Uuid, given: Option<&str>
         .ok_or_else(|| Error::field("reason", "choose one of the business's reasons for a copy"))
 }
 
-/// `POST /reprint` `{profile, sale, kind: copy | gift, reason?, approval?, format?, language?}`: a copy of the receipt (marked
-/// and counted) or a gift receipt (no prices), by someone whose limits let them reprint or with another person's approval.
-pub async fn reprint(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteResponse> {
-    let v = body(req)?;
-    let (profile, sale) = (uuid_of(&v, "profile")?, uuid_of(&v, "sale")?);
-    let gift = match text(&v, "kind") {
-        Some("copy") | None => false,
+/// `reprint` of the caller's open session: a copy of the receipt (marked and counted) or a gift receipt (no prices), by someone
+/// whose limits let them reprint, or with another person's approval for a reprint of this sale in this session (used once).
+pub(crate) async fn reprint(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let gift = match text(params, "kind") {
+        Some("copy") => false,
         Some("gift") => true,
-        Some(_) => return Err(Error::field("kind", "is copy or gift")),
+        _ => return Err(Error::field("kind", "is copy or gift")),
     };
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let reg = register(k, ctx, &mut tx, profile).await?;
-    let doc = sale_of(k, ctx, &mut tx, &reg, sale).await?;
+    let approval = text(params, "approval").map(|a| a.parse::<Uuid>().map_err(|_| Error::field("approval", "is an approval's id"))).transpose()?;
+    let (reg, doc, sale) = start(hc, session, params).await?;
+    let ctx = hc.ctx;
     let event = Uuid::now_v7();
-    let approval = match text(&v, "approval").and_then(|a| a.parse::<Uuid>().ok()) {
-        Some(a) => Some(a),
-        None if text(&v, "approval").is_some() => return Err(Error::field("approval", "is an approval's id")),
-        None => None,
-    };
-    if !crate::limits::of(ctx, &mut tx, &reg).await?.reprint {
-        let session = open_session_in(&mut tx, ctx.tenant, profile, &ctx.email).await?;
-        let covered = match (approval, session) {
-            (Some(a), Some(sess)) => {
-                crate::limits::covers(&mut tx, ctx.tenant, a, (&ctx.email, sess), Act::Reprint, rust_decimal::Decimal::ZERO, false, sale).await?
-            }
-            _ => false,
+    if !crate::limits::of(ctx, hc.tx, &reg).await?.reprint {
+        let here = (ctx.email.as_str(), id(session, "id").unwrap_or_default());
+        let covered = match approval {
+            Some(a) => crate::limits::covers(hc.tx, ctx.tenant, a, here, Act::Reprint, rust_decimal::Decimal::ZERO, false, sale).await?,
+            None => false,
         };
         if !covered {
             return Err(Error::Forbidden("you may not reprint receipts; ask someone who may to approve it".into()));
         }
         // Used once: the next copy asks again.
-        crate::limits::use_approvals(&mut tx, ctx.tenant, &[approval.unwrap_or_default()], event).await?;
+        crate::limits::use_approvals(hc.tx, ctx.tenant, &[approval.unwrap_or_default()], event).await?;
     }
-    let reason = reason_of(&mut tx, ctx.tenant, text(&v, "reason")).await?;
+    let reason = reason_of(hc.tx, ctx.tenant, text(params, "reason")).await?;
     let copies = doc.get("reprints").and_then(Value::as_i64).unwrap_or(0) + i64::from(!gift);
     if !gift {
         let mut count = Doc::new();
         count.insert("reprints".into(), json!(copies));
-        k.set_values_tx(&elevated(ctx), &mut tx, "PosInvoice", sale, count).await?;
+        hc.kernel.set_values_tx(&elevated(hc.ctx), hc.tx, "PosInvoice", sale, count).await?;
     }
-    let row = json!({
-        "id": event.to_string(), "pos_invoice": sale, "company": id(&doc, "company"), "kind": if gift { "Gift" } else { "Copy" },
-        "copy_no": (!gift).then_some(copies), "cashier": ctx.email.to_lowercase(), "printed_at": chrono::Utc::now().to_rfc3339(), "reason": reason, "approval": approval,
-    });
-    k.insert_tx(&elevated(ctx), &mut tx, "PosReceiptEvent", row.as_object().cloned().unwrap_or_default()).await?;
-    tx.commit().await?;
-    let headers = vec![("x-pos-receipt-event".to_string(), event.to_string()), ("x-pos-copy".to_string(), copies.to_string())];
-    render(k, ctx, if gift { GIFT } else { RECEIPT }, sale, text(&v, "language"), text(&v, "format") == Some("pdf"), headers).await
+    let kind = if gift { "Gift" } else { "Copy" };
+    let copy_no = (!gift).then_some(copies);
+    record(hc, &doc, json!({"id": event.to_string(), "kind": kind, "copy_no": copy_no, "reason": reason, "approval": approval})).await?;
+    Ok(json!({"event": event.to_string(), "kind": kind, "copy_no": copy_no}))
 }
 
 /// The first field of the customer record of a type: where an address or a number the buyer opts to leave is kept.
@@ -156,77 +179,64 @@ fn contact_field(ctx: &Ctx, ftype: ferrum_meta::FieldType) -> Option<String> {
     ctx.schema.entity("Customer")?.def.fields.iter().find(|f| f.ftype == ftype).map(|f| f.name.clone())
 }
 
-/// `POST /send` `{profile, sale, to, consent: once | opt_in, language?}`: the receipt to an address or number the buyer
-/// gives, by the message template and the channels the workspace has. The buyer's consent is for this one message
-/// unless they opt in to more; the address is kept in the message log (and goes with an erasure), never on the sale.
-/// A buyer who opts in and is a named customer without that contact has it added to their record.
-pub async fn send(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
-    let v = body(req)?;
-    let (profile, sale) = (uuid_of(&v, "profile")?, uuid_of(&v, "sale")?);
-    let to = text(&v, "to").ok_or_else(|| Error::field("to", "is an address or a number"))?;
-    let opt_in = match text(&v, "consent") {
-        Some("once") | None => false,
+/// `send_receipt` of the caller's open session: the receipt to an address or number the buyer gives, by the message template
+/// and the channels the workspace has. The buyer's consent is for this one message unless they opt in to more; the address
+/// is a secret parameter, kept in the message log (and gone with an erasure), never on the sale, its event, the action's audit
+/// entry or its receipt. A buyer who opts in and is a named customer without that contact has it added to their record.
+pub(crate) async fn send(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let to = text(params, "to").ok_or_else(|| Error::field("to", "is an address or a number"))?;
+    let opt_in = match text(params, "consent") {
+        Some("once") => false,
         Some("opt_in") => true,
-        Some(_) => return Err(Error::field("consent", "is once or opt_in")),
+        _ => return Err(Error::field("consent", "is once or opt_in")),
     };
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let reg = register(k, ctx, &mut tx, profile).await?;
-    let doc = sale_of(k, ctx, &mut tx, &reg, sale).await?;
-    if !own_sale(ctx, &doc) && !crate::limits::of(ctx, &mut tx, &reg).await?.reprint {
+    let (reg, doc, sale) = start(hc, session, params).await?;
+    if !own_sale(hc.ctx, &doc) && !crate::limits::of(hc.ctx, hc.tx, &reg).await?.reprint {
         return Err(Error::Forbidden("you may send the receipts of your own sales; ask someone who may reprint for another's".into()));
     }
+    let (k, ctx) = (hc.kernel, hc.ctx);
     let system = elevated(ctx);
-    let company = get(k, &system, &mut tx, "Company", id(&doc, "company").unwrap_or_default()).await?;
-    let language = text(&v, "language");
+    let company = get(k, &system, hc.tx, "Company", id(&doc, "company").unwrap_or_default()).await?;
     // The receipt goes as a file with the message; a workspace with no file storage sends the message alone.
     let ask = Generate {
         template: RECEIPT.into(),
         record: sale,
         name: Some(format!("Receipt {}", s(&doc, "number").unwrap_or_default())),
-        language: language.map(str::to_string),
+        language: text(params, "language").map(str::to_string),
         replace: true,
         values: Map::new(),
     };
-    let made = match generate(k, &mut tx, &system, &ask).await {
+    let made = match generate(k, hc.tx, &system, &ask).await {
         Ok(g) => Some(g.file),
         Err(Error::Unavailable(_)) => None,
         Err(e) => return Err(e),
     };
     let mut values = Map::new();
     values.insert("company".into(), company.get("company_name").cloned().unwrap_or(Value::Null));
-    let (code, _) = ferrum_domain::util::currency(k, &system, &mut tx, id(&company, "default_currency").unwrap_or_default()).await?;
+    let (code, _) = ferrum_domain::util::currency(k, &system, hc.tx, id(&company, "default_currency").unwrap_or_default()).await?;
     values.insert("currency".into(), json!(code));
-    let sent = messages::send(
-        k,
-        &mut tx,
-        &system,
-        &Message {
-            template: MESSAGE.into(),
-            entity: Some("PosInvoice".into()),
-            record: Some(sale),
-            to: vec![Recipient::address(to)],
-            values,
-            attachments: made.into_iter().collect(),
-            ..Default::default()
-        },
-    )
-    .await?;
-    let channel = sent.first().map(|x| x.channel.clone());
-    let row = json!({
-        "pos_invoice": sale, "company": id(&doc, "company"), "kind": "Message", "cashier": ctx.email.to_lowercase(), "printed_at": chrono::Utc::now().to_rfc3339(),
-        "channel": channel, "consent": if opt_in { "Opted In" } else { "This Receipt Only" },
-    });
-    let event = k.insert_tx(&system, &mut tx, "PosReceiptEvent", row.as_object().cloned().unwrap_or_default()).await?;
+    let message = Message {
+        template: MESSAGE.into(),
+        entity: Some("PosInvoice".into()),
+        record: Some(sale),
+        to: vec![Recipient::address(to)],
+        values,
+        attachments: made.into_iter().collect(),
+        ..Default::default()
+    };
+    let sent = messages::send(k, hc.tx, &system, &message).await?;
+    let channels: Vec<String> = sent.iter().map(|x| x.channel.clone()).collect();
+    let consent = if opt_in { "Opted In" } else { "This Receipt Only" };
+    let event = record(hc, &doc, json!({"kind": "Message", "channel": channels.first(), "consent": consent})).await?;
     // Opted in, and a customer of the shop's own: the contact goes on their record when it has none.
     if opt_in && let Some(c) = id(&doc, "customer").filter(|c| Some(*c) != id(&reg.doc, "customer")) {
         let field = if to.contains('@') { contact_field(ctx, ferrum_meta::FieldType::Email) } else { contact_field(ctx, ferrum_meta::FieldType::Phone) };
-        let customer = get(k, &system, &mut tx, "Customer", c).await?;
+        let customer = get(k, &system, hc.tx, "Customer", c).await?;
         if let Some(f) = field.filter(|f| customer.get(f).is_none_or(|x| x.is_null() || x == "")) {
             let mut change = Doc::new();
             change.insert(f, json!(to));
-            k.set_values_tx(&system, &mut tx, "Customer", c, change).await?;
+            k.set_values_tx(&system, hc.tx, "Customer", c, change).await?;
         }
     }
-    tx.commit().await?;
-    Ok(json!({"event": event.get("id"), "sent": sent, "receipt": made}))
+    Ok(json!({"event": event, "channels": channels, "attached": !message.attachments.is_empty()}))
 }

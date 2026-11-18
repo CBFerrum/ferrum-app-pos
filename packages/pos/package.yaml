@@ -139,7 +139,8 @@ personal_data:
   - {entity: PosInvoice, match: customer, erase: [buyer_name, buyer_tax_id]}
 
 # The till's papers and messages. A workspace edits them under Settings (a copy of a default, reset to it when it
-# wants); the till asks the server for the receipt (GET /receipt/{sale}, POST /reprint) and prints what comes back.
+# wants); the till asks for the receipt through its session's actions (print_receipt, reprint) and prints the page of
+# the event they answer (GET /paper/{event}).
 # values: `pos.receipt_sent` reads company (the seller's name) and currency (its code).
 documents:
   - key: pos.receipt

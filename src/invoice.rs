@@ -207,10 +207,11 @@ impl DocHook for PosInvoiceHook {
     }
 
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
-        if name != "void" {
-            return Ok(None);
+        match name {
+            "void" => void_sale(hc, doc, params).await.map(Some),
+            "exchange" => exchange(hc, doc, params).await.map(Some),
+            _ => Ok(None),
         }
-        void_sale(hc, doc, params).await.map(Some)
     }
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -894,53 +895,62 @@ async fn check_unreceipted(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) ->
     refund_within(hc, doc, &limits, refunded).await
 }
 
-/// An exchange (PS-35), as one transaction: what comes back (`back`, a return with its receipt or
-/// without one) and what goes out in its place (`out`, a sale), at one register, for one customer,
-/// each priced, taxed and moving stock as on its own. What came back pays for what goes out through
-/// the return policy's clearing method (so it nets to nothing at closing); the customer pays what is
-/// left with the sale's payments, or is refunded the rest with the return's, as the policy says. Online only.
-pub(crate) async fn exchange(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx, mut back: Doc, mut out: Doc) -> Result<Value> {
-    let pid = id(&back, "pos_profile").ok_or_else(|| Error::field("back.pos_profile", "is required"))?;
-    if id(&out, "pos_profile") != Some(pid) {
-        return Err(Error::field("out.pos_profile", "both halves of an exchange are at one register"));
+/// An exchange (PS-35), the `exchange` action of the return's draft (`back`, with its receipt or without one) naming the
+/// draft of the sale going out in its place (`out`): at one register, for one customer, each priced, taxed and moving stock
+/// as on its own, both submitted in the action's transaction. What came back pays for what goes out through the return
+/// policy's clearing method (so it nets to nothing at closing); the customer pays what is left with the sale's payments, or
+/// is refunded the rest with the return's, as the policy says. Online only. A refusal anywhere leaves both drafts as they were.
+async fn exchange(hc: &mut HookCtx<'_>, back: &Doc, params: &Value) -> Result<Value> {
+    let oid: Uuid =
+        params.get("out").and_then(Value::as_str).and_then(|o| o.trim().parse().ok()).ok_or_else(|| Error::field("out", "is the id of the sale going out"))?;
+    let bid = id(back, "id").ok_or_else(|| Error::internal("no id"))?;
+    // As the caller: a draft they may not read is not found.
+    let mut out = hc.kernel.get_tx(hc.ctx, hc.tx, "PosInvoice", oid, true).await?;
+    if oid == bid || !d(&out, "docstatus").is_zero() || b(&out, "is_return") {
+        return Err(Error::field("out", "is the draft of the sale going out"));
     }
-    if b(&back, "sold_offline") || b(&out, "sold_offline") {
+    let pid = id(back, "pos_profile").ok_or_else(|| Error::field("pos_profile", "is required"))?;
+    if id(&out, "pos_profile") != Some(pid) {
+        return Err(Error::field("out", "both halves of an exchange are at one register"));
+    }
+    if b(back, "sold_offline") || b(&out, "sold_offline") {
         return Err(Error::invalid("an exchange is taken online only: what comes back must be in the books before it pays for what goes out"));
     }
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let profile = Profile::load(k, ctx, &mut tx, pid).await?;
+    if s(back, "exchange").is_some() || s(&out, "exchange").is_some() {
+        return Err(Error::invalid("this is already half of an exchange"));
+    }
+    let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, pid).await?;
     let policy = match id(&profile.doc, "return_policy") {
-        Some(p) => get(k, ctx, &mut tx, "PosReturnPolicy", p).await?,
+        Some(p) => get(hc.kernel, hc.ctx, hc.tx, "PosReturnPolicy", p).await?,
         None => return Err(Error::invalid("this register has no return policy: exchanges are not taken")),
     };
     let via = id(&policy, "exchange_mode")
         .ok_or_else(|| Error::invalid("the register's return policy names no Exchange Clearing method: exchanges are not taken"))?;
-    let (bid, oid) = (id(&back, "id").unwrap_or_else(Uuid::now_v7), id(&out, "id").unwrap_or_else(Uuid::now_v7));
-    let (back_pays, out_pays) = (rows(&back, "payments"), rows(&out, "payments"));
-    for (doc, me, ret) in [(&mut back, bid, true), (&mut out, oid, false)] {
-        set(doc, "id", me.to_string());
-        set(doc, "is_return", ret);
-        set(doc, "payments", json!([]));
+    // The goods go out to whoever brought the others back, priced for them before anything is carried.
+    if id(&out, "customer") != id(back, "customer") {
+        let mut buyer = Doc::new();
+        buyer.insert("customer".into(), back.get("customer").cloned().unwrap_or(Value::Null));
+        out = hc.kernel.update_tx(hc.ctx, hc.tx, "PosInvoice", oid, buyer, None).await?;
     }
-    let returned = k.insert_tx(ctx, &mut tx, "PosInvoice", back).await?;
-    set(&mut out, "customer", returned.get("customer").cloned().unwrap_or(Value::Null));
-    let sold = k.insert_tx(ctx, &mut tx, "PosInvoice", out).await?;
-    let x = logic::exchange(-d(&returned, "rounded_total"), d(&sold, "rounded_total"));
-    for (me, mut pays, carried, other) in [(bid, back_pays, -x.carried, oid), (oid, out_pays, x.carried, bid)] {
+    let x = logic::exchange(-d(back, "rounded_total"), d(&out, "rounded_total"));
+    for (me, doc, carried, other) in [(bid, back, -x.carried, oid), (oid, &out, x.carried, bid)] {
         let mut link = Doc::new();
         link.insert("exchange".into(), json!(other.to_string()));
-        k.set_values_tx(&sys(ctx), &mut tx, "PosInvoice", me, link).await?;
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PosInvoice", me, link).await?;
+        // The payments as saved, rows with their ids (a new card's kept handle stays on its row), and the carried amount.
+        let mut pays = rows(doc, "payments");
         if !carried.is_zero() {
             pays.push(json!({"mode_of_payment": via.to_string(), "amount": money(carried)}).as_object().cloned().unwrap_or_default());
         }
         let mut patch = Doc::new();
         patch.insert("payments".into(), rows_value(pays));
-        k.update_tx(ctx, &mut tx, "PosInvoice", me, patch, None).await?;
+        hc.kernel.update_tx(hc.ctx, hc.tx, "PosInvoice", me, patch, None).await?;
     }
-    let returned = k.submit_tx(ctx, &mut tx, "PosInvoice", bid, None).await?;
-    let sold = k.submit_tx(ctx, &mut tx, "PosInvoice", oid, None).await?;
-    tx.commit().await?;
-    Ok(json!({"return": returned, "sale": sold, "carried": money(x.carried), "due": money(x.due), "refund": money(x.refund)}))
+    hc.kernel.submit_tx(hc.ctx, hc.tx, "PosInvoice", bid, None).await?;
+    let sold = hc.kernel.submit_tx(hc.ctx, hc.tx, "PosInvoice", oid, None).await?;
+    Ok(
+        json!({"return": bid.to_string(), "sale": oid.to_string(), "sale_number": sold.get("number"), "carried": money(x.carried), "due": money(x.due), "refund": money(x.refund)}),
+    )
 }
 
 /// A named customer with a credit limit: the consolidated invoice will count the whole sale

@@ -1,7 +1,8 @@
-//! The register's own endpoints (`/api/app/pos/...`, signed in): the snapshot a till prices with
-//! while offline (`snapshot`), stored value balances, exchanges, receipts, the cashier's limits, and
-//! the returns desk's lookups (`returns`). Setting a PIN and approving by one are operations, not
-//! routes: `set_pin` of a register and `approve` of the cashier's session (limits.rs).
+//! The register's own endpoints (`/api/app/pos/...`, signed in), all reads: the snapshot a till prices with
+//! while offline (`snapshot`, which keeps the version it gave out), stored value balances, the cashier's limits,
+//! the returns desk's lookups (`returns`) and the page of a receipt event (`paper`). What a till changes is an
+//! operation: `set_pin` of a register; `approve`, `print_receipt`, `reprint` and `send_receipt` of the cashier's
+//! session (limits.rs, receipt.rs); `exchange` of a return's draft (invoice.rs).
 
 use crate::returns;
 use async_trait::async_trait;
@@ -24,17 +25,10 @@ impl Site for PosSite {
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["snapshot"]) => Ok(SiteResponse::json(200, &crate::snapshot::snapshot(k, ctx, &req).await?)),
             ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
-            ("POST", ["exchange"]) => {
-                let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
-                let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
-                Ok(SiteResponse::json(200, &crate::invoice::exchange(k, ctx, half("back")?, half("out")?).await?))
+            ("GET", ["paper", event]) => {
+                let event: Uuid = event.parse().map_err(|_| Error::NotFound("page".into()))?;
+                crate::receipt::paper(k, ctx, &req, event).await
             }
-            ("GET", ["receipt", sale]) => {
-                let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
-                crate::receipt::first(k, ctx, &req, sale).await
-            }
-            ("POST", ["reprint"]) => crate::receipt::reprint(k, ctx, &req).await,
-            ("POST", ["send"]) => Ok(SiteResponse::json(200, &crate::receipt::send(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("POST", ["returns", sale, "plan"]) => {

@@ -158,6 +158,52 @@
         effect: transactional_action
         completion: "A POS Approval exists for one act on one sale in this session, usable once before it lapses"
         returns: {type: object, properties: {approval: {type: string, format: uuid, x-ferrum-link: PosApproval}, approver: {type: string}, action: {type: string}}}
+    - name: print_receipt
+      label: Print Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+      contract:
+        effect: transactional_action
+        completion: "The sale's first receipt is marked printed, once, and a Receipt Event of kind Original says who printed it"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}}}
+    - name: reprint
+      label: Reprint Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+        - {name: kind, label: Kind, type: select, options: [copy, gift], required: true}
+        - {name: reason, label: Reason, description: "One of the business's reprint reasons (its id or its words) when it has some"}
+        - {name: approval, label: Approval, type: link, to: PosApproval, description: "When reprinting is beyond your limits; it covers one copy"}
+      contract:
+        effect: transactional_action
+        completion: "A Receipt Event records the copy or gift receipt; a copy is counted on the sale"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}, copy_no: {type: [integer, "null"]}}}
+    - name: send_receipt
+      label: Send Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+        - {name: to, label: Address or Number, required: true, secret: true}
+        - {name: consent, label: Consent, type: select, options: [once, opt_in], required: true}
+        - {name: language, label: Language}
+      contract:
+        effect: external_effect
+        unknown_outcome: manual
+        completion: "The receipt is queued to the address by the workspace's channels, with this receipt; delivery is not confirmed"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, channels: {type: array, items: {type: string}}, attached: {type: boolean}}}
   list: {columns: [number, pos_profile, user, posting_date, status], sort: created_at desc}
 
 - name: PosInvoiceItem
@@ -332,6 +378,20 @@
         effect: transactional_action
         completion: "The sale is cancelled: its stock is back, it is out of the session's takings, and it keeps who voided it and why"
         returns: {type: object, properties: {status: {type: string}}}
+    - name: exchange
+      label: Exchange
+      permission: write
+      hidden: true
+      docstatus: [0]
+      condition: "doc.is_return"
+      condition_message: "An exchange starts from the return's draft"
+      params:
+        - {name: out, label: Sale Going Out, type: link, to: PosInvoice, required: true}
+      contract:
+        effect: transactional_action
+        completion: "The return and the sale going out are both submitted and name each other; what came back is carried to what goes out through the register's Exchange Clearing method"
+        returns: {type: object, properties: {return: {type: string, format: uuid, x-ferrum-link: PosInvoice}, sale: {type: string, format: uuid, x-ferrum-link: PosInvoice},
+                  sale_number: {type: string}, carried: {type: string}, due: {type: string}, refund: {type: string}}}
   rules:
     - {name: named_buyer, check: "!doc.needs_buyer", on: submit,
        message: "This sale is worth more than the register takes without a named buyer: pick the customer, or take the buyer's tax registration"}
@@ -610,11 +670,11 @@
   module: pos
   company_scoped: true
   title_field: kind
-  description: "A receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the till's receipt requests; read-only. The address a receipt was sent to is in the message log, not here."
+  description: "A sale's first receipt, a receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the receipt actions of a cashier's session; read-only. The address a receipt was sent to is in the message log, not here."
   fields:
     - {name: pos_invoice, type: link, to: PosInvoice, read_only: true, in_list: true, in_filter: true}
     - {name: company, type: link, to: Company, read_only: true, in_filter: true}
-    - {name: kind, type: select, options: [Copy, Gift, Message], read_only: true, in_list: true, in_filter: true}
+    - {name: kind, type: select, options: [Original, Copy, Gift, Message], read_only: true, in_list: true, in_filter: true}
     - {name: copy_no, type: int, read_only: true, in_list: true, label: Copy Number}
     - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true}
     - {name: printed_at, type: datetime, read_only: true, in_list: true, label: When}

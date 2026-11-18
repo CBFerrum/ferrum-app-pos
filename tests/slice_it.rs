@@ -3,6 +3,7 @@
 //! offline snapshot, returns and cash management.
 
 use ferrum_app_erp::localization::{Localization, TaxId, field_tax_ids};
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery, SiteRequest};
 use ferrum_meta::Catalog;
@@ -93,6 +94,11 @@ impl T {
     /// An action of a record, as a person's request runs it.
     async fn act(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value, Error> {
         self.k.run_action(ctx, entity, id, action, params).await
+    }
+    /// The paper of a receipt event an action answered (`{event}`), as the register's read-only route gives it.
+    async fn paper(&self, ctx: &Ctx, answered: &Value) -> Result<String, Error> {
+        let path = format!("/paper/{}", answered["event"].as_str().unwrap_or_default());
+        self.page(ctx, "GET", &path, Value::Null, Value::Null).await.map(|(html, _)| html)
     }
 }
 
@@ -388,7 +394,12 @@ async fn scenario() {
     mixed["buyer_tax_id"] = json!("TL-555");
     let paid = t.sell(&cashier, mixed).await;
     let sid = uid(&paid);
-    let (html, _) = t.page(&cashier, "GET", &format!("/receipt/{sid}"), json!({"profile": counter.to_string()}), Value::Null).await.expect("the first receipt");
+    let session = uid(&open);
+    // first_receipt_once: an action of the cashier's own open session answers an Original event, once; its paper is a read.
+    let print = |key: String| Invocation::new("pos.pos_opening_entry.print_receipt", json!({"id": session, "params": {"sale": sid}})).key(key);
+    let first = t.k.invoke(&cashier, print(format!("print:{sid}"))).await.expect("first_receipt_once: printed");
+    assert_eq!(first.result["kind"], json!("Original"), "first_receipt_once: {first:?}");
+    let html = t.paper(&cashier, &first.result).await.expect("the first receipt");
     for must in [
         "TAX INVOICE",
         "Welcome to the corner shop",
@@ -405,32 +416,48 @@ async fn scenario() {
     }
     assert!(!html.contains("0000-0000") && !html.contains("0000 0000"), "never the card's code: {html}");
     assert!(!html.contains("COPY"), "the first one is not a copy");
-    let again = t.page(&cashier, "GET", &format!("/receipt/{sid}"), json!({"profile": counter.to_string()}), Value::Null).await;
+    let again = t.act(&cashier, "PosOpeningEntry", session, "print_receipt", json!({"sale": sid})).await;
     assert!(format!("{again:?}").contains("printed already"), "a second first receipt is a copy: {again:?}");
+    let repeat = t.k.invoke(&cashier, print(format!("print:{sid}"))).await.expect("first_receipt_once: the same key");
+    assert!(repeat.repeated && repeat.result["event"] == first.result["event"], "first_receipt_once: answered with the same event: {repeat:?}");
+    // paper_is_for_who_asked: the event's cashier and a manager have its page; another cashier does not even find it.
+    let other = t.user("other@shop.test", &["Cashier"]).await;
+    t.paper(&manager, &first.result).await.expect("paper_is_for_who_asked: a manager reads it");
+    let theirs = t.paper(&other, &first.result).await;
+    assert!(matches!(theirs, Err(Error::NotFound(_))), "paper_is_for_who_asked: another cashier: {theirs:?}");
     // The workspace's own wording: a copy of the template it edits.
     let mut mine = t.k.document_template(&a, "pos.receipt").await.expect("the template")["template"].clone();
     mine["languages"]["en"]["body"] = json!(mine["languages"]["en"]["body"].as_str().unwrap().replace("RECEIPT", "SALES SLIP"));
     t.k.save_document_template(&a, &serde_json::from_value(mine).unwrap()).await.expect("edit it");
     let plain = t.sell(&cashier, sale(widgets("1"), json!([pay(&cash, "110")]))).await;
-    let (slip, _) = t.page(&cashier, "GET", &format!("/receipt/{}", uid(&plain)), json!({"profile": counter.to_string()}), Value::Null).await.unwrap();
+    let printed = t.act(&cashier, "PosOpeningEntry", session, "print_receipt", json!({"sale": uid(&plain)})).await.expect("printed");
+    let slip = t.paper(&cashier, &printed).await.unwrap();
     assert!(slip.contains("SALES SLIP") && !slip.contains(">RECEIPT"), "a simplified receipt, in the workspace's words: {slip}");
     println!("item 2 ok");
 
     // ───────────── 3. reprints, gift receipts, receipts by message ─────────────
+    // Each is an action of the caller's own open session naming the sale; its paper is the register's read-only route.
     let at = |extra: Value| {
-        let mut v = json!({"profile": counter.to_string(), "sale": sid.to_string()});
+        let mut v = json!({"sale": sid.to_string()});
         v.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap());
         v
     };
+    let reprint = |who: &Ctx, sess: Uuid, extra: Value| {
+        let (t, who, params) = (&t, who.clone(), at(extra));
+        async move { t.act(&who, "PosOpeningEntry", sess, "reprint", params).await }
+    };
+    let copy_please = json!({"kind": "copy", "reason": "Customer asked for a copy"});
     // The business's own reasons for a copy (seeded): one must be given.
-    let e = t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "copy"}))).await.unwrap_err();
+    let e = reprint(&cashier, session, json!({"kind": "copy"})).await.unwrap_err();
     assert!(messages(&e).contains("choose one of the business's reasons"), "{e:?}");
-    let (copy, headers) =
-        t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "copy", "reason": "Customer asked for a copy"}))).await.expect("a copy");
+    // copy_counted_once: a copy is counted on the sale and numbered on its event, and its paper says so; a gift counts nothing.
+    let done = reprint(&cashier, session, copy_please.clone()).await.expect("a copy");
+    assert_eq!((done["kind"].clone(), done["copy_no"].clone()), (json!("Copy"), json!(1)), "copy_counted_once: {done}");
+    assert_eq!(t.k.get(&a, "PosInvoice", sid, false).await.unwrap()["reprints"], json!(1), "copy_counted_once: counted once");
+    let copy = t.paper(&cashier, &done).await.expect("its paper");
     assert!(copy.contains("COPY 1") && copy.contains("TAX INVOICE"), "marked as a copy: {copy}");
-    assert!(headers.iter().any(|(k, v)| k == "x-pos-copy" && v == "1"));
-    let (copy2, _) =
-        t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "copy", "reason": "Customer asked for a copy"}))).await.expect("another");
+    let done2 = reprint(&cashier, session, copy_please.clone()).await.expect("another");
+    let copy2 = t.paper(&cashier, &done2).await.unwrap();
     assert!(copy2.contains("COPY 2"), "counted: {copy2}");
     let sold = t.k.get(&a, "PosInvoice", sid, false).await.unwrap();
     assert_eq!(sold["reprints"], json!(2));
@@ -453,48 +480,99 @@ async fn scenario() {
     );
     assert!(events[0]["printed_at"].is_string(), "when: {:?}", events[0]);
     // A gift receipt has no prices, and is not a copy of the receipt.
-    let (gift_receipt, _) =
-        t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "gift", "reason": "Customer asked for a copy"}))).await.expect("gift");
+    let gift = reprint(&cashier, session, json!({"kind": "gift", "reason": "Customer asked for a copy"})).await.expect("gift");
+    assert_eq!((gift["kind"].clone(), gift["copy_no"].clone()), (json!("Gift"), Value::Null), "copy_counted_once: a gift is not numbered");
+    let gift_receipt = t.paper(&cashier, &gift).await.unwrap();
     assert!(
         gift_receipt.contains("GIFT RECEIPT") && gift_receipt.contains("widget") && !gift_receipt.contains("253") && !gift_receipt.contains("₹"),
         "no prices: {gift_receipt}"
     );
-    assert_eq!(t.k.get(&a, "PosInvoice", sid, false).await.unwrap()["reprints"], json!(2));
-    // Without the right to reprint a person needs another's approval, once.
+    assert_eq!(t.k.get(&a, "PosInvoice", sid, false).await.unwrap()["reprints"], json!(2), "copy_counted_once: a gift counts nothing");
+    // reprint_needs_the_right_or_an_approval: without the right to reprint a person needs another's approval, once.
     t.insert(&a, "PosRoleLimit", json!({"role": "Cashier", "discount_percent": "10", "reprint": false})).await;
-    let e = t.page(&cashier, "POST", "/reprint", Value::Null, at(json!({"kind": "copy", "reason": "Customer asked for a copy"}))).await.unwrap_err();
-    assert!(format!("{e:?}").contains("may not reprint"), "{e:?}");
+    let e = reprint(&cashier, session, copy_please.clone()).await.unwrap_err();
+    assert!(format!("{e:?}").contains("may not reprint"), "reprint_needs_the_right_or_an_approval: {e:?}");
     t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "4321"})).await.expect("a pin");
     let approved = t
         .act(
             &cashier,
             "PosOpeningEntry",
-            uid(&open),
+            session,
             "approve",
             json!({"approver": "manager@shop.test", "pin": "4321", "act": "Reprint", "reason": "Asked", "sale": sid.to_string()}),
         )
         .await
         .expect("approved");
-    let with = at(json!({"kind": "copy", "reason": "Customer asked for a copy", "approval": approved["approval"]}));
-    let (third, _) = t.page(&cashier, "POST", "/reprint", Value::Null, with.clone()).await.expect("with the approval");
-    assert!(third.contains("COPY 3"));
-    let e = t.page(&cashier, "POST", "/reprint", Value::Null, with).await.unwrap_err();
-    assert!(format!("{e:?}").contains("may not reprint"), "an approval is for one copy: {e:?}");
+    let with = json!({"kind": "copy", "reason": "Customer asked for a copy", "approval": approved["approval"]});
+    let third = reprint(&cashier, session, with.clone()).await.expect("with the approval");
+    assert!(t.paper(&cashier, &third).await.unwrap().contains("COPY 3"));
+    let e = reprint(&cashier, session, with).await.unwrap_err();
+    assert!(format!("{e:?}").contains("may not reprint"), "reprint_needs_the_right_or_an_approval: an approval is for one copy: {e:?}");
     let limit = t.find_one("PosRoleLimit", json!({"role": "Cashier"})).await;
     t.k.delete(&a, "PosRoleLimit", uid(&limit), None).await.unwrap();
-    // By message: to an address the buyer gives, for this receipt only; the address is not on the sale or its events.
-    let sent = t.site(&cashier, "POST", "/send", Value::Null, at(json!({"to": "buyer@example.test", "consent": "once"}))).await.expect("sent");
-    assert!(sent["sent"].as_array().is_some_and(|x| !x.is_empty()), "{sent}");
+    // colleague_with_the_right_reprints_anothers_sale: in their own open session, a colleague who may reprint gives a copy of
+    // another cashier's sale, as before.
+    let theirs_open = t.insert(&other, "PosOpeningEntry", json!({"pos_profile": counter.to_string()})).await;
+    let theirs_open = uid(&t.k.submit(&other, "PosOpeningEntry", uid(&theirs_open), None).await.expect("the colleague's session"));
+    let fourth = reprint(&other, theirs_open, copy_please.clone()).await.expect("colleague_with_the_right_reprints_anothers_sale");
+    assert_eq!(fourth["copy_no"], json!(4), "colleague_with_the_right_reprints_anothers_sale: {fourth}");
+    assert!(t.paper(&other, &fourth).await.expect("their own copy's paper").contains("COPY 4"));
+    // receipt_acts_only_in_your_own_open_session: another cashier does not find this session; a manager, who may write it, is
+    // refused; a closed session refuses in its own words.
+    let found = reprint(&other, session, copy_please.clone()).await;
+    assert!(matches!(found, Err(Error::NotFound(_))), "receipt_acts_only_in_your_own_open_session: another's session: {found:?}");
+    let managed = reprint(&manager, session, copy_please.clone()).await;
+    assert!(
+        matches!(managed, Err(Error::Forbidden(ref m)) if m.contains("your own session")),
+        "receipt_acts_only_in_your_own_open_session: a manager: {managed:?}"
+    );
+    let closing = t.insert(&other, "PosClosingEntry", json!({"pos_opening_entry": theirs_open.to_string()})).await;
+    t.k.submit(&manager, "PosClosingEntry", uid(&closing), None).await.expect("the colleague's session closes");
+    let closed = reprint(&other, theirs_open, copy_please.clone()).await;
+    assert!(
+        matches!(closed, Err(Error::Invalid(ref m)) if m == "This session is not open: receipts are given in an open session"),
+        "receipt_acts_only_in_your_own_open_session: a closed one: {closed:?}"
+    );
+    // send_receipt_keeps_the_address_out: by message, to an address the buyer gives, for this receipt only. The address is a
+    // secret parameter: it is in the message log, not on the sale, its events, the action's audit entry or its kept receipt.
+    let send = |to: &str, consent: &str| json!({"id": session, "params": {"sale": sid, "to": to, "consent": consent}});
+    let sent = t.k.invoke(&cashier, Invocation::new("pos.pos_opening_entry.send_receipt", send("buyer@example.test", "once")).key("send-1")).await;
+    let sent = sent.expect("sent");
+    assert!(sent.result["channels"].as_array().is_some_and(|x| !x.is_empty()), "{sent:?}");
     let log = t.k.message_log(&a, Some(("PosInvoice", sid)), None, 10).await.unwrap();
     assert!(log.iter().any(|m| m["template"] == "pos.receipt_sent"), "in the message log: {log:?}");
     let msg = t.find_one("PosReceiptEvent", json!({"kind": "Message"})).await;
     assert_eq!(msg["consent"], json!("This Receipt Only"));
     assert!(!format!("{msg:?}").contains("buyer@example"), "the address is in the log, not in the event: {msg:?}");
+    {
+        let mut tx = t.k.db.pool.begin().await.unwrap();
+        sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await.unwrap();
+        let audited: Vec<Value> = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and action = 'action:send_receipt'")
+            .bind(t.tenant)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        assert!(!audited.is_empty() && audited.iter().all(|d| !d.to_string().contains("buyer@example")), "send_receipt_keeps_the_address_out: {audited:?}");
+        let kept: Value = sqlx::query_scalar("select result from logic_effect where tenant_id = $1 and effect_key = 'send-1'")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert!(!kept.to_string().contains("buyer@example"), "send_receipt_keeps_the_address_out: the receipt keeps {kept}");
+    }
+    // paper_is_for_who_asked: a message has no paper.
+    let none = t.paper(&cashier, &json!({"event": msg["id"]})).await;
+    assert!(matches!(none, Err(Error::NotFound(_))), "paper_is_for_who_asked: a message: {none:?}");
     // A buyer who opts in, a customer of the shop's own: the address goes on their record.
     let email = t.k.get(&a, "Customer", acme_id(&acme), false).await.unwrap();
     assert!(email.get("email").is_none_or(|v| v.is_null()));
-    t.site(&cashier, "POST", "/send", Value::Null, at(json!({"to": "acme@buyer.test", "consent": "opt_in"}))).await.expect("sent");
+    t.act(&cashier, "PosOpeningEntry", session, "send_receipt", at(json!({"to": "acme@buyer.test", "consent": "opt_in"}))).await.expect("sent");
     assert_eq!(t.k.get(&a, "Customer", acme_id(&acme), false).await.unwrap()["email"], json!("acme@buyer.test"));
+    // site_no_longer_writes: the register's site has no route that writes.
+    for (method, path) in [("POST", "/exchange".to_string()), ("POST", "/reprint".into()), ("POST", "/send".into()), ("GET", format!("/receipt/{sid}"))] {
+        let gone = t.site(&cashier, method, &path, json!({"profile": counter.to_string()}), at(json!({"kind": "copy"}))).await;
+        assert!(matches!(gone, Err(Error::NotFound(_))), "site_no_longer_writes: {method} {path}: {gone:?}");
+    }
     println!("item 3 ok");
 
     // ───────────── 4. promotions offline in the till ─────────────

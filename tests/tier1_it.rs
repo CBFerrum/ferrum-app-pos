@@ -679,33 +679,67 @@ async fn scenario() {
     assert_eq!((dec(&back_in["rounded_total"]), back_in["items"][0]["warehouse"].clone()), (n("-74.80"), damaged["id"].clone()), "{back_in:?}");
     assert_eq!(back_in["invoiced_at_sale"], json!(true), "its own credit note at once");
     assert_eq!(balance("GIFT-CRED-0000-0003").await, n("74.80"), "refunded onto new store credit");
-    // An exchange, the customer paying the difference: one widget back (with its receipt), two out.
+    // An exchange, the customer paying the difference: one widget back (with its receipt), two out. As the till does it: each
+    // half a draft made under its own id, then the return's `exchange` action names the sale going out.
     let bought = t.sell(&cashier, sale(json!([line(widget, "1")]), json!([pay(&card, "110")]))).await;
-    let ex = |back: Value, out_qty: &str, pays: Value| {
-        json!({"back": {"pos_profile": counter.to_string(), "return_against": bought["id"], "items": back["items"], "payments": back["payments"]},
-               "out": {"pos_profile": counter.to_string(), "items": [line(widget, out_qty)], "payments": pays}})
-    };
-    let one_back = json!({"items": [line(widget, "-1")], "payments": []});
-    // As the till sends it: each half under the id the till gave it, which it keeps while the exchange is unchanged.
-    let mut first = ex(one_back, "2", json!([pay(&cash, "110")]));
-    (first["back"]["id"], first["out"]["id"]) = (json!(new_id()), json!(new_id()));
-    let done = t.site(&cashier, "POST", "/exchange", Value::Null, first.clone()).await.expect("exchanged");
+    let exchange =
+        |key: String, back: &Doc, out: &Doc| Invocation::new("pos.pos_invoice.exchange", json!({"id": back["id"], "params": {"out": out["id"]}})).key(key);
+    let draft = |v: Value| t.insert(&cashier, "PosInvoice", v);
+    let back =
+        draft(json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": bought["id"], "items": [line(widget, "-1")], "payments": []}))
+            .await;
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "2")], "payments": [pay(&cash, "50")]})).await;
+    // exchange_is_all_or_nothing: a tender too small for what is still due: refused, and both halves stay drafts, unlinked.
+    let short = t.k.invoke(&cashier, exchange("x-short".into(), &back, &out)).await;
+    assert!(short.as_ref().is_err_and(|e| messages(e).contains("insufficient payment")), "exchange_is_all_or_nothing: {short:?}");
+    for half in [&back, &out] {
+        let now = t.find_one("PosInvoice", json!({"id": half["id"]})).await;
+        assert!(now["status"] == json!("Draft") && now["exchange"].is_null(), "exchange_is_all_or_nothing: {now:?}");
+    }
+    t.k.update(&cashier, "PosInvoice", uid(&out), obj(json!({"payments": [pay(&cash, "110")]})), None).await.expect("the tender");
+    let key = format!("exchange:{}", uid(&back));
+    let done = t.k.invoke(&cashier, exchange(key.clone(), &back, &out)).await.expect("exchanged").result;
     assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), n("110"), Decimal::ZERO), "{done}");
-    assert_eq!((done["return"]["exchange"].clone(), done["sale"]["exchange"].clone()), (done["sale"]["id"].clone(), done["return"]["id"].clone()));
-    assert_eq!((dec(&done["return"]["rounded_total"]), dec(&done["sale"]["rounded_total"]), dec(&done["sale"]["total_taxes"])), (n("-110"), n("220"), n("20")));
-    // Its answer lost, the till sends the same exchange again: refused, and nothing is made twice.
-    assert!(t.site(&cashier, "POST", "/exchange", Value::Null, first).await.is_err(), "the same exchange again");
-    t.find_one("PosInvoice", json!({"exchange": done["sale"]["id"]})).await;
-    t.find_one("PosInvoice", json!({"exchange": done["return"]["id"]})).await;
+    let (ret, sold) = (t.find_one("PosInvoice", json!({"id": done["return"]})).await, t.find_one("PosInvoice", json!({"id": done["sale"]})).await);
+    assert_eq!(
+        (ret["exchange"].clone(), sold["exchange"].clone(), done["sale_number"].clone()),
+        (done["sale"].clone(), done["return"].clone(), sold["number"].clone())
+    );
+    assert_eq!((dec(&ret["rounded_total"]), dec(&sold["rounded_total"]), dec(&sold["total_taxes"])), (n("-110"), n("220"), n("20")));
+    // exchange_repeat_is_answered_not_made_again: its answer lost, the till sends the same exchange under the same key: it is
+    // answered (until 0.12.0 it was refused), and nothing is made twice.
+    let again = t.k.invoke(&cashier, exchange(key, &back, &out)).await.expect("exchange_repeat_is_answered_not_made_again");
+    assert!(again.repeated && again.result["sale"] == done["sale"], "exchange_repeat_is_answered_not_made_again: {again:?}");
+    t.find_one("PosInvoice", json!({"exchange": done["sale"]})).await;
+    t.find_one("PosInvoice", json!({"exchange": done["return"]})).await;
     // And refunded the difference as the sale was paid: two back, one out.
     let bought = t.sell(&cashier, sale(json!([line(widget, "2")]), json!([pay(&card, "220")]))).await;
     let r2 = new_id();
     let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Refund", Some("110"), &r2)).await.expect("approved");
-    let two_back = json!({"back": {"id": r2, "pos_profile": counter.to_string(), "return_against": bought["id"], "items": [line(widget, "-2")],
-                                   "payments": [pay(&card, "-110")], "approvals": [{"approval": ok["approval"]}]},
-                          "out": {"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []}});
-    let done = t.site(&cashier, "POST", "/exchange", Value::Null, two_back).await.expect("exchanged");
+    let back = draft(json!({"id": r2, "pos_profile": counter.to_string(), "is_return": true, "return_against": bought["id"], "items": [line(widget, "-2")],
+                            "payments": [pay(&card, "-110")], "approvals": [{"approval": ok["approval"]}]}))
+    .await;
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []})).await;
+    let done = t.act(&cashier, "PosInvoice", uid(&back), "exchange", json!({"out": out["id"]})).await.expect("exchanged");
     assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), Decimal::ZERO, n("110")), "{done}");
+    // exchange_refund_onto_a_new_card: two back without a receipt (85 each, the lowest in the window, taxed: 187), one out
+    // (110); the 77 left goes onto new store credit, which the card's saved row still opens after the action updates it.
+    let r3 = new_id();
+    let mut asked = Vec::new();
+    for (act, amount) in [("Return Without Receipt", None), ("Refund", Some("100"))] {
+        let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", act, amount, &r3)).await.expect("approved");
+        asked.push(json!({"approval": ok["approval"]}));
+    }
+    let mut onto_card = pay(&giftcard, "-77");
+    onto_card["stored_value_code"] = json!("GIFT-CRED-0000-0004");
+    let back = draft(json!({"id": r3, "pos_profile": counter.to_string(), "is_return": true, "without_receipt": true, "reason": faulty["id"],
+                            "items": [line(widget, "-2")], "payments": [onto_card], "approvals": asked}))
+    .await;
+    assert_eq!(dec(&back["rounded_total"]), n("-187"), "exchange_refund_onto_a_new_card: {back:?}");
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []})).await;
+    let done = t.act(&cashier, "PosInvoice", r3.parse().unwrap(), "exchange", json!({"out": out["id"]})).await.expect("exchange_refund_onto_a_new_card");
+    assert_eq!((dec(&done["carried"]), dec(&done["refund"])), (n("110"), n("77")), "exchange_refund_onto_a_new_card: {done}");
+    assert_eq!(balance("GIFT-CRED-0000-0004").await, n("77"), "exchange_refund_onto_a_new_card: the new card holds the refund");
 
     // A sale invoiced when the cashier asks (a customer's tax invoice now), not again at closing.
     let mut now = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
@@ -736,7 +770,12 @@ async fn scenario() {
     };
     assert!(twice.await.is_err(), "a session closes once");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
-    let opened = [("GIFT-0000-0000-0001", None, "issue"), ("GIFT-PIN0-0000-0002", Some("Pq-card-77"), "issue"), ("GIFT-CRED-0000-0003", None, "refund")];
+    let opened = [
+        ("GIFT-0000-0000-0001", None, "issue"),
+        ("GIFT-PIN0-0000-0002", Some("Pq-card-77"), "issue"),
+        ("GIFT-CRED-0000-0003", None, "refund"),
+        ("GIFT-CRED-0000-0004", None, "refund"),
+    ];
     for (code, pin, how) in opened {
         let sec = ferrum_app_erp::stored_value::secret(tenant, code, pin).unwrap();
         let (accounts, loads): (i64, i64) = sqlx::query_as(
