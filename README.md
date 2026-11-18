@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.5-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -39,10 +39,10 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 | | |
 |---|---|
-| **Version** | 0.9.5 |
+| **Version** | 0.10.0 |
 | **Kind** | Its own interface at `/pos/`: the till, full screen, installable and working offline, plus its own screens for returns, the shift and the manager's lists. Records open in the platform's records screens |
 | **What it adds** | 30 entities (15 you work with, 15 that sit inside them), 2 roles, 7 reports and an item lookup for the till, 5 document templates (receipt, gift receipt, receipt message, shift report, cash slip), 1 menu module, 1 SQL file of its own tables and indexes |
-| **Depends on** | Ferrum platform `>=0.3.8, <0.4` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
+| **Depends on** | Ferrum platform `>=0.4.0, <0.5` and [ERP](https://github.com/CBFerrum/ferrum-app-erp) `>=0.32.0` (installing Point of Sale installs ERP) |
 | **Works with** | ERP (items, prices, promotions, stored value, invoices, stock), [Retail](https://github.com/CBFerrum/ferrum-app-retail) (goods sold at a till can be returned at any store), Mail and messages (receipts by message) |
 | **Languages** | English, Arabic (right to left), Hindi |
 | **Tests** | 17 Rust tests, 155 interface tests |
@@ -367,6 +367,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 ### ✅ Recently shipped
 
+- [x] **0.10.0:** upkeep is one workspace's: needs Ferrum 0.4.0.
 - [x] **0.9.5:** builds against ERP 0.32.0, whose ledger takes the context to find a reversal's day.
 - [x] **0.9.4:** builds against ERP 0.31.0, whose ledger keeps a settled invoice's outstanding amount in step.
 - [x] **0.9.3:** a closing books each day's sales, tax and takings on that day; the register's dates and times are the workspace's, not UTC's.

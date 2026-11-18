@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+No database or interface change. Needs Ferrum 0.4.0 (apps' upkeep runs one workspace at a time, on whichever replica is free).
+
+- **Upkeep is one workspace's.** `maintenance(k, tenant)` expires that workspace's loyalty points and forgets that
+  workspace's old price snapshots (`pos_snapshot` rows of `tenant_id`); it no longer lists workspaces or deletes across them.
+
 ## 0.9.5
 
 Needs ERP 0.32.0 or later and the same platform as 0.9.4. No interface or database change.

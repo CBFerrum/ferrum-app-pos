@@ -188,7 +188,6 @@ async fn scenario() {
     }
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("partitions");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "shop".into(),
@@ -598,7 +597,7 @@ async fn scenario() {
     let ran_out = t.sell(&cashier, offline(widgets("2"), json!([pay(&cash, "300")]), "216", &version)).await;
     assert_eq!(diff_of(uid(&ran_out)).await.len(), 1);
     // The upkeep forgets what is old, and copes with a workspace that has none yet.
-    ferrum_app_pos::maintenance(&t.k).await.expect("upkeep");
+    ferrum_app_pos::maintenance(&t.k, t.tenant).await.expect("upkeep");
     println!("item 4 ok");
 
     // ───────────── 5. returns and exchanges ─────────────

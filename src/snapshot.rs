@@ -114,13 +114,14 @@ pub(crate) async fn kept(tx: &mut ferrum_kernel::Tx, tenant: Uuid, profile: Uuid
         .await?)
 }
 
-/// Forgets versions nobody was given for a long while (the upkeep).
-pub(crate) async fn forget(k: &Kernel) -> Result<()> {
-    let mut tx = k.db.system_tx().await?;
-    // The table is made when the server starts; an upkeep running first has nothing to forget.
-    if sqlx::query_scalar::<_, bool>("select to_regclass('pos_snapshot') is not null").fetch_one(&mut *tx).await? {
-        sqlx::query("delete from pos_snapshot where given_at < now() - make_interval(days => $1::int)").bind(KEEP_DAYS as i32).execute(&mut *tx).await?;
-    }
+/// Forgets a workspace's versions nobody was given for a long while (the upkeep).
+pub(crate) async fn forget(k: &Kernel, tenant: Uuid) -> Result<()> {
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    sqlx::query("delete from pos_snapshot where tenant_id = $1 and given_at < now() - make_interval(days => $2::int)")
+        .bind(tenant)
+        .bind(KEEP_DAYS as i32)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }
