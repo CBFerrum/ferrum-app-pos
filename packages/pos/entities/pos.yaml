@@ -715,3 +715,24 @@
         completion: "The price difference is Reviewed, with what was found, by whom and when"
         returns: {type: object, properties: {status: {type: string}}}
   list: {columns: [pos_invoice, till_total, replay_total, sale_total, status], sort: created_at desc}
+
+- name: PosHeldSale
+  label: Held Sale
+  kind: master
+  module: pos
+  company_scoped: true
+  title_field: customer_title
+  owner_fields: [cashier]
+  description: "A sale set aside at a till to finish later: its basket as the till keeps it. Made when a sale is put on hold, deleted when it is resumed or discarded. Not a sale: nothing is priced, sold or posted until it is resumed and paid."
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, required: true, label: Register, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_profile.company, read_only: true, in_filter: true}
+    - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true, label: Held By}
+    - {name: customer, type: link, to: Customer}
+    - {name: customer_title, type: data, max_length: 140, in_list: true, label: Customer Name}
+    - {name: held_at, type: datetime, required: true, in_list: true}
+    - {name: total, type: currency, in_list: true, description: "What it came to when it was held; it is priced again when resumed"}
+    - {name: line_count, type: int, read_only: true, in_list: true, label: Lines}
+    - {name: cart, type: json, description: "The basket as the till keeps it: lines, the buyer's registration, promotion codes, voided lines, approvals, the sale's discount. Never a card's code"}
+  indexes: [[pos_profile, cashier]]
+  list: {columns: [customer_title, cashier, pos_profile, held_at, total], sort: held_at desc}

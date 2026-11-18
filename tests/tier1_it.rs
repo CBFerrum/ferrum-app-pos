@@ -506,6 +506,90 @@ async fn scenario() {
     assert!(hash.starts_with("$argon2id$") && !leaked, "{hash}");
     drop(tx);
 
+    // ───────────── 3. held sales, kept by the server for the holder and the managers ─────────────
+    let counts = || {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            let (moves, sales): (i64, i64) =
+                sqlx::query_as("select (select count(*) from stock_move where tenant_id = $1), (select count(*) from e_pos_invoice where tenant_id = $1)")
+                    .bind(t.tenant)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+            (moves, sales)
+        }
+    };
+    let before = counts().await;
+    let held = |key: &str, cart: Value| {
+        json!({"id": key, "pos_profile": counter.to_string(), "cashier": "manager@shop.test", "customer_title": "Walk-in",
+               "held_at": "2026-11-19T10:00:00Z", "total": "220", "cart": cart})
+    };
+    let basket = json!({"key": "k", "customer": {"id": null}, "lines": [{"key": "w", "item": widget.to_string(), "item_name": "widget", "qty": 2}]});
+    // held_sale_is_its_holders: whatever `cashier` says, it is the caller's; a colleague neither reads nor deletes it; a manager does.
+    let h1 = new_id();
+    let h1u: Uuid = h1.parse().unwrap();
+    let kept = t.insert(&cashier, "PosHeldSale", held(&h1, basket.clone())).await;
+    assert_eq!((kept["cashier"].clone(), kept["line_count"].clone()), (json!("cashier@shop.test"), json!(1)), "held_sale_is_its_holders: {kept:?}");
+    assert!(t.k.get(&colleague, "PosHeldSale", h1u, false).await.is_err(), "held_sale_is_its_holders: a colleague does not read it");
+    assert!(t.k.delete(&colleague, "PosHeldSale", h1u, None).await.is_err(), "held_sale_is_its_holders: a colleague does not delete it");
+    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"pos_profile": counter.to_string()})).unwrap(), ..Default::default() };
+    assert!(t.k.list(&manager, "PosHeldSale", &q).await.unwrap().rows.iter().any(|r| r["id"] == json!(h1)), "held_sale_is_its_holders: a manager lists it");
+    t.k.delete(&manager, "PosHeldSale", h1u, None).await.expect("held_sale_is_its_holders: a manager discards it");
+    // held_sale_needs_the_register: someone a register does not admit holds nothing there.
+    let back_room = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Back Room", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(),
+                   "invoice_prefix": "BR", "payments": [{"mode_of_payment": cash["id"], "is_default": true}], "users": [{"user": "cashier@shop.test"}]}),
+        )
+        .await);
+    let mut there = held(&new_id(), basket.clone());
+    there["pos_profile"] = json!(back_room.to_string());
+    let e = t.k.insert(&colleague, "PosHeldSale", obj(there)).await.unwrap_err();
+    assert!(matches!(e, Error::Forbidden(ref m) if m.contains("not allowed at register")), "held_sale_needs_the_register: {e:?}");
+    // held_sale_never_keeps_a_card: a card's code or PIN on a line is refused.
+    for f in ["stored_value_code", "stored_value_pin"] {
+        let mut with_card = basket.clone();
+        with_card["lines"][0][f] = json!("GIFT-0000-0000-0009");
+        let e = t.k.insert(&cashier, "PosHeldSale", obj(held(&new_id(), with_card))).await.unwrap_err();
+        assert!(messages(&e).contains("a card's code is never held"), "held_sale_never_keeps_a_card: {f}: {e:?}");
+    }
+    // held_sale_cart_is_bounded: a basket is 1 to 500 lines, each an item and a quantity above zero, and not too large.
+    let many: Vec<Value> = (0..501).map(|i| json!({"key": format!("l{i}"), "item": widget.to_string(), "item_name": "widget", "qty": 1})).collect();
+    let wrong_qty = json!({"lines": [{"key": "w", "item": widget.to_string(), "qty": 0}]});
+    for (what, cart) in [
+        ("no lines", json!({"lines": []})),
+        ("501 lines", json!({"lines": many})),
+        ("a string", json!("lines")),
+        ("no quantity", wrong_qty),
+        ("none", Value::Null),
+    ] {
+        let e = t.k.insert(&cashier, "PosHeldSale", obj(held(&new_id(), cart))).await;
+        assert!(e.as_ref().is_err_and(|e| messages(e).contains("cart")), "held_sale_cart_is_bounded: {what}: {e:?}");
+    }
+    // held_sale_create_twice_is_one: the same create under its key is answered, and one row is kept.
+    let h2 = new_id();
+    let create = Invocation::new("pos.pos_held_sale.create", json!({"values": held(&h2, basket.clone())})).key(format!("held:{h2}"));
+    let first = t.k.invoke(&cashier, create.clone()).await.expect("held_sale_create_twice_is_one: held");
+    let again = t.k.invoke(&cashier, create).await.expect("held_sale_create_twice_is_one: held again");
+    assert!(!first.repeated && again.repeated, "held_sale_create_twice_is_one: {again:?}");
+    assert_eq!(t.k.list(&manager, "PosHeldSale", &q).await.unwrap().rows.iter().filter(|r| r["id"] == json!(h2)).count(), 1, "held_sale_create_twice_is_one");
+    // held_sale_resumed_once: resuming deletes it; the second till to resume it finds nothing.
+    let h2u: Uuid = h2.parse().unwrap();
+    t.k.delete(&cashier, "PosHeldSale", h2u, None).await.expect("held_sale_resumed_once: resumed");
+    let twice = t.k.delete(&cashier, "PosHeldSale", h2u, None).await;
+    assert!(matches!(twice, Err(Error::NotFound(_))), "held_sale_resumed_once: {twice:?}");
+    // held_sale_is_no_sale: nothing was sold and no stock moved.
+    assert_eq!(counts().await, before, "held_sale_is_no_sale");
+    // held_sale_is_erasable: an erasure by customer blanks its basket and the name on it.
+    let pos = ferrum_app_pos::packages().unwrap().into_iter().find(|p| p.name() == "pos").expect("the package");
+    assert!(
+        pos.manifest.personal_data.iter().any(|d| d.entity == "PosHeldSale" && d.match_field == "customer" && d.erase.iter().any(|f| f == "cart")),
+        "held_sale_is_erasable"
+    );
+
     // ───────────── 4. stored value at the till ─────────────
     let current = uid(&t.find_one("Account", json!({"account_name": "Current Liabilities", "company": cid.to_string()})).await);
     let owed = t

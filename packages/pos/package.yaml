@@ -36,7 +36,7 @@ modules:
     label: POS
     icon: store
     order: 45
-    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval,
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval, PosHeldSale,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
             report:pos_returns, report:pos_shift_report]
 
@@ -48,6 +48,7 @@ roles:
       - {entity: PosOpeningEntry, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
       - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
+      - {entity: PosHeldSale, read: true, create: true, delete: true, if_owner: true}
       - {entity: PosProfile, read: true}
       - {entity: ModeOfPayment, read: true}
       - {entity: ItemBarcode, read: true}
@@ -79,6 +80,7 @@ roles:
       - {entity: PosOpeningEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PosHeldSale, read: true, create: true, delete: true}
       - {entity: PosStockShortfall, read: true, write: true, export: true}
       - {entity: PosPriceDifference, read: true, write: true, export: true}
       - {entity: PosReceiptEvent, read: true, export: true}
@@ -137,6 +139,7 @@ personal_data:
   - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosInvoice, match: customer, erase: [buyer_name, buyer_tax_id]}
+  - {entity: PosHeldSale, match: customer, erase: [cart, customer_title]}
 
 # The till's papers and messages. A workspace edits them under Settings (a copy of a default, reset to it when it
 # wants); the till asks for the receipt through its session's actions (print_receipt, reprint) and prints the page of
