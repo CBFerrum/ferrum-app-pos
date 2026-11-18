@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.16.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.17.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -119,7 +119,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 ### 🛒 The till
 
 - **A scan box that is always ready.** A scanner types into it wherever you last tapped, and a code sells at once from the price book on the device. `3*8901234` sells three. Pack barcodes and an item's extra barcodes scan too.
-- **Search and tiles.** Search items by name or code, or tap a tile with its price.
+- **Search and tiles by category.** Search items by name or code, or tap a tile with its price. Above the tiles a tab for each item group (the register's Item Groups Shown, else the first level of the group tree) narrows the tiles and the search to that group and the groups under it, online and offline; scanning still sells any item. Tiles have no pictures yet: an item has no picture field.
 - **Change a line where it stands.** Quantity, a discount, a price where the register allows it, and a note that prints under the line. What a cashier may change follows their limits, shown before they type.
 - **A discount on the whole sale.** A percent typed under the lines, applied when the field is left or Enter is pressed. It counts with the lines' own discounts against the cashier's limits, so what goes past them asks another person's PIN first. It is kept with a sale on hold, priced on the device offline as the server prices it again, and printed on the receipt. An amount off the whole sale is not there yet.
 - **The keyboard does the rest.** F2 scan box, F4 pay, F9 hold, F10 sales on hold, F8 returns, F3 change the picked line, arrows to pick a line, + and − for its quantity, Delete to remove it.
@@ -336,7 +336,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Card terminal in the sale flow | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Camera barcode scan | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Customer-facing display | ❌ | ✅ | 🟡 | ✅ | ✅ |
-| Item grid with categories and pictures | 🟡⁸ | ✅ | ✅ | ✅ | ✅ |
+| Item grid with categories and pictures | 🟡¹² | ✅ | ✅ | ✅ | ✅ |
 | Size and colour variant picker | 🟡⁸ | ✅ | ✅ | ✅ | ✅ |
 | Quick staff switch with a PIN | 🟡⁹ | ✅ | ✅ | ✅ | ✅ |
 | Time clock | ❌ | ✅ | 🟡 | 🟡 | 🟡 |
@@ -344,7 +344,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists items as flat tiles and every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² By category, a tab per item group; no pictures yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -358,7 +358,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### 🚧 Where the leaders are still ahead
 
 - 🖨️ **Hardware.** Direct receipt printing, cash drawers, card terminals, weighing scales and customer displays.
-- 📱 **A friendlier counter.** Item grids with categories and pictures, a variant picker, a camera scan and quick staff switching.
+- 📱 **A friendlier counter.** Pictures on the item tiles, a variant picker, a camera scan and quick staff switching.
 - 💳 **Selling more.** Tip presets, an amount off the whole sale, special orders and layaway, and bundles.
 - 🕒 **Staff.** A time clock, and staff PIN sign-in.
 - 🧾 **Compliance.** Certified fiscal devices by country.
@@ -398,7 +398,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 
 **Cashier**
 - [ ] Staff PIN sign-in and quick user switch on a shared till.
-- [ ] An item grid with categories, pictures, colours and favourites.
+- [ ] Pictures, colours and favourites on the item tiles (tabs by category are there since 0.17.0).
 - [ ] A variant picker for size and colour, and modifiers.
 - [ ] Camera barcode scan on a phone or tablet.
 - [ ] Customers on the device for offline search, and customer groups priced offline.

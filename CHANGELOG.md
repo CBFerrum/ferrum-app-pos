@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **Item groups as tabs above the tiles.** "All" first, then the register's Item Groups Shown, or else the groups one
+  level under the top of the group tree (the top ones when it is flat); fewer than two, no tabs. A tab shows its group's
+  items and its sub-groups', cut to what the register shows, online (the item list asks for those groups) and offline
+  (the price book is searched inside them); typing searches inside the picked tab, and a scanned code sells any item. The
+  groups are read once with the ordinary list (a cashier may read them) and remembered with the register for offline; a
+  memory kept before this release has none until the till has been online once. Built on the kit's tabs: arrows (right
+  to left too), Home and End; a click or a touch hands the focus back to the scan box. A tab with no items says so by
+  name. Pictures on tiles wait for a picture field on items.
+
 ## 0.16.0
 
 The till only: no server, database or package change. The till's interface is rebuilt.

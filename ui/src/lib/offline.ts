@@ -186,10 +186,11 @@ export function scanBook(book: PriceBook, code: string): { item: BookItem; qty: 
   return hit.length === 1 ? { item: hit[0], qty: 1 } : null;
 }
 
-/** Items whose name or code holds every word of `q`, by name. */
-export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
+/** Items whose name or code holds every word of `q`, by name; with `groups`, only items of those groups. */
+export function searchBook(book: PriceBook, q: string, limit = 30, groups?: Set<string>): BookItem[] {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   return book.catalog
+    .filter((i) => !groups || (!!i.item_group && groups.has(i.item_group)))
     .filter((i) => words.every((w) => `${i.name} ${i.code}`.toLowerCase().includes(w)))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, limit);
@@ -277,6 +278,8 @@ export interface TillMemory {
   limits?: Limits;
   /** The business's reasons for voiding and returning (`PosReason`). */
   reasons?: Doc[];
+  /** The item groups (`id`, `group_name`, `parent_group`), for the tabs above the tiles offline. */
+  groups?: Doc[];
 }
 
 /** Where the till's memory is kept: like the book, under the lease. */

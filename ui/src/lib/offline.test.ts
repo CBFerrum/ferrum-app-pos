@@ -91,6 +91,14 @@ describe("selling offline", () => {
     expect(searchBook(book, "").map((i) => i.id)).toEqual(["i2", "i0", "i1"]);
   });
 
+  it("searches the book inside a group, and as before without one", () => {
+    const grouped: PriceBook = { ...book, catalog: book.catalog.map((i) => ({ ...i, item_group: { i0: "drinks", i1: "cakes" }[i.id] ?? null })) };
+    expect(searchBook(grouped, "", 30, new Set(["drinks"])).map((i) => i.id)).toEqual(["i0"]);
+    expect(searchBook(grouped, "", 30, new Set(["cakes", "drinks"])).map((i) => i.id)).toEqual(["i0", "i1"]);
+    expect(searchBook(grouped, "cake", 30, new Set(["drinks"]))).toEqual([]);
+    expect(searchBook(grouped, "", 30).map((i) => i.id)).toEqual(["i2", "i0", "i1"]);
+  });
+
   it("keeps the whole snapshot the server gave: its schema, version, signature, promotions and buyer rule", async () => {
     const answer = { ...fixture.request.snapshot, catalog: book.catalog, barcodes: book.barcodes, version: "ab12", signature: "sig", buyer: { named_above: "5000", walk_in: "walkin" }, truncated: false, built_at: "2026-11-13T09:00:00Z" };
     const got = await downloadSnapshot("p1", async () => answer);
@@ -150,6 +158,18 @@ describe("what the device keeps", () => {
     as(lease("k2", null));
     rememberTill(till);
     expect(recallTill("p1", "asha@shop.test")).toBeNull();
+  });
+
+  it("remembers the item groups for the tabs offline", async () => {
+    const { resetBootstrap } = await import("@ferrum/client");
+    const { fakeBootstrap } = await import("@ferrum/testing");
+    const { recallTill, rememberTill } = await import("./offline");
+    Object.defineProperty(globalThis, "localStorage", { value: memory(), configurable: true });
+    (globalThis as { __FERRUM_BOOTSTRAP__?: unknown }).__FERRUM_BOOTSTRAP__ = fakeBootstrap({ offline: lease("k1", "2999-01-01T00:00:00Z") } as never);
+    resetBootstrap();
+    const groups = [{ id: "d", group_name: "Drinks", parent_group: null }, { id: "tea", group_name: "Tea", parent_group: "d" }];
+    rememberTill({ ...till, groups });
+    expect(recallTill("p1", "asha@shop.test")?.groups).toEqual(groups);
   });
 });
 

@@ -14,7 +14,7 @@ import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr, isolate } from "@ferrum/client";
-import { Badge, Button, confirmDialog, Dialog, ListSkeleton, Menu, MenuItem, SaveStatus, Spinner, StatePanel, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
+import { Badge, Button, confirmDialog, Dialog, ListSkeleton, Menu, MenuItem, SaveStatus, Spinner, StatePanel, TabPanel, Tabs, toast, useDebounced, useShellTitle, placed } from "@ferrum/kit";
 import { Problem } from "./ui";
 import { LinkInput, type Doc } from "@ferrum/records";
 import { SetPinDialog, useAsk } from "./Approval";
@@ -30,6 +30,7 @@ import { tally } from "./lib/pay";
 import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale, parseScan, setQty, withMethodNames, type Buyer, type CartLine, type LineCards, type QueuedSale, type Tender, type Voided } from "./lib/pos";
 import { allows, asksFor, beyond, lineProblem, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
 import { dropHeld, HELD_PAGE, heldSales, holdSale } from "./lib/server";
+import { groupOf, tabsOf, under, type Group } from "./lib/groups";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -65,6 +66,14 @@ interface ListResponse {
 
 const list = (entity: string, query: Record<string, string | number | boolean | undefined>, signal?: AbortSignal) => till<ListResponse>(docPath(entity), { query, signal });
 
+/** The "All" tab (no group's id is this word). */
+const ALL = "all";
+
+/** The tiles and their empty panel: the picked tab's panel when there are tabs, as they were otherwise. */
+function GroupPanel({ tab, children }: { tab: string | null; children: ReactNode }) {
+  return tab === null ? <>{children}</> : <TabPanel id="pos-groups" tab={tab}>{children}</TabPanel>;
+}
+
 /** Said when a sale that had a card on it comes back: the code was never kept. */
 const cardAgain = () => tr("This sale had a card on a line. The code was not kept: scan or type it again before paying.");
 
@@ -80,12 +89,14 @@ export interface TillProps {
   limits?: Limits;
   /** The business's reasons for voiding and returning. */
   reasons?: Doc[];
+  /** The item groups, for the tabs above the tiles (none: no tabs). */
+  groups?: Doc[];
   /** The server could not be reached when this register was opened. */
   offline: boolean;
   onSwitch?: () => void;
 }
 
-export function Till({ profile, session, modes, book, manager, limits: known, reasons = [], offline, onSwitch }: TillProps) {
+export function Till({ profile, session, modes, book, manager, limits: known, reasons = [], groups: groupRows = [], offline, onSwitch }: TillProps) {
   useShellTitle(tr("Till"));
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -135,11 +146,18 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
 
   // ── items ──
   const groups = ((profile.item_groups as Doc[] | undefined) ?? []).map((g) => str(g.item_group)).filter(Boolean);
+  // The tabs above the tiles: the register's groups, or the tree's first level; fewer than two, none. The pick is the till's
+  // own, never kept; a tab shows its group's items and its sub-groups', within what the register shows.
+  const tree = groupRows.map(groupOf).filter((g): g is Group => g !== null);
+  const tabs = tabsOf(tree, groups);
+  const [tab, setTab] = useState<string | null>(null);
+  const picked = tabs.length > 1 ? (tabs.find((g) => g.id === tab) ?? null) : null;
+  const inTab = picked ? [...under(tree, picked.id)].filter((g) => !groups.length || groups.includes(g)) : null;
   const q = useDebounced(search.trim(), 200);
   const items = useQuery({
-    queryKey: ["pos", "items", profileId, q],
+    queryKey: ["pos", "items", profileId, q, picked?.id ?? null],
     queryFn: async ({ signal }) => {
-      const fromBook = (): ListResponse => ({ rows: searchBook(book!, q).map((i) => ({ id: i.id, item_code: i.code, item_name: i.name, barcode: i.barcode })) });
+      const fromBook = (): ListResponse => ({ rows: searchBook(book!, q, 30, inTab ? new Set(inTab) : undefined).map((i) => ({ id: i.id, item_code: i.code, item_name: i.name, barcode: i.barcode })) });
       if (book && serverDown()) return fromBook();
       try {
         return await list(
@@ -147,7 +165,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           {
             search: q || undefined,
             fields: "id,item_code,item_name,barcode,standard_rate",
-            filters: JSON.stringify({ disabled: false, ...(groups.length ? { item_group: ["in", groups] } : {}) }),
+            filters: JSON.stringify({ disabled: false, ...(inTab ? { item_group: ["in", inTab] } : groups.length ? { item_group: ["in", groups] } : {}) }),
             limit: 30,
             sort: "item_name asc",
           },
@@ -683,6 +701,19 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           </Button>
         </form>
         {outbox.queued.length > 0 && <OutboxBar queued={outbox.queued} mine={outbox.mine} signedOut={outbox.signedOut} onSend={() => void outbox.flush()} onRetry={outbox.retry} onDiscard={outbox.discard} />}
+        {tabs.length > 1 && (
+          <Tabs
+            id="pos-groups"
+            tabs={[{ id: ALL, label: tr("All") }, ...tabs.map((g) => ({ id: g.id, label: g.group_name }))]}
+            value={picked?.id ?? ALL}
+            onChange={(id) => {
+              setTab(id === ALL ? null : id);
+              // A click or a touch hands the focus back to the scan box; the arrow keys keep it on the tab (the kit moves it there).
+              focusScan();
+            }}
+          />
+        )}
+        <GroupPanel tab={tabs.length > 1 ? (picked?.id ?? ALL) : null}>
         {items.error ? (
           <Problem error={items.error} onRetry={() => void items.refetch()} />
         ) : (
@@ -702,8 +733,14 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
           </ul>
         )}
         {items.data && !items.data.rows.length && (
-          <StatePanel kind={q ? "no-matches" : "empty"} title={q ? tr("No items match “{q}”.", { q }) : tr("No items to show.")} onClear={q ? () => setSearch("") : undefined} clearLabel={tr("Clear the search")} />
+          <StatePanel
+            kind={q ? "no-matches" : "empty"}
+            title={q ? tr("No items match “{q}”.", { q }) : picked ? tr("No items in {group}.", { group: picked.group_name }) : tr("No items to show.")}
+            onClear={q ? () => setSearch("") : undefined}
+            clearLabel={tr("Clear the search")}
+          />
         )}
+        </GroupPanel>
       </section>
 
       <section className="pos-sale" aria-label={tr("Sale")}>

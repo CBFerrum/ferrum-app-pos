@@ -334,6 +334,19 @@ describe("the till", () => {
     expect(html).not.toContain("Scan or tap items to start a sale.");
   });
 
+  it("shows the item groups as tabs, All first and picked; one group, no tabs", () => {
+    const groups = [{ id: "g1", group_name: "Drinks", parent_group: null }, { id: "g2", group_name: "Bakery", parent_group: null }, { id: "g3", group_name: "Snacks", parent_group: null }];
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} groups={groups} />);
+    expect(html).toContain('role="tablist"');
+    expect(html.match(/role="tab"/g)).toHaveLength(4);
+    expect(html).toMatch(/id="pos-groups-tab-all" aria-selected="true"[^>]*>All</);
+    expect(html.indexOf(">Bakery<")).toBeLessThan(html.indexOf(">Drinks<"));
+    expect(html).toContain('role="tabpanel" id="pos-groups-panel-all" aria-labelledby="pos-groups-tab-all"');
+    const one = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} groups={groups.slice(0, 1)} />);
+    expect(one).not.toContain('role="tablist"');
+    expect(one).not.toContain('role="tabpanel"');
+  });
+
   it("says when it is selling offline", () => {
     expect(draw(<Till profile={profile} session={{ id: "s1", number: "" }} modes={modes} book={null} manager={false} offline />)).toContain("Offline");
   });
