@@ -107,9 +107,10 @@ export function momentIn(timeZone: string | null | undefined, at: Date = new Dat
 // The engine reads the whole snapshot each time: its JSON is made once per snapshot, not once per change of the cart.
 // ponytail: a book of tens of thousands of items parses on every pricing; a lookup kept in the engine would be the upgrade.
 const text = new WeakMap<object, string>();
-const TILL_ONLY = new Set(["catalog", "barcodes", "unpriced", "truncated", "buyer", "profile", "version", "signature", "built_at"]);
+const TILL_ONLY = new Set(["catalog", "templates", "barcodes", "unpriced", "truncated", "buyer", "profile", "version", "signature", "built_at"]);
 
-function snapshotText(snapshot: PricingSnapshot): string {
+/** What the engine is given of a snapshot: all of it but the till's own keys. */
+export function snapshotText(snapshot: PricingSnapshot): string {
   let s = text.get(snapshot);
   if (s === undefined) {
     s = JSON.stringify(Object.fromEntries(Object.entries(snapshot).filter(([k]) => !TILL_ONLY.has(k))));

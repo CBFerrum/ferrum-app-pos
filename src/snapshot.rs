@@ -4,8 +4,9 @@
 //! The snapshot is ERP's pricing snapshot (`ferrum_erp_pricing::Snapshot`, schema in ERP's
 //! `docs/pricing.md`: prices, units, pricing rules, taxes, rounding and the promotions that could
 //! apply over the next days) built from the register's own price book, plus what the till shows and
-//! holds a sale to: each item's code, name and barcode (`catalog`), pack barcodes, the items it cannot
-//! sell offline, and the buyer rule. Its `version` is a digest of that content; the server keeps every
+//! holds a sale to: each item's code, name, barcode, group and the template it is a variant of
+//! (`catalog`), the templates' names (`templates`), pack barcodes, the items it cannot sell offline,
+//! and the buyer rule. Its `version` is a digest of that content; the server keeps every
 //! version it gave out (`pos_snapshot`) so a sale made with one is priced again with exactly it,
 //! whatever changed since. The till prices with `ferrum_erp_pricing::price_basket` built for the
 //! browser (`priceBasket`), the server with the same crate: the totals agree or somebody looks at why.
@@ -36,11 +37,17 @@ pub async fn snapshot(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value>
     let register = k.get(ctx, "PosProfile", profile, false).await?;
     let company_id = id(&register, "company").ok_or_else(|| Error::field("company", "the register has no company"))?;
     let (mut after, mut pages, mut sale) = (None, 0, None::<Doc>);
-    let (mut catalog, mut barcodes, mut unpriced, mut lines): (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Doc>) = Default::default();
+    let (mut catalog, mut barcodes, mut unpriced, mut templates, mut lines): (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>, Vec<Doc>) = Default::default();
     loop {
         let (page, priced) = book_sale(k, ctx, profile, after).await?;
         for (into, key) in [(&mut catalog, "items"), (&mut barcodes, "barcodes"), (&mut unpriced, "unpriced")] {
             into.extend(page.get(key).and_then(Value::as_array).cloned().unwrap_or_default());
+        }
+        // A template whose variants fall on two pages is named once.
+        for t in page.get("templates").and_then(Value::as_array).into_iter().flatten() {
+            if !templates.contains(t) {
+                templates.push(t.clone());
+            }
         }
         if let Some(p) = priced {
             lines.extend(rows(&p, "items"));
@@ -71,6 +78,7 @@ pub async fn snapshot(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value>
         for (key, v) in [
             ("profile", json!(profile)),
             ("catalog", json!(catalog)),
+            ("templates", json!(templates)),
             ("barcodes", json!(barcodes)),
             ("unpriced", json!(unpriced)),
             ("truncated", json!(truncated)),

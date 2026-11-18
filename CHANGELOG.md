@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.18.0
+
+The snapshot gains `variant_of` and `templates`; no database change. The till's interface is rebuilt.
+
+- **A template's variants as one tile.** Where ERP's Stock Operations add-on is installed, the register's snapshot
+  says for each item the template it is a variant of (`variant_of`, read from the add-on's `stk_variant_of` as the
+  cashier; null without the add-on) and names those templates once (`templates`, `[]` without). The till draws one
+  tile per template with "{n} choices", in the first variant's place, and drops the template's own tile; tapping it
+  opens "Choose one of {name}", every variant of it in the price book by name (the template's name taken off the
+  front), with its code and its price. The first has the focus, Up and Down move, Enter chooses, Escape closes; the
+  chosen variant goes on the sale as any item, and the focus goes back to the scan box. The same online and offline,
+  since the grouping comes from the price book; a device without one, or a template with one variant listed, shows
+  plain tiles. Scanning a variant's barcode adds it as before. The pricing engine is not given the templates.
+  Choosing by size and colour buttons waits for ERP to offer each variant's attribute values.
+- Every register's snapshot version changes once, as its content does.
+
 ## 0.17.0
 
 The till only: no server, database or package change. The till's interface is rebuilt.

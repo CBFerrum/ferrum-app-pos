@@ -598,6 +598,10 @@ async fn scenario() {
     let key = pos_vault.derive(&k, ferrum_kernel::vault::Scope::Workspace(tenant), &purpose).await.expect("Point of Sale's key");
     assert_eq!(snap["signature"].as_str(), Some(hex::encode(key.bytes()).as_str()), "signed with Point of Sale's own key");
     assert_eq!(snap["promotions"].as_array().map(Vec::len), Some(2), "{snap}");
+    // snapshot_without_the_addon_has_no_variants: without ERP's Stock Operations no item is a variant (the key is there,
+    // null) and no template is named.
+    assert!(snap["catalog"].as_array().is_some_and(|c| !c.is_empty() && c.iter().all(|i| i.get("variant_of") == Some(&Value::Null))), "{}", snap["catalog"]);
+    assert_eq!(snap["templates"], json!([]), "{snap}");
     // ERP's pricing snapshot (schema 1): the price list's prices, the items with their units and rates, the tax rows;
     // and what the till shows.
     assert_eq!((snap["schema"].clone(), snap["channel"].clone()), (json!(1), json!("Point of Sale")), "{snap}");

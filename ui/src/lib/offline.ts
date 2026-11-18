@@ -99,6 +99,8 @@ export interface BookItem {
   name: string;
   barcode: string | null;
   item_group?: string | null;
+  /** The template it is a variant of (ERP's Stock Operations add-on), or null. */
+  variant_of?: string | null;
 }
 
 /** The register's snapshot as the till keeps it: ERP's pricing snapshot (schema 1: prices, units, rules, taxes, rounding, promotions, the days it
@@ -121,6 +123,8 @@ export interface PriceBook extends PricingSnapshot {
   unpriced?: { id: string; name: string; reason: string }[];
   /** The snapshot stopped at its page limit: the items past it are sold online only. */
   truncated?: boolean;
+  /** The templates the catalog's variants name, for one tile each (the till's only: the engine is not given them). */
+  templates?: { id: string; name: string }[];
 }
 
 /** The register's snapshot, in one request: the server pages its own price book and signs the whole. */

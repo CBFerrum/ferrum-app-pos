@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import fixtures from "./pricing.fixtures.json";
 import { resetBootstrap } from "@ferrum/client";
 import { fakeBootstrap } from "@ferrum/testing";
-import { loadPricing, momentIn, priceBasket, PRICING_SCHEMA, type Basket, type Priced, type PricingSnapshot } from "./pricing";
+import { loadPricing, momentIn, priceBasket, PRICING_SCHEMA, snapshotText, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
 // The real WebAssembly, ERP's pricing crate as built by its scripts/pricing-wasm.sh, priced against two of ERP's own fixture baskets
 // (pricing/tests/baskets.jsonl and priced.jsonl): what the crate gives natively, to the cent.
@@ -36,6 +36,13 @@ describe("ERP's pricing engine in the till", () => {
     const { schema: _gone, ...old } = request.snapshot;
     await expect(priceBasket({ ...request, snapshot: old as unknown as PricingSnapshot })).rejects.toThrow(/Offline pricing is not available/);
     await expect(priceBasket({ ...request, basket: { ...request.basket, at: "2030-01-01 10:00" } })).rejects.toThrow(/not on 2030-01-01/);
+  });
+
+  it("gives the engine none of the till's own keys: the catalog, the templates and the rest", () => {
+    const book = { ...cases[0].request.snapshot, catalog: [{ id: "i0" }], templates: [{ id: "tee", name: "Tee" }], barcodes: [], version: "v1" } as unknown as PricingSnapshot;
+    const given = JSON.parse(snapshotText(book)) as Record<string, unknown>;
+    expect(["catalog", "templates", "barcodes", "version"].filter((k) => k in given)).toEqual([]);
+    expect(given.schema).toBe(PRICING_SCHEMA);
   });
 
   it("gives the moment in the snapshot's time zone", () => {

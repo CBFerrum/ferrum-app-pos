@@ -31,6 +31,8 @@ import { addItem, adjustLine, carriesCard, invoiceBody, keptReceipt, offlineSale
 import { allows, asksFor, beyond, lineProblem, rightsOf, type Approval, type Ask, type Limits, type LineAsk } from "./lib/rights";
 import { dropHeld, HELD_PAGE, heldSales, holdSale } from "./lib/server";
 import { groupOf, tabsOf, under, type Group } from "./lib/groups";
+import { tilesOf } from "./lib/variants";
+import { VariantDialog } from "./Variants";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -77,7 +79,7 @@ function GroupPanel({ tab, children }: { tab: string | null; children: ReactNode
 /** Said when a sale that had a card on it comes back: the code was never kept. */
 const cardAgain = () => tr("This sale had a card on a line. The code was not kept: scan or type it again before paying.");
 
-type Dialog = null | "pay" | "held" | "returns" | "keys" | "pin";
+type Dialog = null | "pay" | "held" | "returns" | "keys" | "pin" | "variant";
 
 export interface TillProps {
   profile: Doc;
@@ -128,6 +130,8 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   const [editing, setEditing] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<Dialog>(null);
+  // The template whose variants the chooser lists (its tile's name with it).
+  const [choosing, setChoosing] = useState<{ template: string; name: string } | null>(null);
   const [receipt, setReceipt] = useState<Doc | null>(null);
   const scan = useRef<HTMLInputElement>(null);
   const outbox = useOutbox();
@@ -719,17 +723,37 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         ) : (
           <ul className="pos-tiles">
             {items.isLoading && Array.from({ length: 8 }, (_, i) => <li key={i} className="pos-tile skeleton" aria-hidden="true" />)}
-            {(items.data?.rows ?? []).map((r) => (
-              <li key={str(r.id)}>
-                <button type="button" className="pos-tile" onClick={() => add({ id: str(r.id), name: str(r.item_name) || str(r.item_code) })}>
-                  <span className="pos-tile-name">{str(r.item_name) || str(r.item_code)}</span>
-                  <span className="pos-tile-meta">
-                    <span className="faint">{isolate(str(r.item_code))}</span>
-                    {listed.has(str(r.id)) && <strong>{isolate(money(listed.get(str(r.id))?.list))}</strong>}
-                  </span>
-                </button>
-              </li>
-            ))}
+            {tilesOf(items.data?.rows ?? [], book).map((tile) =>
+              "item" in tile ? (
+                <li key={str(tile.item.id)}>
+                  <button type="button" className="pos-tile" onClick={() => add({ id: str(tile.item.id), name: str(tile.item.item_name) || str(tile.item.item_code) })}>
+                    <span className="pos-tile-name">{str(tile.item.item_name) || str(tile.item.item_code)}</span>
+                    <span className="pos-tile-meta">
+                      <span className="faint">{isolate(str(tile.item.item_code))}</span>
+                      {listed.has(str(tile.item.id)) && <strong>{isolate(money(listed.get(str(tile.item.id))?.list))}</strong>}
+                    </span>
+                  </button>
+                </li>
+              ) : (
+                // A template: its variants are chosen in a dialog; the template itself is never sold.
+                <li key={`template:${tile.group}`}>
+                  <button
+                    type="button"
+                    className="pos-tile"
+                    aria-haspopup="dialog"
+                    onClick={() => {
+                      setChoosing({ template: tile.group, name: tile.name });
+                      setDialog("variant");
+                    }}
+                  >
+                    <span className="pos-tile-name">{isolate(tile.name)}</span>
+                    <span className="pos-tile-meta">
+                      <span className="faint">{tr("{n} choices", { n: tile.count })}</span>
+                    </span>
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
         )}
         {items.data && !items.data.rows.length && (
@@ -841,6 +865,18 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       )}
       {dialog === "held" && <HeldDialog held={shownHeld} note={heldNote} onResume={(k) => void resume(k)} onDiscard={(k) => void discard(k)} onClose={() => setDialog(null)} />}
       {dialog === "keys" && <KeysDialog onClose={() => setDialog(null)} />}
+      {dialog === "variant" && choosing && book && (
+        <VariantDialog
+          book={book}
+          template={choosing.template}
+          name={choosing.name}
+          onChoose={(v) => {
+            add({ id: v.id, name: v.name || v.code });
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "returns" && (
         <Guard
           onError={() => {

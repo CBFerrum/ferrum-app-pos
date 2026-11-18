@@ -21,6 +21,8 @@ import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
 import DifferencesPage from "./Differences";
 import { Till } from "./Till";
+import { VariantDialog } from "./Variants";
+import type { PriceBook } from "./lib/offline";
 import { Currency } from "./fmt";
 import { ownerOf, saveCart } from "./lib/held";
 import { rightsOf, UNLIMITED } from "./lib/rights";
@@ -345,6 +347,21 @@ describe("the till", () => {
     const one = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} groups={groups.slice(0, 1)} />);
     expect(one).not.toContain('role="tablist"');
     expect(one).not.toContain('role="tabpanel"');
+  });
+
+  it("shows a template's variants as one tile, and its chooser lists them", () => {
+    const tee = (id: string, size: string) => ({ id, code: `TEE-${size}`, name: `Tee-${size}`, barcode: null, variant_of: "tee" });
+    const book = { schema: 1, profile: "p1", customer: null, items: [], barcodes: [], built_at: "2026-11-19T00:00:00Z", catalog: [tee("s", "S"), tee("m", "M"), { id: "mug", code: "MUG", name: "Mug", barcode: null, variant_of: null }], templates: [{ id: "tee", name: "Tee" }] } as unknown as PriceBook;
+    const rows = book.catalog.map((i) => ({ id: i.id, item_code: i.code, item_name: i.name }));
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={book} manager={false} offline={false} />, (qc) => qc.setQueryData(["pos", "items", "p1", "", null], { rows }));
+    expect(html).toContain("2 choices");
+    expect(html).toContain(">Tee<");
+    expect(html).not.toContain("TEE-S");
+    expect(html).toContain("MUG");
+    const chooser = draw(<VariantDialog book={book} template="tee" name="Tee" onChoose={() => {}} onClose={() => {}} />);
+    expect(chooser).toContain("Choose one of Tee");
+    expect([">M<", "TEE-M", ">S<", "TEE-S"].every((x) => chooser.includes(x))).toBe(true);
+    expect(chooser.indexOf("TEE-M")).toBeLessThan(chooser.indexOf("TEE-S"));
   });
 
   it("says when it is selling offline", () => {

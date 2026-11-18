@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.17.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.18.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -119,7 +119,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 ### 🛒 The till
 
 - **A scan box that is always ready.** A scanner types into it wherever you last tapped, and a code sells at once from the price book on the device. `3*8901234` sells three. Pack barcodes and an item's extra barcodes scan too.
-- **Search and tiles by category.** Search items by name or code, or tap a tile with its price. Above the tiles a tab for each item group (the register's Item Groups Shown, else the first level of the group tree) narrows the tiles and the search to that group and the groups under it, online and offline; scanning still sells any item. Tiles have no pictures yet: an item has no picture field.
+- **Search and tiles by category.** Search items by name or code, or tap a tile with its price. Above the tiles a tab for each item group (the register's Item Groups Shown, else the first level of the group tree) narrows the tiles and the search to that group and the groups under it, online and offline; scanning still sells any item. Where ERP's Stock Operations add-on is installed, a template's variants are one tile ("3 choices") that opens a chooser listing them by name, with code and price, online and offline. Tiles have no pictures yet: an item has no picture field.
 - **Change a line where it stands.** Quantity, a discount, a price where the register allows it, and a note that prints under the line. What a cashier may change follows their limits, shown before they type.
 - **A discount on the whole sale.** A percent typed under the lines, applied when the field is left or Enter is pressed. It counts with the lines' own discounts against the cashier's limits, so what goes past them asks another person's PIN first. It is kept with a sale on hold, priced on the device offline as the server prices it again, and printed on the receipt. An amount off the whole sale is not there yet.
 - **The keyboard does the rest.** F2 scan box, F4 pay, F9 hold, F10 sales on hold, F8 returns, F3 change the picked line, arrows to pick a line, + and − for its quantity, Delete to remove it.
@@ -150,7 +150,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 ### 📴 Working offline
 
 - **The till opens without a connection.** Its own worker keeps the till's page, the files it loads and the pricing engine, and answers from them only when the network cannot.
-- **A signed, versioned snapshot** of the register's price book (prices, taxes, promotions for the next 14 days, the buyer rule, items with their code, name, barcode and group) is kept on the device and fetched again when it is half an hour old.
+- **A signed, versioned snapshot** of the register's price book (prices, taxes, promotions for the next 14 days, the buyer rule, items with their code, name, barcode, group and the template each is a variant of, and the templates' names) is kept on the device and fetched again when it is half an hour old.
 - **Sales wait with who made them.** Each sale has its own id, so one sent twice (the answer was lost) is recorded once. A sale that cannot be kept (storage full) is said, not cleared.
 - **Offline sales are priced again on arrival** with the snapshot they named. If the till's total, the snapshot's and the recorded one are not all equal, a **Price Difference** is recorded for a manager. The sale stands as the buyer paid it.
 - **Sold beyond the stock.** The register decides: **Record and reconcile** (the customer paid and took the goods, so the sale is recorded and a **Stock Shortfall** per item waits for a manager to put right) or **Refuse**. A stored-value card taken offline up to a limit that the card no longer held is a shortfall too.
@@ -344,7 +344,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ ERP has variants; the till lists every variant as a plain item. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² By category, a tab per item group; no pictures yet.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ One tile per template, chosen by name, where ERP's Stock Operations add-on is installed; by size and colour waits for ERP. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² By category, a tab per item group; no pictures yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -358,7 +358,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### 🚧 Where the leaders are still ahead
 
 - 🖨️ **Hardware.** Direct receipt printing, cash drawers, card terminals, weighing scales and customer displays.
-- 📱 **A friendlier counter.** Pictures on the item tiles, a variant picker, a camera scan and quick staff switching.
+- 📱 **A friendlier counter.** Pictures on the item tiles, size and colour buttons for variants, a camera scan and quick staff switching.
 - 💳 **Selling more.** Tip presets, an amount off the whole sale, special orders and layaway, and bundles.
 - 🕒 **Staff.** A time clock, and staff PIN sign-in.
 - 🧾 **Compliance.** Certified fiscal devices by country.
@@ -399,7 +399,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 **Cashier**
 - [ ] Staff PIN sign-in and quick user switch on a shared till.
 - [ ] Pictures, colours and favourites on the item tiles (tabs by category are there since 0.17.0).
-- [ ] A variant picker for size and colour, and modifiers.
+- [ ] Choosing a variant by size and colour (one tile per template, chosen by name, since 0.18.0), and modifiers.
 - [ ] Camera barcode scan on a phone or tablet.
 - [ ] Customers on the device for offline search, and customer groups priced offline.
 - [ ] Arabic and Hindi for the newest sentences.
