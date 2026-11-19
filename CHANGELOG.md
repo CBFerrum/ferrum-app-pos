@@ -1,5 +1,128 @@
 # Changelog
 
+## 0.18.0
+
+The snapshot gains `variant_of` and `templates`; no database change. The till's interface is rebuilt.
+
+- **A template's variants as one tile.** Where ERP's Stock Operations add-on is installed, the register's snapshot
+  says for each item the template it is a variant of (`variant_of`, read from the add-on's `stk_variant_of` as the
+  cashier; null without the add-on) and names those templates once (`templates`, `[]` without). The till draws one
+  tile per template with "{n} choices", in the first variant's place, and drops the template's own tile; tapping it
+  opens "Choose one of {name}", every variant of it in the price book by name (the template's name taken off the
+  front), with its code and its price. The first has the focus, Up and Down move, Enter chooses, Escape closes; the
+  chosen variant goes on the sale as any item, and the focus goes back to the scan box. The same online and offline,
+  since the grouping comes from the price book; a device without one, or a template with one variant listed, shows
+  plain tiles. Scanning a variant's barcode adds it as before. The pricing engine is not given the templates.
+  Choosing by size and colour buttons waits for ERP to offer each variant's attribute values.
+- Every register's snapshot version changes once, as its content does.
+
+## 0.17.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **Item groups as tabs above the tiles.** "All" first, then the register's Item Groups Shown, or else the groups one
+  level under the top of the group tree (the top ones when it is flat); fewer than two, no tabs. A tab shows its group's
+  items and its sub-groups', cut to what the register shows, online (the item list asks for those groups) and offline
+  (the price book is searched inside them); typing searches inside the picked tab, and a scanned code sells any item. The
+  groups are read once with the ordinary list (a cashier may read them) and remembered with the register for offline; a
+  memory kept before this release has none until the till has been online once. Built on the kit's tabs: arrows (right
+  to left too), Home and End; a click or a touch hands the focus back to the scan box. A tab with no items says so by
+  name. Pictures on tiles wait for a picture field on items.
+
+## 0.16.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **Tips at the till.** At a register that names a Tips Account the pay window has a "Tip" field under "Total due"
+  (not on a return). A tip shows "To pay" with the total and the tip; cash, change, what is still due and the quick cash
+  amounts are worked out on both, while points and a card's stored value still pay the goods only. Paid with points,
+  on account or with stored value beyond the goods, it says "A tip is paid in cash or by card." and the sale cannot be
+  completed, as the server would refuse it. The sale is sent with `tip_amount`, online or from the outbox, and a queued
+  sale's `till_total` stays the goods' total. The receipt window and the device's own receipt show the tip.
+
+## 0.15.0
+
+Database: four new nullable fields (`PosProfile.tip_account`, `PosInvoice.tip_amount` and `tip_account`, `PosClosingEntry.tips`).
+An existing workspace names no Tips Account, so nothing changes until it sets one. Server and papers only; the till's tip
+entry follows.
+
+- **Tips.** A register that names a Tips Account takes a tip on a sale (`tip_amount`): settled with the sale's tenders
+  against the total plus the tip (change and write-off included), paid in money only ("a tip is paid in cash or by card"),
+  refused on a return and where the register names no account. The account is fixed on the sale when it is submitted.
+- **Owed, never income.** The tip is outside every total, so it is not taxed, earns no points and is not invoiced. The
+  closing debits the tenders as before and credits the tip to the account the sale fixed, settling the consolidated
+  invoice for what paid for the goods only; a cancelled closing takes it back with the rest; a voided sale books none.
+  `PosClosingEntry.tips` sums the shift's tips (blanked while a blind count is open).
+- **A return never refunds the tip.** What a sale can give back in money is what paid for the goods: the tip comes off
+  its money tenders (`logic::net_of_tip`), so points never come back as cash through a tip.
+- The receipt shows the tip under the total, and the shift report the shift's tips.
+
+## 0.14.0
+
+Database: one new entity, `PosHeldSale` (an existing workspace gets an empty table; each device sends its held sales on its
+first pass). Needs the same platform and ERP as 0.13.0. The till's interface is rebuilt.
+
+- **Held sales are kept by the server too.** A held sale is a record (`pos.pos_held_sale.create`, `.list`, `.delete`, the
+  entity's own operations): the cashier who held it sees it on their other tills, a POS Manager sees everyone's, and an
+  agent does the same. `cashier` is always the caller; the register must admit them; the basket is 1 to 500 lines of an
+  item and a quantity, at most 256 KB, and never holds a card's code or PIN. An erasure by customer blanks the basket and
+  the name on it.
+- **The device stays the first copy.** Holding saves on the device, then sends the record under `held:{key}`; offline it
+  waits and goes with the next pass (on opening, when the connection comes back, every 15 seconds). Resuming or
+  discarding one the register has deletes it there first, so only one till takes it: another till that already did is
+  said plainly. A delete whose answer is lost resumes from the device's copy and is sent again later. A sale another
+  person held comes back without their approvals.
+- The list says who held a sale, which the register does not have yet, and when only this device's are shown.
+
+## 0.13.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **A discount on the whole sale at the till.** "Discount on the sale (%)" under the lines, with the cashier's own limit as
+  its hint, applied when the field is left or Enter is pressed. It counts with the lines' discounts against the limits
+  as the server counts them; past them, another person's PIN approves it first (cancelled, the field goes back). The sale
+  is sent with `discount_percent` (only above zero), online or from the outbox, and the till prices it offline with the
+  same engine, so the server finds no difference when it prices the sale again. A held sale and a reloaded page keep it.
+- Three tests pin what the till relies on: a discount within the limit, one past it with an approval, and an offline sale
+  with one that the server prices the same.
+
+## 0.12.0
+
+No database change: `PosReceiptEvent.kind` takes `Original` too, four actions are added, metadata only. Needs the same
+platform and ERP as 0.11.0. The till's interface is rebuilt.
+
+- **Receipts are operations of the cashier's own open session.** `pos.pos_opening_entry.print_receipt` (the sale's first
+  receipt, once: an event of kind `Original` now says who printed it), `.reprint` (a copy, counted, or a gift receipt, by
+  someone who may reprint or with an approval for that sale in that session, used once) and `.send_receipt` (by message,
+  with the buyer's consent; the address is a secret parameter, so it stays out of the audit entry and the receipt). Each
+  answers its event; the page is `GET /api/app/pos/paper/{event}`, for the person who asked or someone who may read the
+  event. A colleague who may reprint still gives a copy of another cashier's sale, from their own session.
+- **An exchange is the action of the return's draft.** `pos.pos_invoice.exchange` takes the sale going out's draft, carries
+  what came back to it through the Exchange Clearing method and submits both, or neither. The same exchange sent again
+  under its key is answered with what was made; until now it was refused.
+- **The register's own routes only read.** The first receipt's `GET /receipt/{sale}`, `POST /reprint`, `POST /send` and
+  `POST /exchange` are gone; the snapshot's cache of the versions it gave out is the one thing the site still keeps.
+- The till prints a receipt from the event's page (a second press fetches the same page), sends with one key per address
+  and consent until it goes through, and makes an exchange in four steps that each repeat safely; a refused exchange
+  takes its two drafts back and says "That did not go through, and nothing was exchanged."
+
+## 0.11.0
+
+No database change: two actions and three contracts in the package, metadata only. Needs the same platform and ERP as
+0.10.0. The till's interface is rebuilt.
+
+- **Setting a PIN and approving by one are operations.** `pos.pos_profile.set_pin` (a register's action: the caller
+  sets their own PIN; read on the register is enough) and `pos.pos_opening_entry.approve` (an action of the cashier's
+  open session: another person's PIN approves one act on one sale) are in the catalog with contracts, go through the
+  gate and are audited, so an agent or an API client asks them exactly as the till does. The PIN is their secret
+  parameter: the platform keeps it out of the audit entry, the receipt and error texts. The register's own routes no
+  longer take either; the till calls the actions, with a new key for each press.
+- **An approval is asked in one's own session.** Another cashier does not find the session, and a manager, who may
+  write it, is refused; a closed session refuses it in its own words before any PIN is checked. A wrong PIN is still
+  counted whatever becomes of the action and leaves no approval and no receipt, so the same key may try again; the same
+  key with the same request is answered with the approval already made.
+- **`void`, `resolve` and `review` say what "done" means** and that they answer the record's new status.
+
 ## 0.10.0
 
 No database or interface change. Needs Ferrum 0.4.0 (apps' upkeep runs one workspace at a time, on whichever replica is free).
@@ -225,7 +348,7 @@ Arabic and Hindi for the new words (translated by the model, to be reviewed by n
 What a business varies at the till, server side (the till's screens follow in a later version; the till of 0.5.2 keeps working, and what it already sends is checked as before).
 
 - **Limits by role** (`PosRoleLimit`): the largest discount by percent and per sale in money, price changes, voiding a line and a sale, the largest refund, returns without a receipt, opening the drawer without a sale, reprints; per role, a register's own row before the row for every register, the most generous of a person's roles applying; a second row for the same role and register (or for every register) is refused when saved. A person none of whose roles has a row keeps the register's discount and price settings (a POS Manager, no limit), so nothing changes on upgrade. `GET /api/app/pos/limits?profile=` gives the till the same record to check before it asks.
-- **Approval by another person's PIN** (`POST /pin`, `POST /approve`): a manager, or anyone whose limits allow it, approves one act on the cashier's till without the cashier signing out. The PIN is kept only as an argon2id hash, five wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's audited parameters. The approval (`PosApproval`: who asked, who approved, what, how much, why, the approver's limits then) is for one sale or draft (`sale`: the id the till gives it; none only for opening the drawer) and one act, covers at most the amount approved (a sale changed beyond it needs a new one), is used once, and lapses after the register's Approval Lasts (Minutes) (5 by default) or when the cashier's session closes, which is what handing the till over is. Offline there is no approval: a short PIN cannot be checked on the device without giving it away, so an act beyond the cashier's own limits waits for the connection.
+- **Approval by another person's PIN** (since 0.11.0 the operations `set_pin` of a register and `approve` of a session): a manager, or anyone whose limits allow it, approves one act on the cashier's till without the cashier signing out. The PIN is kept only as an argon2id hash, five wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's audited parameters. The approval (`PosApproval`: who asked, who approved, what, how much, why, the approver's limits then) is for one sale or draft (`sale`: the id the till gives it; none only for opening the drawer) and one act, covers at most the amount approved (a sale changed beyond it needs a new one), is used once, and lapses after the register's Approval Lasts (Minutes) (5 by default) or when the cashier's session closes, which is what handing the till over is. Offline there is no approval: a short PIN cannot be checked on the device without giving it away, so an act beyond the cashier's own limits waits for the connection.
 - **Voids with reasons** (`PosReason`, seeded): lines taken off before payment are sent in `voided_lines` with a reason; a sale not yet closed is voided by the `void` action with a reason, by someone who may or with an approval, and keeps who and why.
 - **Stored value at the till**, through ERP 0.20's stored value: a gift card or store credit sold or topped up on a line (by its code), taken as a tender in whole or in part (by its code and PIN; `POST /balance` tells the balance, state and expiry first), refunded onto on a return. Such a sale is invoiced when it is submitted (`invoiced_at_sale`), so a card sold at ten is spendable at eleven; the closing only settles it. A card's part of a sale goes back only onto stored value; cash may go back as store credit. Codes are kept as their last four characters (and ERP's hash). Offline, a stored value payment method is refused unless it states an amount it may take offline (`offline_limit`); what the card no longer holds when the sale arrives is written off on the sale and recorded as a shortfall (`PosStockShortfall.amount_short`).
 - **Invoice now**: a sale marked `invoice_now` gets its own sales invoice at once and is not invoiced again at closing.

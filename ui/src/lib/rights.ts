@@ -148,7 +148,7 @@ export function beyond(l: Limits, lines: LineAsk[], header = 0): Beyond[] {
   return out;
 }
 
-/** Another person's approval of one act on this sale, as `POST /approve` answered. */
+/** Another person's approval of one act on this sale, as the session's `approve` action answered. */
 export interface Approval {
   id: string;
   act: Act;

@@ -6,14 +6,14 @@
 // a copy, one is chosen. Loaded when asked for: the till itself works without it.
 
 import { useRef, useState, type FormEvent } from "react";
-import { errorMessage, t as tr, isolate } from "@ferrum/client";
+import { errorMessage, newKey, t as tr, isolate } from "@ferrum/client";
 import { Alert, Button, Dialog, Field } from "@ferrum/kit";
 import type { Doc } from "@ferrum/records";
 import { useAsk } from "./Approval";
 import { str } from "./fmt";
 import { serverDown } from "./lib/offline";
 import { allows, type Ask, type Limits } from "./lib/rights";
-import { reprint, sendReceipt } from "./lib/server";
+import { paper, reprint, sendReceipt } from "./lib/server";
 import { printHtml } from "./print";
 
 export interface Note {
@@ -21,10 +21,10 @@ export interface Note {
   text: string;
 }
 
-/** Copies and gift receipts of a sale: asks the approval and the reason the register's rules want, then prints what the server renders. */
-export function useReprint(profile: Doc, limits: Limits, reasons: Doc[], offline: boolean) {
-  const profileId = str(profile.id);
-  const asker = useAsk(profileId, () => offline || serverDown());
+/** Copies and gift receipts of a sale: asks the approval (in the cashier's open `session`) and the reason the register's rules want, then
+ *  prints what the server renders. */
+export function useReprint(session: string, limits: Limits, reasons: Doc[], offline: boolean) {
+  const asker = useAsk(session, () => offline || serverDown());
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
   const sending = useRef(false);
@@ -37,7 +37,8 @@ export function useReprint(profile: Doc, limits: Limits, reasons: Doc[], offline
       setBusy(true);
       setNote(null);
       try {
-        printHtml(await reprint({ profile: profileId, sale, kind, ...(reason ? { reason } : {}), ...(approval ? { approval } : {}) }));
+        const done = await reprint(session, { sale, kind, ...(reason ? { reason } : {}), ...(approval ? { approval } : {}) });
+        printHtml(await paper(done.event));
         setNote({ tone: "success", text: kind === "gift" ? tr("Gift receipt printed.") : tr("Copy printed, marked as a copy.") });
       } catch (e) {
         setNote({ tone: "error", text: errorMessage(e) });
@@ -60,20 +61,25 @@ export function useReprint(profile: Doc, limits: Limits, reasons: Doc[], offline
 }
 
 /** The receipt to an address or a number, with the consent the buyer gave: for this receipt only, or kept for the ones after. */
-function SendDialog({ profile, sale, number, onClose }: { profile: string; sale: string; number: string; onClose: () => void }) {
+function SendDialog({ session, sale, number, onClose }: { session: string; sale: string; number: string; onClose: () => void }) {
   const [to, setTo] = useState("");
   const [consent, setConsent] = useState<"once" | "opt_in">("once");
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // One key for the same address and consent until it goes through: a press whose answer was lost does not send it twice.
+  const keyed = useRef<{ for: string; key: string } | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !to.trim() || sent) return;
     setBusy(true);
     setError(null);
+    const ask = { sale, to: to.trim(), consent };
+    const what = JSON.stringify(ask);
+    if (keyed.current?.for !== what) keyed.current = { for: what, key: newKey() };
     try {
-      const done = await sendReceipt({ profile, sale, to: to.trim(), consent });
-      setSent(done.sent.map((s) => s.channel ?? "").filter(Boolean));
+      const done = await sendReceipt(session, ask, keyed.current.key);
+      setSent(done.channels.filter(Boolean));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -126,8 +132,8 @@ function SendDialog({ profile, sale, number, onClose }: { profile: string; sale:
 }
 
 /** Copy, gift receipt and send, under a finished sale. */
-export default function ReceiptMore({ profile, sale, limits, reasons, offline }: { profile: Doc; sale: Doc; limits: Limits; reasons: Doc[]; offline: boolean }) {
-  const r = useReprint(profile, limits, reasons, offline);
+export default function ReceiptMore({ session, sale, limits, reasons, offline }: { session: string; sale: Doc; limits: Limits; reasons: Doc[]; offline: boolean }) {
+  const r = useReprint(session, limits, reasons, offline);
   const [sending, setSending] = useState(false);
   const id = str(sale.id);
   const number = str(sale.number);
@@ -147,7 +153,7 @@ export default function ReceiptMore({ profile, sale, limits, reasons, offline }:
       {offline && <p className="faint pos-hint">{tr("Copies, gift receipts and sending need a connection: the register counts and keeps them.")}</p>}
       {r.note && <Alert tone={r.note.tone}>{isolate(r.note.text)}</Alert>}
       {r.asker.node}
-      {sending && <SendDialog profile={str(profile.id)} sale={id} number={number} onClose={() => setSending(false)} />}
+      {sending && <SendDialog session={session} sale={id} number={number} onClose={() => setSending(false)} />}
     </>
   );
 }

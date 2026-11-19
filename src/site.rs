@@ -1,14 +1,15 @@
-//! The register's own endpoints (`/api/app/pos/...`, signed in): the snapshot a till prices with
-//! while offline (`snapshot`), PINs and approvals, stored value balances, exchanges, receipts, the
-//! cashier's limits, and the returns desk's lookups (`returns`).
+//! The register's own endpoints (`/api/app/pos/...`, signed in), all reads: the snapshot a till prices with
+//! while offline (`snapshot`, which keeps the version it gave out), stored value balances, the cashier's limits,
+//! the returns desk's lookups (`returns`) and the page of a receipt event (`paper`). What a till changes is an
+//! operation: `set_pin` of a register; `approve`, `print_receipt`, `reprint` and `send_receipt` of the cashier's
+//! session (limits.rs, receipt.rs); `exchange` of a return's draft (invoice.rs).
 
 use crate::returns;
 use async_trait::async_trait;
 use ferrum_domain::util::{id, rows, s};
 use ferrum_kernel::{Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, Site, SiteRequest, SiteResponse};
-use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 /// Items of the price book priced at a time; the snapshot pages through them with `after`.
@@ -23,23 +24,11 @@ impl Site for PosSite {
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
         match (req.method.as_str(), path.as_slice()) {
             ("GET", ["snapshot"]) => Ok(SiteResponse::json(200, &crate::snapshot::snapshot(k, ctx, &req).await?)),
-            ("POST", ["pin"]) => {
-                crate::limits::set_pin(k, ctx, &body_str(&req, "pin")?.unwrap_or_default()).await?;
-                Ok(SiteResponse::json(200, &json!({"ok": true})))
-            }
             ("POST", ["balance"]) => Ok(SiteResponse::json(200, &card_balance(k, ctx, &req).await?)),
-            ("POST", ["approve"]) => Ok(SiteResponse::json(200, &approve(k, ctx, &req).await?)),
-            ("POST", ["exchange"]) => {
-                let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
-                let half = |k: &str| v.get(k).and_then(Value::as_object).cloned().ok_or_else(|| Error::field(k.to_string(), "is required"));
-                Ok(SiteResponse::json(200, &crate::invoice::exchange(k, ctx, half("back")?, half("out")?).await?))
+            ("GET", ["paper", event]) => {
+                let event: Uuid = event.parse().map_err(|_| Error::NotFound("page".into()))?;
+                crate::receipt::paper(k, ctx, &req, event).await
             }
-            ("GET", ["receipt", sale]) => {
-                let sale: Uuid = sale.parse().map_err(|_| Error::NotFound("page".into()))?;
-                crate::receipt::first(k, ctx, &req, sale).await
-            }
-            ("POST", ["reprint"]) => crate::receipt::reprint(k, ctx, &req).await,
-            ("POST", ["send"]) => Ok(SiteResponse::json(200, &crate::receipt::send(k, ctx, &req).await?)),
             ("GET", ["limits"]) => Ok(SiteResponse::json(200, &limits(k, ctx, &req).await?)),
             ("GET", ["returns"]) => Ok(SiteResponse::json(200, &returns::search(k, ctx, &req).await?)),
             ("POST", ["returns", sale, "plan"]) => {
@@ -60,8 +49,9 @@ pub(crate) fn param<'a>(req: &'a SiteRequest, key: &str) -> Option<&'a str> {
 }
 
 /// One page of the register's price book for its snapshot (`after`: the last item of the page before): its items as the
-/// till shows them, their pack barcodes, the items it cannot sell offline and why (`unpriced`), `next` while items remain;
-/// and the sale of one of each of its items the register priced (none when no item of the page sells).
+/// till shows them (with the template each is a variant of, where ERP's Stock Operations add-on is installed), their pack
+/// barcodes, the items it cannot sell offline and why (`unpriced`), the templates its variants name (`templates`), `next`
+/// while items remain; and the sale of one of each of its items the register priced (none when no item of the page sells).
 pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Option<Uuid>) -> Result<(Value, Option<Doc>)> {
     // Reading the register is the right to its prices.
     let profile = k.get(ctx, "PosProfile", profile_id, false).await?;
@@ -73,7 +63,13 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     if let Some(a) = after {
         filters.push(Filter { field: "id".into(), op: Op::Gt, value: json!(a) });
     }
-    let fields = ["id", "item_code", "item_name", "barcode", "item_group"].map(String::from).to_vec();
+    let mut fields = ["id", "item_code", "item_name", "barcode", "item_group"].map(String::from).to_vec();
+    // ERP's Stock Operations add-on marks a variant on `Item` (`stk_variant_of`, its template): where the workspace has
+    // it, each item says its template, for the till's one tile per template. Read as the caller, like the rest.
+    let variants = ctx.schema.entity("Item").is_some_and(|e| e.field("stk_variant_of").is_some());
+    if variants {
+        fields.push("stk_variant_of".into());
+    }
     let query = ListQuery { filters, fields: Some(fields), sort: Some("id asc".into()), limit: Some(PAGE + 1), ..Default::default() };
     let mut items = k.list(ctx, "Item", &query).await?.rows;
     let more = items.len() > PAGE as usize;
@@ -108,7 +104,7 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     // priced again: each round drops at least one, so it ends.
     let priced = loop {
         if items.is_empty() {
-            return Ok((json!({"items": [], "barcodes": [], "unpriced": unpriced, "next": next}), None));
+            return Ok((json!({"items": [], "barcodes": [], "unpriced": unpriced, "templates": [], "next": next}), None));
         }
         let sale: Doc = json!({"pos_profile": profile_id, "items": items.iter().map(|i| json!({"item": i.get("id"), "qty": "1"})).collect::<Vec<_>>()})
             .as_object()
@@ -137,9 +133,30 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
         .filter_map(|r| {
             let item = id(r, "item")?;
             let own = items.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(&item.to_string()))?;
-            Some(json!({"id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"), "item_group": own.get("item_group")}))
+            Some(json!({"id": item, "code": own.get("item_code"), "name": own.get("item_name"), "barcode": own.get("barcode"), "item_group": own.get("item_group"),
+                        "variant_of": own.get("stk_variant_of")}))
         })
         .collect();
+    // The templates those variants name, read once as the caller and in one order (the version is a digest): one they may
+    // not read is left out, and its variants show under their own names.
+    let named: BTreeSet<&str> = shown.iter().filter_map(|i| i.get("variant_of").and_then(Value::as_str)).collect();
+    let templates: Vec<Value> = if named.is_empty() {
+        Vec::new()
+    } else {
+        let q = ListQuery {
+            filters: vec![Filter { field: "id".into(), op: Op::In, value: json!(named) }],
+            fields: Some(["id", "item_name", "item_code"].map(String::from).to_vec()),
+            sort: Some("id asc".into()),
+            limit: Some(PAGE),
+            ..Default::default()
+        };
+        k.list(ctx, "Item", &q)
+            .await?
+            .rows
+            .iter()
+            .map(|t| json!({"id": t.get("id"), "name": s(t, "item_name").filter(|n| !n.trim().is_empty()).or_else(|| s(t, "item_code"))}))
+            .collect()
+    };
     // Pack barcodes of these items (a case of six scans as six).
     let ids: Vec<Value> = items.iter().filter_map(|i| i.get("id").cloned()).collect();
     let packs = ListQuery {
@@ -150,7 +167,7 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     };
     // Pack barcodes are an extra: a person who may not read them still gets prices.
     let barcodes = k.list(ctx, "ItemBarcode", &packs).await.map(|p| p.rows).unwrap_or_default();
-    Ok((json!({"items": shown, "barcodes": barcodes, "unpriced": unpriced, "next": next}), Some(priced)))
+    Ok((json!({"items": shown, "barcodes": barcodes, "unpriced": unpriced, "templates": templates, "next": next}), Some(priced)))
 }
 
 /// `GET /limits?profile=`: what the signed-in person may do at the register on their own, for the
@@ -169,23 +186,6 @@ pub async fn limits(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
 fn body_str(req: &SiteRequest, key: &str) -> Result<Option<String>> {
     let v: Value = serde_json::from_slice(&req.body).map_err(|_| Error::invalid("send a JSON object"))?;
     Ok(v.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string))
-}
-
-/// `POST /approve` `{profile, approver, pin, action, amount?, reason, sale}`: another person's PIN
-/// approves one act on one sale (`sale`: the id the till gives it; none for opening the drawer)
-/// beyond the signed-in cashier's limits; `{approval}` for the sale or act to name.
-async fn approve(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
-    let need = |f: &str| -> Result<String> { body_str(req, f)?.ok_or_else(|| Error::field(f.to_string(), "is required")) };
-    let profile: Uuid = need("profile")?.parse().map_err(|_| Error::field("profile", "is a register's id"))?;
-    let act = crate::logic::Act::parse(&need("action")?).ok_or_else(|| Error::field("action", "is not something that is approved"))?;
-    let amount = match body_str(req, "amount")? {
-        Some(a) => Some(a.parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
-        None => None,
-    };
-    let (approver, pin, reason) = (need("approver")?, need("pin")?, need("reason")?);
-    let sale = body_str(req, "sale")?.map(|s| s.parse::<Uuid>().map_err(|_| Error::field("sale", "is the sale's id"))).transpose()?;
-    let ask = crate::limits::Ask { profile, approver: &approver, pin: &pin, act, amount, reason: &reason, sale };
-    crate::limits::approve(k, ctx, ask).await
 }
 
 /// `POST /balance` `{mode, code, pin?}`: what a card of a stored value payment method holds, its

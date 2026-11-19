@@ -81,6 +81,18 @@ pub fn net_of_change(change: Decimal, tenders: &mut [Tender]) {
     }
 }
 
+/// Takes a sale's tip out of its money tenders, the last first, so each shows what it paid for the goods: what a return may
+/// refund in money is what paid for the goods, never the tip (a sale part-paid in points would otherwise give points back
+/// as cash). Points, credit and stored value never paid a tip.
+pub fn net_of_tip(tip: Decimal, tenders: &mut [Tender]) {
+    let mut left = tip.max(Decimal::ZERO);
+    for t in tenders.iter_mut().rev().filter(|t| t.kind.is_money() && t.amount > Decimal::ZERO) {
+        let take = left.min(t.amount);
+        t.amount -= take;
+        left -= take;
+    }
+}
+
 /// What an original sale can still pay back, per class (positive amounts): what it was paid
 /// with, less what earlier returns refunded that way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -495,6 +507,36 @@ mod tests {
 
     fn way(mode: u8, kind: Kind, room: &str, usable: bool) -> Way<u8> {
         Way { mode, kind, room: n(room), usable }
+    }
+
+    fn amounts(tenders: &[Tender]) -> Vec<Decimal> {
+        tenders.iter().map(|t| t.amount).collect()
+    }
+
+    #[test]
+    fn net_of_tip_takes_from_the_last_money_tender() {
+        let mut paid = [Tender { kind: Kind::Cash, amount: n("60") }, Tender { kind: Kind::Bank, amount: n("50") }];
+        net_of_tip(n("10"), &mut paid);
+        assert_eq!(amounts(&paid), vec![n("60"), n("40")], "the card took the tip");
+        // A tip larger than the last tender spills to the one before.
+        let mut paid = [Tender { kind: Kind::Cash, amount: n("60") }, Tender { kind: Kind::Bank, amount: n("50") }];
+        net_of_tip(n("55"), &mut paid);
+        assert_eq!(amounts(&paid), vec![n("55"), n("0")]);
+        let mut none = [Tender { kind: Kind::Cash, amount: n("60") }];
+        net_of_tip(n("-5"), &mut none);
+        assert_eq!(amounts(&none), vec![n("60")], "no tip below zero");
+    }
+
+    #[test]
+    fn net_of_tip_leaves_points_credit_and_stored_value() {
+        let mut paid = [
+            Tender { kind: Kind::Loyalty, amount: n("30") },
+            Tender { kind: Kind::Credit, amount: n("20") },
+            Tender { kind: Kind::StoredValue, amount: n("10") },
+            Tender { kind: Kind::Cash, amount: n("5") },
+        ];
+        net_of_tip(n("10"), &mut paid);
+        assert_eq!(amounts(&paid), vec![n("30"), n("20"), n("10"), n("0")], "only money pays a tip");
     }
 
     #[test]

@@ -218,6 +218,25 @@ describe("what a sale carries beyond its lines", () => {
   const lines = [{ key: "gift", item: "i-card", item_name: "Gift card", qty: 1 }];
   const base = { id: "sale-1", profile: "p", session: "s", customer: "c", lines };
 
+  it("the sale carries its tip, and a queued sale's total leaves the tip out", () => {
+    expect(invoiceBody({ ...base, tenders: [], tip: "10" }).tip_amount).toBe("10");
+    for (const tip of [undefined, "", "0"]) expect("tip_amount" in invoiceBody({ ...base, tenders: [], tip })).toBe(false);
+    const queued = offlineSale(invoiceBody({ ...base, tenders: [], tip: "10" }), { total: 100 });
+    expect([queued.till_total, queued.tip_amount]).toEqual(["100", "10"]);
+  });
+
+  it("the device's receipt shows the tip under the total, escaped, and none without one", () => {
+    const sale = { number: "C1-9", posting_date: "2026-11-19", rounded_total: "100", total: "100", total_taxes: "0", items: [], payments: [] };
+    expect(fallbackReceiptHtml({ profile_name: "Counter" }, { ...sale, tip_amount: "10" })).toMatch(/<td>Tip<\/td><td class="r">10\.00<\/td>/);
+    expect(fallbackReceiptHtml({ profile_name: "Counter" }, sale)).not.toContain("<td>Tip</td>");
+    expect(fallbackReceiptHtml({ profile_name: "Counter" }, { ...sale, tip_amount: "<b>5</b>" })).not.toContain("<b>5</b>");
+  });
+
+  it("a whole-sale discount goes on the sale, and only when there is one", () => {
+    expect(invoiceBody({ ...base, tenders: [], discount: "5" }).discount_percent).toBe("5");
+    for (const discount of [undefined, "", "0", "0.00"]) expect("discount_percent" in invoiceBody({ ...base, tenders: [], discount })).toBe(false);
+  });
+
   it("names the approvals it uses, the lines taken off with why, and the invoice at once", () => {
     const body = invoiceBody({
       ...base,

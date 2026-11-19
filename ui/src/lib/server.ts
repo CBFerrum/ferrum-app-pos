@@ -2,17 +2,18 @@
 // server recorded (path, method, body, and what comes back). Every component goes through here, so
 // that these shapes are written once and pinned by `server.test.ts` with the recorded answers.
 
-import { docPath } from "@ferrum/client";
+import { docPath, errorMessage, newKey, t } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
-import { till } from "./offline";
+import { till, unreachable } from "./offline";
 import type { Act } from "./rights";
 import type { CardBalance } from "./stored";
 
-/** `POST /approve`: another person's PIN approves one act on one sale (`sale`: the id the till gives the sale
- *  and sends again as the sale's `id`). `amount` is a discount's percent or a refund in money; a void, and a
- *  discount counted in money on the whole sale, send none. */
+/** The `approve` action of the cashier's open session (`session`): another person's PIN approves one act on one sale
+ *  (`sale`: the id the till gives the sale and sends again as the sale's `id`). `amount` is a discount's percent or a
+ *  refund in money; a void, and a discount counted in money on the whole sale, send none. A new key for each press: a
+ *  resend of the same request is answered once, and an approval whose answer was lost lapses unused. */
 export interface ApproveAsk {
-  profile: string;
+  session: string;
   approver: string;
   pin: string;
   action: Act;
@@ -20,14 +21,33 @@ export interface ApproveAsk {
   reason: string;
   sale: string;
 }
-export const approve = (body: ApproveAsk) => till<{ action: string; approval: string; approver: string }>("/api/app/pos/approve", { method: "POST", body });
+export const approve = ({ session, action, ...rest }: ApproveAsk) =>
+  till<{ action: string; approval: string; approver: string }>(docPath("PosOpeningEntry", session, "actions", "approve"), { method: "POST", body: { ...rest, act: action }, idempotencyKey: newKey() });
 
-/** `POST /pin`: the signed-in person sets their own PIN (4 to 12 digits). */
-export const setPin = (pin: string) => till<{ ok: boolean }>("/api/app/pos/pin", { method: "POST", body: { pin } });
+/** The `set_pin` action of a register (`profile`): the signed-in person sets their own PIN (4 to 12 digits). */
+export const setPin = (profile: string, pin: string) =>
+  till<{ ok: boolean }>(docPath("PosProfile", profile, "actions", "set_pin"), { method: "POST", body: { pin }, idempotencyKey: newKey() });
 
 /** `POST /balance`: what a card of a Stored Value payment method (`mode`) holds. */
 export const cardBalance = (mode: string, code: string, pin?: string) =>
   till<CardBalance>("/api/app/pos/balance", { method: "POST", body: { mode, code, ...(pin ? { pin } : {}) } });
+
+/** A held sale's record at the register (`pos.pos_held_sale.create`), under `held:{key}`: sent again it is answered; made
+ *  meanwhile under another key, it is refused as there already (409). */
+export const holdSale = (body: Doc) => till<Doc>(docPath("PosHeldSale"), { method: "POST", body, idempotencyKey: `held:${String(body.id)}` });
+
+/** The most held sales a register's list is read with: an answer with fewer is the whole list. */
+export const HELD_PAGE = 200;
+
+/** The register's held sales the person may see (their own; a manager, everyone's), newest first. */
+export const heldSales = (profile: string, signal?: AbortSignal) =>
+  till<{ rows: Doc[] }>(docPath("PosHeldSale"), {
+    query: { filters: JSON.stringify({ pos_profile: profile }), fields: "id,cashier,customer,customer_title,held_at,total,cart", limit: HELD_PAGE, sort: "held_at desc" },
+    signal,
+  });
+
+/** A held sale resumed or discarded (`pos.pos_held_sale.delete`); a second delete is "not found". */
+export const dropHeld = (key: string) => till<unknown>(docPath("PosHeldSale", key), { method: "DELETE" });
 
 /** The kind's `prove` for an issue with no code: the server makes one and answers it once,
  *  `{proof, code, expires_in_minutes}` (the proof is not used: the card is sold, or loaded, by its code on the sale). */
@@ -39,48 +59,77 @@ export const madeCode = (kind: string) =>
 export const voidSale = (sale: string, reason: string | undefined, approval?: string) =>
   till<{ status: string }>(docPath("PosInvoice", sale, "actions", "void"), { method: "POST", body: { reason, ...(approval ? { approval } : {}) } });
 
-/** `POST /exchange`: a return (`back`, negative quantities) and a sale (`out`) in one transaction. Answers
- *  both as submitted invoices, linked by `exchange`, and the split as text: what the return carries to the
- *  sale, what the customer still pays, what goes back. Both halves carry the ids the till chose, kept while it
- *  sends the same exchange again, so it is never made twice. */
+/** An exchange: a return (`back`, negative quantities, with its refunds as `payments`) and a sale (`out`, with its tender) at once,
+ *  each half under the id the till gave it. Four steps, each safe to repeat with the same ids: the return's draft and the sale's draft
+ *  are made (`pos.pos_invoice.create`, keyed by their ids), the return's `exchange` action submits both and links them, and the sale is
+ *  read back for the receipt. Lost on the way: the error is thrown as it is, the caller keeps the ids and presses again. Refused: both
+ *  drafts are deleted (as far as they can be), the refusal is said, and the caller makes new ids for the next try. */
 export interface ExchangeAnswer {
   carried: string;
   due: string;
   refund: string;
-  return: Doc;
+  /** The return's id. */
+  return: string;
   sale: Doc;
 }
-export const exchange = (back: Doc, out: Doc) => till<ExchangeAnswer>("/api/app/pos/exchange", { method: "POST", body: { back, out } });
+export async function exchange(back: Doc, out: Doc): Promise<ExchangeAnswer> {
+  const [b, o] = [String(back.id), String(out.id)];
+  let done: { return: string; sale: string; carried: string; due: string; refund: string };
+  try {
+    await till<Doc>(docPath("PosInvoice"), { method: "POST", body: { ...back, is_return: true }, idempotencyKey: b });
+    await till<Doc>(docPath("PosInvoice"), { method: "POST", body: out, idempotencyKey: o });
+    done = await till(docPath("PosInvoice", b, "actions", "exchange"), { method: "POST", body: { out: o }, idempotencyKey: `exchange:${b}` });
+  } catch (e) {
+    if (unreachable(e)) throw e;
+    for (const id of [o, b]) await till(docPath("PosInvoice", id), { method: "DELETE" }).catch(() => undefined);
+    throw new Error(`${t("That did not go through, and nothing was exchanged.")} ${errorMessage(e)}`);
+  }
+  const sale = await till<Doc>(docPath("PosInvoice", done.sale));
+  return { carried: done.carried, due: done.due, refund: done.refund, return: done.return, sale };
+}
 
 // ── what 0.7.0 added: the receipt's papers, the refund plan, the snapshot, the shift's papers, price differences ──
 
 const PAPER = "text/html";
 
-/** `GET /receipt/{sale}?profile=`: the sale's first receipt as the server's template (`pos.receipt`) renders it, a page to print.
- *  Given once: the server marks it printed under the sale's lock, and a second ask is refused ("ask for a copy"). */
-export const firstReceipt = (profile: string, sale: string) => till<string>(`/api/app/pos/receipt/${encodeURIComponent(sale)}`, { query: { profile }, accept: PAPER });
+/** What a receipt action answers: the event that keeps who asked, when and why, and whose page `paper` gives. */
+export interface ReceiptEvent {
+  event: string;
+  kind: string;
+  copy_no?: number | null;
+}
 
-/** `POST /reprint`: a copy (marked COPY n, counted, kept with who, when, why and by whose approval) or a gift receipt (no prices),
- *  as a page to print. `reason` is one of the business's reprint reasons (its id or its words) when it has some; `approval` another
- *  person's, for someone whose limits do not allow reprints (it covers one copy). */
+/** The `print_receipt` action of the cashier's open session: the sale's first receipt, once (an event of kind `Original`). The key is the
+ *  sale's own, so a press whose answer was lost is answered with the same event; a second ask is refused ("ask for a copy"). */
+export const printReceipt = (session: string, sale: string) =>
+  till<ReceiptEvent>(docPath("PosOpeningEntry", session, "actions", "print_receipt"), { method: "POST", body: { sale }, idempotencyKey: `print:${sale}` });
+
+/** `GET /paper/{event}`: the page of a receipt event (the first receipt, a copy marked COPY n, a gift receipt) as the server's templates
+ *  render it, for the person who asked for it or someone who may read the event. */
+export const paper = (event: string) => till<string>(`/api/app/pos/paper/${encodeURIComponent(event)}`, { accept: PAPER });
+
+/** The `reprint` action of the cashier's open session: a copy (counted, kept with who, when, why and by whose approval) or a gift receipt
+ *  (no prices). `reason` is one of the business's reprint reasons (its id or its words) when it has some; `approval` another person's, for
+ *  someone whose limits do not allow reprints (it covers one copy). A new key for each press. */
 export interface ReprintAsk {
-  profile: string;
   sale: string;
   kind: "copy" | "gift";
   reason?: string;
   approval?: string;
 }
-export const reprint = (ask: ReprintAsk) => till<string>("/api/app/pos/reprint", { method: "POST", body: ask, accept: PAPER });
+export const reprint = (session: string, ask: ReprintAsk) =>
+  till<ReceiptEvent>(docPath("PosOpeningEntry", session, "actions", "reprint"), { method: "POST", body: ask, idempotencyKey: newKey() });
 
-/** `POST /send`: the receipt by message to an address or number, with the buyer's consent: for this receipt only, or kept for more.
- *  Answers the event and what the channels sent (the receipt attached when the workspace keeps files). */
+/** The `send_receipt` action of the cashier's open session: the receipt by message to an address or number, with the buyer's consent: for
+ *  this receipt only, or kept for more. `key` is the same for the same sale, address and consent until it goes through, so a press whose
+ *  answer was lost does not send twice. Answers the event, the channels it went by and whether the receipt went with it as a file. */
 export interface SendAsk {
-  profile: string;
   sale: string;
   to: string;
   consent: "once" | "opt_in";
 }
-export const sendReceipt = (ask: SendAsk) => till<{ event: string; sent: { channel?: string }[]; receipt: string | null }>("/api/app/pos/send", { method: "POST", body: ask });
+export const sendReceipt = (session: string, ask: SendAsk, key: string) =>
+  till<{ event: string; channels: string[]; attached: boolean }>(docPath("PosOpeningEntry", session, "actions", "send_receipt"), { method: "POST", body: ask, idempotencyKey: key });
 
 /** `POST /returns/{sale}/plan`: what a return of those lines (the sale's line ids, a positive quantity, a condition) is worth and how the
  *  register proposes to refund it: a proposal, the return is still checked whatever is sent. With `out` (the goods going out, as sale lines) it

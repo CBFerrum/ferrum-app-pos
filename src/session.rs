@@ -91,6 +91,18 @@ impl DocHook for OpeningHook {
         v.insert("open_key".into(), Value::Null);
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PosOpeningEntry", id(doc, "id").unwrap_or_default(), v).await
     }
+
+    /// What a cashier does at the till besides selling, in their own open session: another person's PIN approves one act
+    /// (limits.rs); a sale's first receipt, a copy or a gift receipt, the receipt by message (receipt.rs).
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        match name {
+            "approve" => crate::limits::approve(hc, doc, params).await.map(Some),
+            "print_receipt" => crate::receipt::print(hc, doc, params).await.map(Some),
+            "reprint" => crate::receipt::reprint(hc, doc, params).await.map(Some),
+            "send_receipt" => crate::receipt::send(hc, doc, params).await.map(Some),
+            _ => Ok(None),
+        }
+    }
 }
 
 pub struct CashMovementHook;

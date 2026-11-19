@@ -99,6 +99,8 @@ export interface BookItem {
   name: string;
   barcode: string | null;
   item_group?: string | null;
+  /** The template it is a variant of (ERP's Stock Operations add-on), or null. */
+  variant_of?: string | null;
 }
 
 /** The register's snapshot as the till keeps it: ERP's pricing snapshot (schema 1: prices, units, rules, taxes, rounding, promotions, the days it
@@ -121,6 +123,8 @@ export interface PriceBook extends PricingSnapshot {
   unpriced?: { id: string; name: string; reason: string }[];
   /** The snapshot stopped at its page limit: the items past it are sold online only. */
   truncated?: boolean;
+  /** The templates the catalog's variants name, for one tile each (the till's only: the engine is not given them). */
+  templates?: { id: string; name: string }[];
 }
 
 /** The register's snapshot, in one request: the server pages its own price book and signs the whole. */
@@ -186,10 +190,11 @@ export function scanBook(book: PriceBook, code: string): { item: BookItem; qty: 
   return hit.length === 1 ? { item: hit[0], qty: 1 } : null;
 }
 
-/** Items whose name or code holds every word of `q`, by name. */
-export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
+/** Items whose name or code holds every word of `q`, by name; with `groups`, only items of those groups. */
+export function searchBook(book: PriceBook, q: string, limit = 30, groups?: Set<string>): BookItem[] {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   return book.catalog
+    .filter((i) => !groups || (!!i.item_group && groups.has(i.item_group)))
     .filter((i) => words.every((w) => `${i.name} ${i.code}`.toLowerCase().includes(w)))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, limit);
@@ -202,7 +207,7 @@ export function searchBook(book: PriceBook, q: string, limit = 30): BookItem[] {
 export async function priceOffline(
   book: PriceBook,
   lines: { key: string; item: string; item_name: string; qty: number; discount?: string; price?: string }[],
-  o: { customer?: string | null; at?: Date } = {},
+  o: { customer?: string | null; at?: Date; discount?: string | null } = {},
 ): Promise<Doc> {
   if (book.schema !== PRICING_SCHEMA) throw new Error(notAvailable());
   const held = new Set(book.items.map((i) => i.id));
@@ -216,6 +221,8 @@ export async function priceOffline(
       at: momentIn(book.time_zone, o.at),
       // The walk-in customer is the snapshot's own; another is named, and their group is the server's to know.
       customer: o.customer && o.customer !== book.customer ? o.customer : null,
+      // The discount on the whole sale, as the server prices it again (the engine takes none as no discount).
+      ...(o.discount ? { discount_percent: o.discount } : {}),
     },
   });
   const names = new Map(book.catalog.map((i) => [i.id, i.name || i.code] as const));
@@ -275,6 +282,8 @@ export interface TillMemory {
   limits?: Limits;
   /** The business's reasons for voiding and returning (`PosReason`). */
   reasons?: Doc[];
+  /** The item groups (`id`, `group_name`, `parent_group`), for the tabs above the tiles offline. */
+  groups?: Doc[];
 }
 
 /** Where the till's memory is kept: like the book, under the lease. */

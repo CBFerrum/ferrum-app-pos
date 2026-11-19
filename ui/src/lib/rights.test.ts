@@ -41,6 +41,14 @@ describe("what a sale asks beyond the limits (logic.rs beyond)", () => {
   });
 });
 
+describe("the sale's discount counts with the line's", () => {
+  it("names the line and the figure when the two together pass the limit, and nothing within it", () => {
+    expect(beyond(cashier, [line(100, 0)], 10)).toEqual([]);
+    const past = beyond(cashier, [line(100, 0, undefined, 5)], 6);
+    expect(past.map((b) => [b.line, b.act, b.figure])).toEqual([[0, "Discount", 10.7]]);
+  });
+});
+
 describe("what a person may do (logic.rs allows)", () => {
   it("checks a refund against the cap, inclusive, and no cap against nothing", () => {
     expect(allows(UNLIMITED, "Refund", 1_000_000)).toBe(true);

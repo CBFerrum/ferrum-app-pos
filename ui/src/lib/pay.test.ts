@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally } from "./pay";
+import { leftOnCard, perTender, pointsAvailable, pointsFor, pointsValue, round, stillDue, tally, tipProblem } from "./pay";
 
 const cash = (amount: number) => ({ kind: "Cash", amount });
 const card = (amount: number) => ({ kind: "Bank", amount });
@@ -54,6 +54,16 @@ describe("taking payment", () => {
     ];
     expect(pointsAvailable(entries, "2026-11-01")).toBe(11 + 10 - 6 - 4);
     expect(pointsAvailable([], "2026-11-01")).toBe(0);
+  });
+});
+
+describe("a tip is paid on top", () => {
+  it("is added to what is due, and only money pays it", () => {
+    expect(tally(100 + 10, [{ kind: "Cash", amount: 120 }]).change).toBe(10);
+    expect(tipProblem(100, 10, [{ kind: "Credit", amount: 110 }])).toBe("A tip is paid in cash or by card.");
+    expect(tipProblem(100, 10, [{ kind: "Credit", amount: 100 }, { kind: "Cash", amount: 10 }])).toBeNull();
+    expect(tipProblem(100, 10, [{ kind: "Loyalty Points", amount: 60 }, { kind: "Stored Value", amount: 45 }, { kind: "Bank", amount: 5 }])).toBe("A tip is paid in cash or by card.");
+    expect(tipProblem(100, 0, [{ kind: "Credit", amount: 100 }])).toBeNull();
   });
 });
 

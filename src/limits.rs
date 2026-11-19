@@ -6,8 +6,8 @@
 
 use crate::logic::{Act, Limits};
 use crate::{Profile, is_manager};
-use ferrum_domain::util::{b, d, elevated, s};
-use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, Tx};
+use ferrum_domain::util::{b, d, elevated, id, s};
+use ferrum_kernel::{Ctx, Doc, Error, HookCtx, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -89,9 +89,11 @@ pub(crate) async fn rows_for(tx: &mut Tx, tenant: Uuid, profile: Uuid) -> Result
 // ───────────────────────────── PINs and approvals ─────────────────────────────
 //
 // Approval at the till (PS-21): someone whose limits allow it types their PIN on the cashier's till,
-// without the cashier signing out. The PIN is kept only as an argon2id hash (`pos_staff_pin`), five
-// wrong tries lock it for fifteen minutes, and it never reaches a record, a log or an action's
-// audited parameters: it travels only in the body of the register's own endpoints. An approval is a
+// without the cashier signing out. Both halves are declared operations, as an agent or an API client
+// asks them too: `set_pin` of a register (a person sets their own PIN) and `approve` of the cashier's
+// open session. The PIN is kept only as an argon2id hash (`pos_staff_pin`), five wrong tries lock it
+// for fifteen minutes, and it never reaches a record, a log or a receipt: it is the actions' secret
+// parameter, which the platform keeps out of the audit entry, the receipt and error texts. An approval is a
 // record (`PosApproval`) for one act on one sale (or draft, by the id the till gives it; none for
 // opening the drawer) in one session, at most the amount approved, used once, and only within the
 // register's Approval Lasts minutes and while that session is open: handing the till over is closing
@@ -107,14 +109,21 @@ fn check_pin_shape(pin: &str) -> Result<()> {
     if (4..=12).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit()) { Ok(()) } else { Err(Error::field("pin", "a PIN is four to twelve digits")) }
 }
 
-/// Sets the signed-in person's own PIN (kept as a hash; any wrong tries are forgotten).
-pub(crate) async fn set_pin(k: &Kernel, ctx: &Ctx, pin: &str) -> Result<()> {
+/// A text parameter of an action as given, trimmed; none when missing, empty or not text.
+fn param<'a>(params: &'a Value, name: &str) -> Option<&'a str> {
+    params.get(name).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// `set_pin` of a register: the caller's own PIN, kept as a hash, its wrong tries and any lock forgotten, in the
+/// action's transaction.
+pub(crate) async fn set_pin(hc: &mut HookCtx<'_>, params: &Value) -> Result<Value> {
+    let pin = param(params, "pin").unwrap_or_default();
     check_pin_shape(pin)?;
+    let ctx = hc.ctx;
     if ctx.email.is_empty() || ctx.outside {
         return Err(Error::Forbidden("only a member of the workspace sets a PIN".into()));
     }
     let hash = ferrum_kernel::auth::hash_password(pin.to_string()).await?;
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     sqlx::query(
         "insert into pos_staff_pin (tenant_id, email, pin_hash) values ($1, lower($2), $3) \
          on conflict (tenant_id, email) do update set pin_hash = excluded.pin_hash, failures = 0, locked_until = null, set_at = now()",
@@ -122,10 +131,9 @@ pub(crate) async fn set_pin(k: &Kernel, ctx: &Ctx, pin: &str) -> Result<()> {
     .bind(ctx.tenant)
     .bind(&ctx.email)
     .bind(hash)
-    .execute(&mut *tx)
+    .execute(&mut **hc.tx)
     .await?;
-    tx.commit().await?;
-    Ok(())
+    Ok(json!({"ok": true}))
 }
 
 /// The person `email` proved by `pin`: their context, or a refusal that counts a wrong try (kept
@@ -183,49 +191,69 @@ async fn prove(k: &Kernel, tenant: Uuid, email: &str, pin: &str) -> Result<Ctx> 
     k.load_ctx(tenant, user, None, "pos-approval".into()).await
 }
 
-/// What a till asks to have approved.
-pub(crate) struct Ask<'a> {
-    pub profile: Uuid,
-    pub approver: &'a str,
-    pub pin: &'a str,
-    pub act: Act,
-    pub amount: Option<Decimal>,
-    pub reason: &'a str,
+/// What a till asks to have approved: the `approve` action's parameters, each checked where it enters.
+struct Ask<'a> {
+    approver: &'a str,
+    pin: &'a str,
+    act: Act,
+    amount: Option<Decimal>,
+    reason: &'a str,
     /// The sale or draft it is for; none only for opening the drawer.
-    pub sale: Option<Uuid>,
+    sale: Option<Uuid>,
 }
 
-/// Approves one act for the signed-in cashier in their open session at the register, by another
-/// person's PIN, when that person's own limits allow it: the approval's id.
-pub(crate) async fn approve(k: &Kernel, ctx: &Ctx, ask: Ask<'_>) -> Result<Value> {
-    if ask.reason.trim().is_empty() {
-        return Err(Error::field("reason", "say why"));
+impl<'a> Ask<'a> {
+    fn parse(params: &'a Value) -> Result<Ask<'a>> {
+        let need = |f: &'static str| param(params, f).ok_or_else(|| Error::field(f, "is required"));
+        let act = Act::parse(need("act")?).ok_or_else(|| Error::field("act", "is not something that is approved"))?;
+        let amount = match params.get("amount") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(a)) if a.trim().is_empty() => None,
+            Some(Value::String(a)) => Some(a.trim().parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
+            Some(Value::Number(a)) => Some(a.to_string().parse::<Decimal>().map_err(|_| Error::field("amount", "is a number"))?),
+            Some(_) => return Err(Error::field("amount", "is a number")),
+        };
+        let reason = param(params, "reason").ok_or_else(|| Error::field("reason", "say why"))?;
+        let sale = param(params, "sale").map(|s| s.parse::<Uuid>().map_err(|_| Error::field("sale", "is the sale's id"))).transpose()?;
+        if sale.is_none() && act != Act::NoSale {
+            return Err(Error::field("sale", "name the sale (or draft) it is for"));
+        }
+        Ok(Ask { approver: need("approver")?, pin: need("pin")?, act, amount, reason, sale })
     }
-    if ask.sale.is_none() && ask.act != Act::NoSale {
-        return Err(Error::field("sale", "name the sale (or draft) it is for"));
+}
+
+/// `approve` of the cashier's open session: one act beyond the cashier's limits, approved by another person's PIN when
+/// that person's own limits at the session's register allow it. The kernel has checked the caller may write the session
+/// and that it is submitted and open, and holds its row. Answers the approval, who approved and the act.
+pub(crate) async fn approve(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let ask = Ask::parse(params)?;
+    let ctx = hc.ctx;
+    let me = ctx.email.to_lowercase();
+    let not_you = || Error::field("approver", "someone else approves what is beyond your own limits");
+    if ask.approver.to_lowercase() == me {
+        return Err(not_you());
     }
-    if ask.approver.trim().eq_ignore_ascii_case(&ctx.email) {
-        return Err(Error::field("approver", "someone else approves what is beyond your own limits"));
+    // A manager may write anyone's session; an approval is still the cashier's own to ask.
+    if s(session, "user").is_none_or(|u| u.to_lowercase() != me) {
+        return Err(Error::Forbidden("an approval is asked in your own session".into()));
     }
-    k.get(ctx, "PosProfile", ask.profile, false).await?;
-    let approver = prove(k, ctx.tenant, ask.approver, ask.pin).await?;
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let profile = Profile::load(k, ctx, &mut tx, ask.profile).await?;
-    let session = crate::open_session_in(&mut tx, ctx.tenant, ask.profile, &ctx.email)
-        .await?
-        .ok_or_else(|| Error::invalid(format!("open your session at {} first", profile.name())))?;
-    let theirs = of(&approver, &mut tx, &profile).await?;
+    let profile = Profile::load(hc.kernel, ctx, hc.tx, id(session, "pos_profile").ok_or_else(|| Error::internal("a session without a register"))?).await?;
+    // Its own short transactions: a wrong PIN stays counted when this action fails.
+    let approver = prove(hc.kernel, ctx.tenant, ask.approver, ask.pin).await?;
+    if approver.user == ctx.user {
+        return Err(not_you());
+    }
+    let theirs = of(&approver, hc.tx, &profile).await?;
     if !theirs.allows(ask.act, ask.amount.unwrap_or_default()) {
         return Err(Error::Forbidden(format!("{} may not approve this either", approver.email)));
     }
     let row = json!({
-        "pos_profile": profile.id, "pos_opening_entry": session, "cashier": ctx.email.to_lowercase(), "approver": approver.email.to_lowercase(),
-        "action": ask.act.label(), "amount": ask.amount.map(|a| a.normalize().to_string()), "reason": ask.reason.trim(),
+        "pos_profile": profile.id, "pos_opening_entry": id(session, "id"), "cashier": me, "approver": approver.email.to_lowercase(),
+        "action": ask.act.label(), "amount": ask.amount.map(|a| a.normalize().to_string()), "reason": ask.reason,
         "limits": theirs, "approved_at": chrono::Utc::now().to_rfc3339(), "sale": ask.sale.map(|s| s.to_string()),
         "expires_at": (chrono::Utc::now() + chrono::Duration::minutes(minutes(&profile.doc))).to_rfc3339(),
     });
-    let made = k.insert_tx(&elevated(ctx), &mut tx, "PosApproval", row.as_object().cloned().unwrap_or_default()).await?;
-    tx.commit().await?;
+    let made = hc.kernel.insert_tx(&elevated(ctx), hc.tx, "PosApproval", row.as_object().cloned().unwrap_or_default()).await?;
     Ok(json!({"approval": made.get("id"), "approver": approver.email, "action": ask.act.label()}))
 }
 

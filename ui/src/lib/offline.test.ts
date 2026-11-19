@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import fixtures from "./pricing.fixtures.json";
 import { downloadSnapshot, listPrices, markDown, markUp, priceOffline, scanBook, searchBook, serverDown, tillAll, unreachable, type PriceBook } from "./offline";
-import { loadPricing, type Basket, type Priced, type PricingSnapshot } from "./pricing";
+import { loadPricing, priceBasket, type Basket, type Priced, type PricingSnapshot } from "./pricing";
 
 // An ERP fixture (pricing/tests: three items, three promotions, taxes of 8% and 10%) as the till keeps it: the snapshot plus what the till shows.
 const fixture = fixtures.cases[0] as unknown as { request: { snapshot: PricingSnapshot; basket: Basket }; priced: Priced };
@@ -56,6 +56,17 @@ describe("selling offline", () => {
     expect(only(blank)).toEqual(only(plain));
   });
 
+  it("the engine is given the sale's discount, and its discount is the sale's", async () => {
+    const when = at(fixture.request.basket.at);
+    const lines = [{ key: "a", item: "i2", item_name: "Bun", qty: 2 }];
+    const doc = await priceOffline(book, lines, { at: when, discount: "10" });
+    const engine = await priceBasket({ snapshot: book, basket: { lines: [{ item: "i2", qty: "2", price: null, discount_percent: null }], at: fixture.request.basket.at, discount_percent: "10" } });
+    expect([doc.discount_amount, doc.rounded_total]).toEqual([engine.totals.discount_amount, engine.totals.rounded_total]);
+    expect(Number(doc.discount_amount)).toBeGreaterThan(0);
+    const none = await priceOffline(book, lines, { at: when });
+    expect(Number(none.discount_amount)).toBe(0);
+  });
+
   it("will not price what the snapshot cannot: an item it does not hold, a schema it does not know, a day it does not cover", async () => {
     const when = at(fixture.request.basket.at);
     await expect(priceOffline(book, [{ key: "c", item: "i-new", item_name: "Scones", qty: 1 }], { at: when })).rejects.toThrow(/Scones has no price on this device/);
@@ -78,6 +89,14 @@ describe("selling offline", () => {
     expect(scanBook(book, "nothing")).toBeNull();
     expect(searchBook(book, "cake plum").map((i) => i.id)).toEqual(["i1"]);
     expect(searchBook(book, "").map((i) => i.id)).toEqual(["i2", "i0", "i1"]);
+  });
+
+  it("searches the book inside a group, and as before without one", () => {
+    const grouped: PriceBook = { ...book, catalog: book.catalog.map((i) => ({ ...i, item_group: { i0: "drinks", i1: "cakes" }[i.id] ?? null })) };
+    expect(searchBook(grouped, "", 30, new Set(["drinks"])).map((i) => i.id)).toEqual(["i0"]);
+    expect(searchBook(grouped, "", 30, new Set(["cakes", "drinks"])).map((i) => i.id)).toEqual(["i0", "i1"]);
+    expect(searchBook(grouped, "cake", 30, new Set(["drinks"]))).toEqual([]);
+    expect(searchBook(grouped, "", 30).map((i) => i.id)).toEqual(["i2", "i0", "i1"]);
   });
 
   it("keeps the whole snapshot the server gave: its schema, version, signature, promotions and buyer rule", async () => {
@@ -139,6 +158,18 @@ describe("what the device keeps", () => {
     as(lease("k2", null));
     rememberTill(till);
     expect(recallTill("p1", "asha@shop.test")).toBeNull();
+  });
+
+  it("remembers the item groups for the tabs offline", async () => {
+    const { resetBootstrap } = await import("@ferrum/client");
+    const { fakeBootstrap } = await import("@ferrum/testing");
+    const { recallTill, rememberTill } = await import("./offline");
+    Object.defineProperty(globalThis, "localStorage", { value: memory(), configurable: true });
+    (globalThis as { __FERRUM_BOOTSTRAP__?: unknown }).__FERRUM_BOOTSTRAP__ = fakeBootstrap({ offline: lease("k1", "2999-01-01T00:00:00Z") } as never);
+    resetBootstrap();
+    const groups = [{ id: "d", group_name: "Drinks", parent_group: null }, { id: "tea", group_name: "Tea", parent_group: "d" }];
+    rememberTill({ ...till, groups });
+    expect(recallTill("p1", "asha@shop.test")?.groups).toEqual(groups);
   });
 });
 

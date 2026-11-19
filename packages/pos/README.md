@@ -19,11 +19,13 @@ cash control, and end-of-day consolidation into sales invoices and the books. Bu
 | `PosRoleLimit` | What a role may do at the till without another person approving it; a row can name one register |
 | `PosReason` | The reasons the till offers for voids, returns, opening the drawer without a sale and reprints |
 | `PosApproval` | One person's approval, by their PIN at the till, of one act another person asked beyond their limits (read-only) |
+| `PosHeldSale` | A sale set aside at a till: its basket, until it is resumed or discarded (its holder's, and every POS Manager's; made and deleted, never edited) |
 | `LoyaltyProgram`, `LoyaltyPointEntry` | Tiers by lifetime spend, points value, expiry; the points ledger (read-only) |
 | `ItemBarcode` | Extra barcodes per item (pack barcodes add several units per scan). `Item.barcode` and `Item.item_code` scan too |
 
 Documents a workspace edits under Settings: `pos.receipt`, `pos.receipt_gift`, `pos.shift_report`, `pos.cash_slip`; message `pos.receipt_sent` (reads `values.company` and `values.currency`).
-Routes under `/api/app/pos/`: `GET /receipt/{sale}` (the first printing, once), `POST /reprint`, `POST /send`, `GET /snapshot`, `POST /returns/{sale}/plan`, `GET /returns`, `GET /returns/{sale}`, `POST /exchange`, `POST /approve`, `POST /pin`, `POST /balance` and `GET /limits`.
+Routes under `/api/app/pos/`, all reads: `GET /snapshot`, `POST /returns/{sale}/plan`, `GET /returns`, `GET /returns/{sale}`, `POST /balance`, `GET /limits` and `GET /paper/{event}` (the page of a receipt event, for the person who asked or someone who may read the event).
+Operations with contracts (`POST /api/v1/{entity}/{id}/actions/{action}` with an `Idempotency-Key`, or the capability catalog): `pos.pos_profile.set_pin` `{pin}` (the caller's own PIN); on the caller's own open session `pos.pos_opening_entry.approve` `{approver, pin, act, amount?, reason, sale?}` (answers `{approval, approver, action}`), `.print_receipt` `{sale}` (once; answers `{event, kind}`), `.reprint` `{sale, kind, reason?, approval?}` (answers `{event, kind, copy_no}`) and `.send_receipt` `{sale, to, consent, language?}` (answers `{event, channels, attached}`); `pos.pos_invoice.exchange` `{out}` on the return's draft (answers `{return, sale, sale_number, carried, due, refund}`); and `pos.pos_invoice.void`, `pos.pos_stock_shortfall.resolve`, `pos.pos_price_difference.review`.
 
 Roles: **Cashier** (own sessions, sales, returns, cash movements; may draft the closing count) and
 **POS Manager** (everything, including discounts beyond the register limit, price changes, voids,

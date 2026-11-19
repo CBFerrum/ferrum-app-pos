@@ -148,6 +148,10 @@ export function invoiceBody(o: {
   buyer?: Buyer | null;
   /** Promotion codes the buyer gave (`promotion_codes`, space separated): the server checks them. */
   codes?: string[];
+  /** The discount on the whole sale, a percent as typed (`discount_percent`); sent only when above zero. */
+  discount?: string;
+  /** What the customer adds on top of the total (`tip_amount`); sent only when above zero. Not part of the sale's totals. */
+  tip?: string;
 }): Doc {
   return {
     ...(o.id ? { id: o.id } : {}),
@@ -168,6 +172,8 @@ export function invoiceBody(o: {
     ...(o.invoiceNow ? { invoice_now: true } : {}),
     ...(o.buyer?.taxId.trim() ? { buyer_tax_id: o.buyer.taxId.trim(), ...(o.buyer.name?.trim() ? { buyer_name: o.buyer.name.trim() } : {}) } : {}),
     ...(o.codes?.length ? { promotion_codes: o.codes.join(" ") } : {}),
+    ...(o.discount && Number(o.discount) > 0 ? { discount_percent: o.discount.trim() } : {}),
+    ...(o.tip && Number(o.tip) > 0 ? { tip_amount: o.tip.trim() } : {}),
   };
 }
 
@@ -268,6 +274,7 @@ export function keptReceipt(profile: Doc, priced: Doc | null, sale: Doc, o: { cu
     number: tr("Not sent yet"),
     rounded_total: String(o.due),
     change_amount: String(o.change),
+    ...(sale.tip_amount ? { tip_amount: sale.tip_amount } : {}),
     pending: true,
   });
 }
@@ -313,7 +320,7 @@ export function fallbackReceiptHtml(profile: Doc, sale: Doc): string {
     <p>${sale.is_return ? `<b>${esc(tr("RETURN"))}</b>${sale.against ? tr(" of {value}", { value: esc(sale.against) }) : ""}<br>` : ""}${esc(sale.number)} · ${esc(sale.posting_date)}${sale.customer_name ? `<br>${esc(sale.customer_name)}` : ""}</p><hr>
     <table>${rows}</table><hr>
     <table>${line(tr("Subtotal"), sale.total)}${num(sale.discount_amount) ? line(tr("Discount"), -num(sale.discount_amount)) : ""}${line(tr("Taxes"), sale.total_taxes)}${num(sale.rounding_adjustment) ? line(tr("Rounding"), sale.rounding_adjustment) : ""}
-    <tr><td><b>${esc(tr("Total"))}</b></td><td class="r"><b>${esc(money(sale.rounded_total ?? sale.grand_total))}</b></td></tr></table><hr>
+    <tr><td><b>${esc(tr("Total"))}</b></td><td class="r"><b>${esc(money(sale.rounded_total ?? sale.grand_total))}</b></td></tr>${num(sale.tip_amount) > 0 ? line(tr("Tip"), sale.tip_amount) : ""}</table><hr>
     <table>${pays}${num(sale.change_amount) ? line(tr("Change"), sale.change_amount) : ""}</table>
     ${profile.receipt_footer ? `<hr><p>${esc(profile.receipt_footer)}</p>` : ""}
   `,

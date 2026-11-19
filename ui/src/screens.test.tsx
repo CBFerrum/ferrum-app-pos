@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { resetBootstrap, setTimeZone } from "@ferrum/client";
 import type { Doc } from "@ferrum/records";
 import { fakeBootstrap } from "@ferrum/testing";
-import { CartLines, Totals } from "./Cart";
+import { CartLines, SaleDiscount, Totals } from "./Cart";
 import { HeldDialog, KeysDialog } from "./Held";
 import { AskDialog, SetPinDialog } from "./Approval";
 import { CardLine } from "./Card";
@@ -21,6 +21,8 @@ import Unreceipted from "./Unreceipted";
 import ShiftPage from "./Shift";
 import DifferencesPage from "./Differences";
 import { Till } from "./Till";
+import { VariantDialog } from "./Variants";
+import type { PriceBook } from "./lib/offline";
 import { Currency } from "./fmt";
 import { ownerOf, saveCart } from "./lib/held";
 import { rightsOf, UNLIMITED } from "./lib/rights";
@@ -151,6 +153,15 @@ describe("taking payment", () => {
     expect(draw(<PayDialog {...props} offline namedAbove="200" walkIn={false} customer="c1" />)).not.toContain("asks for a named buyer on a sale this size");
   });
 
+  it("asks for a tip where the register takes them, and not on a return", () => {
+    expect(draw(<PayDialog {...props} />)).not.toContain('id="pos-tip"');
+    const tips = { ...profile, tip_account: "acct-tips" };
+    const html = draw(<PayDialog {...props} profile={tips} />);
+    expect(html).toContain('id="pos-tip"');
+    expect(html).toContain(">Tip<");
+    expect(draw(<PayDialog {...props} profile={tips} doc={{ is_return: true }} />)).not.toContain('id="pos-tip"');
+  });
+
   it("lists each way of paying with what it takes of the bill as it is typed (the change and a card's balance are perTender's and leftOnCard's, tested in pay.test.ts)", () => {
     const html = draw(<PayDialog {...props} />);
     expect(html).toMatch(/aria-label="Payments"><li><span>Cash<\/span><strong>252\.95<\/strong>/);
@@ -160,14 +171,14 @@ describe("taking payment", () => {
   it("offers to void a finished sale, with a reason, but not a kept one, a return or an exchange", () => {
     const sale = { id: "s1", number: "C1-9", rounded_total: "20", payments: [] };
     const reasons = [{ id: "r1", reason: "Wrong item rung", applies_to: "Void" }];
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
-    for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).toContain("Void this sale");
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} reasons={[]} onClose={() => {}} />)).not.toContain("Void this sale");
+    for (const other of [{ pending: true }, { is_return: true }, { exchange: "x" }]) expect(draw(<ReceiptDialog profile={profile} session="s1" sale={{ ...sale, ...other }} limits={UNLIMITED} reasons={reasons} onClose={() => {}} />)).not.toContain("Void this sale");
   });
 
   it("tells a finished sale's buyer, how each way paid, and what is left on a card", () => {
     const sale = { id: "s1", number: "C1-9", rounded_total: "100", customer_name: "Acme Traders", buyer_tax_id: "TL-4242", tax_invoice: true, change_amount: "0", payments: [{ mode_of_payment: "gift", amount: "100", stored_value_balance: "400.00", _titles: { mode_of_payment: "Gift card" } }] };
-    const html = draw(<ReceiptDialog profile={profile} sale={sale} limits={UNLIMITED} onClose={() => {}} />);
+    const html = draw(<ReceiptDialog profile={profile} session="s1" sale={sale} limits={UNLIMITED} onClose={() => {}} />);
     expect(html).toContain("Buyer Acme Traders");
     expect(html).toContain("TL-4242");
     expect(html).toContain("tax invoice issued");
@@ -176,18 +187,18 @@ describe("taking payment", () => {
   });
 
   it("offers a copy, a gift receipt and sending by message for a sale the register has, not for one kept on the device", () => {
-    const more = draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
+    const more = draw(<ReceiptMore session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline={false} />);
     for (const word of ["Print a copy", "Gift receipt", "Send by message"]) expect(more).toContain(word);
-    expect(draw(<ReceiptMore profile={profile} sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
-    const kept = draw(<ReceiptDialog profile={profile} sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
+    expect(draw(<ReceiptMore session="s1" sale={{ id: "s1", number: "C1-9" }} limits={UNLIMITED} reasons={[]} offline />)).toContain("need a connection");
+    const kept = draw(<ReceiptDialog profile={profile} session="s1" sale={{ number: "Not sent yet", pending: true, payments: [] }} limits={UNLIMITED} onClose={() => {}} />);
     expect(kept).toContain("Print a provisional receipt");
     expect(kept).not.toContain("Print a copy");
   });
 
   it("shows a receipt with the change, and a kept sale as not yet sent", () => {
     const sale = { number: "C1-9", rounded_total: "252.95", change_amount: "47.05", payments: [] };
-    expect(draw(<ReceiptDialog profile={profile} sale={sale} onClose={() => {}} />)).toMatch(/Change.*47\.05/);
-    const kept = draw(<ReceiptDialog profile={profile} sale={{ ...sale, pending: true, number: "Not sent yet" }} onClose={() => {}} />);
+    expect(draw(<ReceiptDialog profile={profile} session="s1" sale={sale} onClose={() => {}} />)).toMatch(/Change.*47\.05/);
+    const kept = draw(<ReceiptDialog profile={profile} session="s1" sale={{ ...sale, pending: true, number: "Not sent yet" }} onClose={() => {}} />);
     expect(kept).toContain("Sale kept on this device");
     expect(kept).toContain("Not sent yet");
   });
@@ -284,6 +295,20 @@ describe("hold and keys", () => {
     expect(card).toContain("Needs the card&#x27;s code again: it is never kept.");
   });
 
+  it("says whose a held sale is, which the register does not have yet, and when only this device's are shown", () => {
+    const held = [
+      { key: "a", customer: { id: null }, lines: [{ key: "t", item: "t", item_name: "Tea", qty: 1 }], at: "2026-11-19T10:00:00Z", sent: true, by: "ravi@shop.test" },
+      { key: "b", customer: { id: null }, lines: [{ key: "c", item: "c", item_name: "Cake", qty: 1 }], at: "2026-11-19T10:01:00Z" },
+      { key: "c", customer: { id: null, title: "Acme" }, lines: [], at: "2026-11-19T10:02:00Z", sent: true, erased: true },
+    ];
+    const html = draw(<HeldDialog held={held} note="away" onResume={() => {}} onDiscard={() => {}} onClose={() => {}} />);
+    expect(html).toContain("Held by ravi@shop.test");
+    expect(html).toContain("Not sent to the register yet");
+    expect(html).toContain("Showing what is on this device.");
+    expect(html).toContain("Its basket was erased: it can only be discarded.");
+    expect(html.match(/>Resume</g)?.length).toBe(2);
+  });
+
   it("names the shortcuts", () => {
     const html = draw(<KeysDialog onClose={() => {}} />);
     for (const k of ["F2", "F4", "F8", "F9", "F10", "Delete"]) expect(html).toContain(k);
@@ -311,8 +336,48 @@ describe("the till", () => {
     expect(html).not.toContain("Scan or tap items to start a sale.");
   });
 
+  it("shows the item groups as tabs, All first and picked; one group, no tabs", () => {
+    const groups = [{ id: "g1", group_name: "Drinks", parent_group: null }, { id: "g2", group_name: "Bakery", parent_group: null }, { id: "g3", group_name: "Snacks", parent_group: null }];
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} groups={groups} />);
+    expect(html).toContain('role="tablist"');
+    expect(html.match(/role="tab"/g)).toHaveLength(4);
+    expect(html).toMatch(/id="pos-groups-tab-all" aria-selected="true"[^>]*>All</);
+    expect(html.indexOf(">Bakery<")).toBeLessThan(html.indexOf(">Drinks<"));
+    expect(html).toContain('role="tabpanel" id="pos-groups-panel-all" aria-labelledby="pos-groups-tab-all"');
+    const one = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} groups={groups.slice(0, 1)} />);
+    expect(one).not.toContain('role="tablist"');
+    expect(one).not.toContain('role="tabpanel"');
+  });
+
+  it("shows a template's variants as one tile, and its chooser lists them", () => {
+    const tee = (id: string, size: string) => ({ id, code: `TEE-${size}`, name: `Tee-${size}`, barcode: null, variant_of: "tee" });
+    const book = { schema: 1, profile: "p1", customer: null, items: [], barcodes: [], built_at: "2026-11-19T00:00:00Z", catalog: [tee("s", "S"), tee("m", "M"), { id: "mug", code: "MUG", name: "Mug", barcode: null, variant_of: null }], templates: [{ id: "tee", name: "Tee" }] } as unknown as PriceBook;
+    const rows = book.catalog.map((i) => ({ id: i.id, item_code: i.code, item_name: i.name }));
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={book} manager={false} offline={false} />, (qc) => qc.setQueryData(["pos", "items", "p1", "", null], { rows }));
+    expect(html).toContain("2 choices");
+    expect(html).toContain(">Tee<");
+    expect(html).not.toContain("TEE-S");
+    expect(html).toContain("MUG");
+    const chooser = draw(<VariantDialog book={book} template="tee" name="Tee" onChoose={() => {}} onClose={() => {}} />);
+    expect(chooser).toContain("Choose one of Tee");
+    expect([">M<", "TEE-M", ">S<", "TEE-S"].every((x) => chooser.includes(x))).toBe(true);
+    expect(chooser.indexOf("TEE-M")).toBeLessThan(chooser.indexOf("TEE-S"));
+  });
+
   it("says when it is selling offline", () => {
     expect(draw(<Till profile={profile} session={{ id: "s1", number: "" }} modes={modes} book={null} manager={false} offline />)).toContain("Offline");
+  });
+
+  it("offers a discount on the sale once it has a line, with the cashier's own limit, and says when a figure makes no sense", () => {
+    expect(draw(till)).not.toContain("Discount on the sale (%)");
+    saveCart(ownerOf("p1", "asha@shop.test"), { key: "sale-1", customer: { id: null }, lines: [{ key: "tea", item: "tea", item_name: "Masala tea", qty: 1 }], discount: "5" });
+    const html = draw(till);
+    expect(html).toContain("Discount on the sale (%)");
+    expect(html).toContain("Up to 10% on your own.");
+    expect(html).toMatch(/id="pos-sale-discount"[^>]*value="5"|value="5"[^>]*id="pos-sale-discount"/);
+    const wrong = draw(<SaleDiscount value="150" limit={10} onApply={() => {}} />);
+    expect(wrong).toContain("A discount is between 0 and 100 percent.");
+    expect(wrong).toContain('aria-invalid="true"');
   });
 });
 
@@ -400,7 +465,7 @@ describe("the return desk", () => {
 describe("approval at the till", () => {
   const step = { act: "Discount" as const, figure: 12.5, why: "a 12.5% discount exceeds the 10% allowed" };
   const ask = (over: Partial<Parameters<typeof AskDialog>[0]> = {}) => (
-    <AskDialog profile="p1" sale="sale-1" title="Approval for this line" steps={[step]} offline={false} onDone={() => {}} onClose={() => {}} {...over} />
+    <AskDialog session="s1" sale="sale-1" title="Approval for this line" steps={[step]} offline={false} onDone={() => {}} onClose={() => {}} {...over} />
   );
 
   it("asks who approves, their PIN (masked) and why, and says what is being approved", () => {
@@ -427,10 +492,10 @@ describe("approval at the till", () => {
   });
 
   it("sets one's own PIN, twice, online only", () => {
-    const html = draw(<SetPinDialog offline={false} onClose={() => {}} />);
+    const html = draw(<SetPinDialog profile="p1" offline={false} onClose={() => {}} />);
     expect(html).toContain("Set my PIN");
     expect(html).toContain("Type it again");
-    expect(draw(<SetPinDialog offline onClose={() => {}} />)).toContain("Setting a PIN needs a connection.");
+    expect(draw(<SetPinDialog profile="p1" offline onClose={() => {}} />)).toContain("Setting a PIN needs a connection.");
   });
 
   it("takes a card's code for a card line, offering to make one only online", () => {

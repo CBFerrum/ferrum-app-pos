@@ -60,6 +60,8 @@
     - {name: write_off_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
     - {name: write_off_limit, type: currency, default: 0, min: "0", description: Largest unpaid difference written off automatically}
     - {name: cash_difference_account, type: link, to: Account, link_filters: {is_group: false}, description: Shortages and excesses found when counting at closing; defaults to the company round-off account}
+    - {name: tip_account, type: link, to: Account, link_filters: {is_group: false}, label: Tips Account,
+       description: "The register takes tips when this is set: what customers add on top of a sale is owed from this account (a liability) until it is paid out. Empty: no tips"}
     - {name: allow_negative_stock, type: check, description: Sell even when the system shows no stock}
     - {name: offline_shortfall, type: select, options: [Record and reconcile, Refuse], default: Record and reconcile, label: Sold Offline Beyond Stock,
        description: "A sale made while the till could not reach the server that takes more than the warehouse holds when it arrives: recorded, with a Stock Shortfall to put right (the customer paid and took the goods), or refused like a sale made online"}
@@ -88,13 +90,24 @@
     - {name: disabled, type: check, in_filter: true}
   form:
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
-    - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account]}
+    - {label: Payments, fields: [payments, write_off_account, write_off_cost_center, write_off_limit, cash_difference_account, tip_account]}
     - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
     - {label: Buyers and Cash, collapsible: true, fields: [buyer_customer, buyer_group, registered_buyer, named_buyer_above, blind_close, safe_account]}
     - {label: Returns, collapsible: true, fields: [return_policy, damaged_warehouse, scrap_warehouse]}
     - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
+  actions:
+    - name: set_pin
+      label: Set My PIN
+      permission: read
+      hidden: true
+      params:
+        - {name: pin, label: PIN, required: true, secret: true, description: "Four to twelve digits; kept only as a hash"}
+      contract:
+        effect: transactional_action
+        completion: "The caller's own till PIN is replaced; its wrong tries and any lock on it are forgotten"
+        returns: {type: object, properties: {ok: {type: boolean}}}
   list: {columns: [profile_name, company, warehouse], sort: profile_name asc}
 
 - name: PosOpeningBalance
@@ -127,6 +140,72 @@
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
     - {name: open_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: Set while open; the unique index allows one open session per profile and cashier}
     - {name: remarks, type: text}
+  actions:
+    - name: approve
+      label: Approve by PIN
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: an approval is for an open session"
+      params:
+        - {name: approver, label: Approver's Email, required: true}
+        - {name: pin, label: Approver's PIN, required: true, secret: true}
+        - {name: act, label: Act, type: select, required: true,
+           options: [Discount, Price Change, Void Line, Void Sale, Refund, Return Without Receipt, No Sale, Reprint]}
+        - {name: amount, label: Amount, description: "A discount's percent or a refund in money, a decimal as text; empty for an act with no figure"}
+        - {name: reason, label: Reason, required: true}
+        - {name: sale, label: Sale, description: "The id of the sale or draft it is for; empty only for No Sale"}
+      contract:
+        effect: transactional_action
+        completion: "A POS Approval exists for one act on one sale in this session, usable once before it lapses"
+        returns: {type: object, properties: {approval: {type: string, format: uuid, x-ferrum-link: PosApproval}, approver: {type: string}, action: {type: string}}}
+    - name: print_receipt
+      label: Print Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+      contract:
+        effect: transactional_action
+        completion: "The sale's first receipt is marked printed, once, and a Receipt Event of kind Original says who printed it"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}}}
+    - name: reprint
+      label: Reprint Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+        - {name: kind, label: Kind, type: select, options: [copy, gift], required: true}
+        - {name: reason, label: Reason, description: "One of the business's reprint reasons (its id or its words) when it has some"}
+        - {name: approval, label: Approval, type: link, to: PosApproval, description: "When reprinting is beyond your limits; it covers one copy"}
+      contract:
+        effect: transactional_action
+        completion: "A Receipt Event records the copy or gift receipt; a copy is counted on the sale"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}, copy_no: {type: [integer, "null"]}}}
+    - name: send_receipt
+      label: Send Receipt
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: receipts are given in an open session"
+      params:
+        - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+        - {name: to, label: Address or Number, required: true, secret: true}
+        - {name: consent, label: Consent, type: select, options: [once, opt_in], required: true}
+        - {name: language, label: Language}
+      contract:
+        effect: external_effect
+        unknown_outcome: manual
+        completion: "The receipt is queued to the address by the workspace's channels, with this receipt; delivery is not confirmed"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, channels: {type: array, items: {type: string}}, attached: {type: boolean}}}
   list: {columns: [number, pos_profile, user, posting_date, status], sort: created_at desc}
 
 - name: PosInvoiceItem
@@ -252,6 +331,9 @@
     - {name: paid_amount, type: currency, currency: currency, read_only: true}
     - {name: change_amount, type: currency, currency: currency, read_only: true, description: Cash handed back}
     - {name: write_off_amount, type: currency, currency: currency, read_only: true}
+    - {name: tip_amount, type: currency, currency: currency, min: "0", no_copy: true, label: Tip,
+       description: "What the customer added on top of the total. Not part of the sale's totals; paid with cash or a card"}
+    - {name: tip_account, type: link, to: Account, read_only: true, hidden: true, no_copy: true}
     - {name: loyalty_program, type: link, to: LoyaltyProgram, read_only: true, no_copy: true}
     - {name: loyalty_points_earned, type: int, read_only: true, no_copy: true}
     - {name: loyalty_points_redeemed, type: int, read_only: true, no_copy: true}
@@ -286,14 +368,35 @@
     - {label: Sale, fields: [pos_profile, pos_opening_entry, customer, customer_name, posting_date, posting_time, is_return, return_against, return_reason, cashier]}
     - {label: Items, fields: [items, discount_percent]}
     - {label: Buyer and Promotions, collapsible: true, fields: [buyer_tax_id, buyer_name, tax_invoice, promotion_codes, applied_promotions, price_snapshot, till_total]}
-    - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount]}
+    - {label: Payments, fields: [payments, paid_amount, change_amount, write_off_amount, tip_amount]}
     - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, status]}
     - {label: Approvals and Voids, collapsible: true, fields: [approvals, voided_lines, void_reason, voided_by]}
     - {label: More, collapsible: true, fields: [company, currency, price_list, tax_template, taxes, tax_breakdown, tax_registrations, reprints, set_warehouse, cost_center, loyalty_program, loyalty_points_earned, loyalty_points_redeemed, consolidated_invoice, pos_closing_entry, remarks]}
   actions:
-    - {name: void, label: Void Sale, permission: write, condition: "doc.docstatus == 1 && doc.consolidated_invoice == null",
-       confirm: "Void this sale? Its stock comes back and it leaves the session's takings.",
-       params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]}
+    - name: void
+      label: Void Sale
+      permission: write
+      condition: "doc.docstatus == 1 && doc.consolidated_invoice == null"
+      confirm: "Void this sale? Its stock comes back and it leaves the session's takings."
+      params: [{name: reason, type: link, to: PosReason, label: Reason, required: true}, {name: approval, type: link, to: PosApproval, label: Approval, description: "When voiding sales is beyond your limits"}]
+      contract:
+        effect: transactional_action
+        completion: "The sale is cancelled: its stock is back, it is out of the session's takings, and it keeps who voided it and why"
+        returns: {type: object, properties: {status: {type: string}}}
+    - name: exchange
+      label: Exchange
+      permission: write
+      hidden: true
+      docstatus: [0]
+      condition: "doc.is_return"
+      condition_message: "An exchange starts from the return's draft"
+      params:
+        - {name: out, label: Sale Going Out, type: link, to: PosInvoice, required: true}
+      contract:
+        effect: transactional_action
+        completion: "The return and the sale going out are both submitted and name each other; what came back is carried to what goes out through the register's Exchange Clearing method"
+        returns: {type: object, properties: {return: {type: string, format: uuid, x-ferrum-link: PosInvoice}, sale: {type: string, format: uuid, x-ferrum-link: PosInvoice},
+                  sale_number: {type: string}, carried: {type: string}, due: {type: string}, refund: {type: string}}}
   rules:
     - {name: named_buyer, check: "!doc.needs_buyer", on: submit,
        message: "This sale is worth more than the register takes without a named buyer: pick the customer, or take the buyer's tax registration"}
@@ -379,6 +482,7 @@
     - {name: paid_out, type: currency, read_only: true, label: Paid Out}
     - {name: safe_drops, type: currency, read_only: true, label: Dropped to the Safe}
     - {name: refund_total, type: currency, read_only: true, label: Returns}
+    - {name: tips, type: currency, read_only: true, label: Tips}
     - {name: tax_rows, type: table, of: PosClosingTax, read_only: true, label: Tax by Rate}
     - {name: invoice_count, type: int, read_only: true}
     - {name: return_count, type: int, read_only: true}
@@ -465,8 +569,15 @@
     - {name: resolved_by, type: data, read_only: true}
     - {name: resolved_at, type: datetime, read_only: true}
   actions:
-    - {name: resolve, label: Mark Put Right, permission: write, condition: "doc.status == 'Open'",
-       params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]}
+    - name: resolve
+      label: Mark Put Right
+      permission: write
+      condition: "doc.status == 'Open'"
+      params: [{name: resolution, type: data, label: "How it was put right (counted, moved in, written off)", required: true}]
+      contract:
+        effect: transactional_action
+        completion: "The shortfall is Put Right, with how, by whom and when"
+        returns: {type: object, properties: {status: {type: string}}}
   list: {columns: [item_name, warehouse, qty_short, pos_invoice, status], sort: created_at desc}
 
 - name: PosReturnPolicyMode
@@ -565,11 +676,11 @@
   module: pos
   company_scoped: true
   title_field: kind
-  description: "A receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the till's receipt requests; read-only. The address a receipt was sent to is in the message log, not here."
+  description: "A sale's first receipt, a receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the receipt actions of a cashier's session; read-only. The address a receipt was sent to is in the message log, not here."
   fields:
     - {name: pos_invoice, type: link, to: PosInvoice, read_only: true, in_list: true, in_filter: true}
     - {name: company, type: link, to: Company, read_only: true, in_filter: true}
-    - {name: kind, type: select, options: [Copy, Gift, Message], read_only: true, in_list: true, in_filter: true}
+    - {name: kind, type: select, options: [Original, Copy, Gift, Message], read_only: true, in_list: true, in_filter: true}
     - {name: copy_no, type: int, read_only: true, in_list: true, label: Copy Number}
     - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true}
     - {name: printed_at, type: datetime, read_only: true, in_list: true, label: When}
@@ -600,6 +711,34 @@
     - {name: resolved_by, type: data, read_only: true}
     - {name: resolved_at, type: datetime, read_only: true}
   actions:
-    - {name: review, label: Mark Reviewed, permission: write, condition: "doc.status == 'Open'",
-       params: [{name: resolution, type: data, label: "What was found and done", required: true}]}
+    - name: review
+      label: Mark Reviewed
+      permission: write
+      condition: "doc.status == 'Open'"
+      params: [{name: resolution, type: data, label: "What was found and done", required: true}]
+      contract:
+        effect: transactional_action
+        completion: "The price difference is Reviewed, with what was found, by whom and when"
+        returns: {type: object, properties: {status: {type: string}}}
   list: {columns: [pos_invoice, till_total, replay_total, sale_total, status], sort: created_at desc}
+
+- name: PosHeldSale
+  label: Held Sale
+  kind: master
+  module: pos
+  company_scoped: true
+  title_field: customer_title
+  owner_fields: [cashier]
+  description: "A sale set aside at a till to finish later: its basket as the till keeps it. Made when a sale is put on hold, deleted when it is resumed or discarded. Not a sale: nothing is priced, sold or posted until it is resumed and paid."
+  fields:
+    - {name: pos_profile, type: link, to: PosProfile, required: true, label: Register, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, fetch_from: pos_profile.company, read_only: true, in_filter: true}
+    - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true, label: Held By}
+    - {name: customer, type: link, to: Customer}
+    - {name: customer_title, type: data, max_length: 140, in_list: true, label: Customer Name}
+    - {name: held_at, type: datetime, required: true, in_list: true}
+    - {name: total, type: currency, in_list: true, description: "What it came to when it was held; it is priced again when resumed"}
+    - {name: line_count, type: int, read_only: true, in_list: true, label: Lines}
+    - {name: cart, type: json, description: "The basket as the till keeps it: lines, the buyer's registration, promotion codes, voided lines, approvals, the sale's discount. Never a card's code"}
+  indexes: [[pos_profile, cashier]]
+  list: {columns: [customer_title, cashier, pos_profile, held_at, total], sort: held_at desc}

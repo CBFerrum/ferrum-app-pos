@@ -18,7 +18,7 @@ import type { Doc } from "@ferrum/records";
 import { useAsk } from "./Approval";
 import { CardInputs, CodeOnce, makeCode } from "./Card";
 import { Currency, num, str, useMoney } from "./fmt";
-import { till } from "./lib/offline";
+import { till, unreachable } from "./lib/offline";
 import { pointsValue } from "./lib/pay";
 import { addItem, invoiceBody, paymentRows, setQty as setCartQty, withMethodNames, type CartLine } from "./lib/pos";
 import { checkRefund, REASONS, refundPayments, refundsFromProposal, returnBody, returnItems, type CardProof, type Found, type Picks, type RefundRow, type Sheet } from "./lib/returns";
@@ -178,9 +178,9 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const attempt = useRef<{ json: string; key: string; outKey: string } | null>(null);
-  const asker = useAsk(profileId, () => false);
+  const asker = useAsk(session, () => false);
   // A copy of the sale's receipt is the server's: marked COPY, counted, and asked for with the reason and approval the register wants.
-  const copies = useReprint(profile, limits, reasons, false);
+  const copies = useReprint(session, limits, reasons, false);
 
   const data = sheet.data;
   const items = useMemo(() => (data ? returnItems(data, picks) : []), [data, picks]);
@@ -300,6 +300,8 @@ export function Sale({ profile, session, modes, limits, reasons, sale, onBack, o
       void qc.invalidateQueries({ queryKey: ["list", "PosInvoice"] });
       onDone(withMethodNames(profile, { ...done, is_return: true, against: data.sale.number }));
     } catch (e) {
+      // A refused exchange took its drafts back: the next try makes new ones. A lost answer keeps them, so pressing again repeats it safely.
+      if (exchanging && !unreachable(e)) attempt.current = null;
       setError(errorMessage(e));
       setBusy(false);
     }

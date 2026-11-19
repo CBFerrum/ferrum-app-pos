@@ -1,9 +1,10 @@
-//! Register set-up: payment methods, profiles, barcodes, and the read-only points ledger.
+//! Register set-up: payment methods, profiles, barcodes, and the read-only points ledger; and the sales a till sets aside.
 
-use crate::Mode;
+use crate::{Mode, Profile, is_manager};
 use async_trait::async_trait;
 use ferrum_domain::util::{b, get, id, rows, s, set};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
+use serde_json::Value;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -60,7 +61,7 @@ impl DocHook for PosProfileHook {
         {
             errors.push(FieldError::new("tax_template", "belongs to another company"));
         }
-        for f in ["write_off_account", "cash_difference_account"] {
+        for f in ["write_off_account", "cash_difference_account", "tip_account"] {
             if let Some(a) = id(doc, f)
                 && !same_company(hc, "Account", a, company).await?
             {
@@ -93,6 +94,14 @@ impl DocHook for PosProfileHook {
             errors.push(FieldError::new("payments", "only one payment method can be the default"));
         }
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+    }
+
+    /// `set_pin`: the caller sets their own till PIN (limits.rs).
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, _doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "set_pin" {
+            return Ok(None);
+        }
+        crate::limits::set_pin(hc, params).await.map(Some)
     }
 }
 
@@ -182,5 +191,48 @@ impl DocHook for EngineOnly {
 
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
         if hc.ctx.is_system { Ok(()) } else { Err(Error::Forbidden("written by the till itself; it cannot be deleted".into())) }
+    }
+}
+
+/// The most lines a held basket keeps, and the most it may weigh.
+const HELD_LINES: usize = 500;
+const HELD_BYTES: usize = 262_144;
+
+/// A sale set aside at a till (`PosHeldSale`): the holder is the caller, whatever was sent; the register must admit them
+/// (or they are a POS Manager); the basket is bounded and never holds a card's code or PIN. It is made and deleted, never
+/// edited. An erasure blanks its basket without these checks (`set_values`).
+pub struct HeldSaleHook;
+
+#[async_trait]
+impl DocHook for HeldSaleHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        set(doc, "cashier", hc.ctx.email.to_lowercase());
+        let lines = doc.get("cart").and_then(|c| c.get("lines")).and_then(serde_json::Value::as_array).map_or(0, Vec::len);
+        set(doc, "line_count", lines as i64);
+        Ok(())
+    }
+
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").ok_or_else(|| Error::field("pos_profile", "is required"))?).await?;
+        if !profile.admits(&hc.ctx.email) && !is_manager(hc.ctx) {
+            return Err(Error::Forbidden(format!("{} is not allowed at register {}", hc.ctx.email, profile.name())));
+        }
+        let cart = doc.get("cart").filter(|c| !c.is_null()).ok_or_else(|| Error::field("cart", "is required"))?;
+        let qty = |l: &Value| {
+            l.get("qty").filter(|q| !q.is_null()).and_then(|q| ferrum_kernel::value::parse_decimal(q).ok()).is_some_and(|q| q > rust_decimal::Decimal::ZERO)
+        };
+        let item = |l: &Value| l.get("item").and_then(Value::as_str).is_some_and(|i| !i.trim().is_empty());
+        let lines = cart.get("lines").and_then(Value::as_array).filter(|ls| (1..=HELD_LINES).contains(&ls.len()));
+        if !lines.is_some_and(|ls| ls.iter().all(|l| l.is_object() && item(l) && qty(l))) {
+            return Err(Error::field("cart", format!("a basket of 1 to {HELD_LINES} lines, each an item and a quantity above zero")));
+        }
+        if serde_json::to_vec(cart).map_or(true, |b| b.len() > HELD_BYTES) {
+            return Err(Error::field("cart", "is too large to keep"));
+        }
+        let card = |l: &Value| ["stored_value_code", "stored_value_pin"].iter().any(|f| l.get(f).is_some_and(|v| !v.is_null() && v != ""));
+        if lines.is_some_and(|ls| ls.iter().any(card)) {
+            return Err(Error::field("cart", "a card's code is never held"));
+        }
+        Ok(())
     }
 }

@@ -1007,4 +1007,124 @@ async fn scenario() {
     t.k.run_action(&a, "FiscalYear", fy, "reopen_period", json!({"period_start": month.to_string()})).await.expect("reopened");
     t.submit(&manager, "PosClosingEntry", close7).await;
     t.books_balance(cid).await;
+
+    // ───────────── tips: on top of the sale, owed and never income, booked at the closing ─────────────
+    let liabilities = account("Current Liabilities").await;
+    let owed = |name: &str| json!({"account_name": name, "company": cid.to_string(), "parent_account": liabilities.to_string(), "root_type": "Liability"});
+    let tips = uid(&t.insert(&a, "Account", owed("Tips Payable")).await);
+    let tips2 = uid(&t.insert(&a, "Account", owed("Tips Payable 2")).await);
+    let bar = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Tips Bar", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(),
+                   "invoice_prefix": "TB", "payments": [{"mode_of_payment": cash["id"], "is_default": true, "allow_in_returns": true},
+                   {"mode_of_payment": card["id"], "allow_in_returns": true}, {"mode_of_payment": credit["id"], "allow_in_returns": true},
+                   {"mode_of_payment": points["id"], "allow_in_returns": true}]}),
+        )
+        .await);
+    let opened = t.insert(&cashier, "PosOpeningEntry", json!({"pos_profile": bar.to_string()})).await;
+    let tb = uid(&t.submit(&cashier, "PosOpeningEntry", uid(&opened)).await);
+    let at_bar = |customer: Option<Uuid>, qty: &str, pays: Value, tip: &str| {
+        let mut v = json!({"pos_profile": bar.to_string(), "items": [line(widget, qty)], "payments": pays, "tip_amount": tip});
+        if let Some(c) = customer {
+            v["customer"] = json!(c.to_string());
+        }
+        v
+    };
+    let refused = |v: Value| {
+        let (t, cashier, a) = (&t, &cashier, &a);
+        async move {
+            match t.k.insert(cashier, "PosInvoice", obj(v)).await {
+                Err(e) => format!("{e:?}"),
+                Ok(d) => {
+                    let e = t.k.submit(cashier, "PosInvoice", uid(&d), None).await.expect_err("the sale should be refused");
+                    t.k.delete(a, "PosInvoice", uid(&d), None).await.expect("drop the draft");
+                    format!("{e:?}")
+                }
+            }
+        }
+    };
+    // tip_needs_the_registers_account: a register without a Tips Account takes no tip.
+    let e = refused(at_bar(None, "1", json!([pay(&cash, "120")]), "10")).await;
+    assert!(e.contains("this register takes no tips"), "tip_needs_the_registers_account: {e}");
+    t.k.update(&a, "PosProfile", bar, obj(json!({"tip_account": tips.to_string()})), None).await.expect("the register takes tips");
+    // tip_is_on_top_of_the_total: 110 and a tip of 10, paid with 130 in cash: 10 change; the total, taxes and points are the
+    // sale's alone, as on the same sale without a tip.
+    let plain = t.sell(&cashier, at_bar(Some(alice), "1", json!([pay(&cash, "110")]), "0")).await;
+    let tipped = t.sell(&cashier, at_bar(Some(alice), "1", json!([pay(&cash, "130")]), "10")).await;
+    assert_eq!(
+        (
+            dec(&tipped["rounded_total"]),
+            dec(&tipped["change_amount"]),
+            dec(&tipped["total_taxes"]),
+            tipped["loyalty_points_earned"].clone(),
+            tipped["tip_account"].clone()
+        ),
+        (dec(&plain["rounded_total"]), n("10"), dec(&plain["total_taxes"]), plain["loyalty_points_earned"].clone(), json!(tips.to_string())),
+        "tip_is_on_top_of_the_total: {tipped:?}"
+    );
+    assert!(plain["tip_account"].is_null(), "no tip, no tips account: {plain:?}");
+    // tip_must_be_covered: 125 in cash for 110 and a tip of 10, with no write-off allowance: refused.
+    let e = refused(at_bar(None, "1", json!([pay(&cash, "115")]), "10")).await;
+    assert!(e.contains("insufficient payment"), "tip_must_be_covered: {e}");
+    // tip_is_paid_in_money: on account (or in points), the tip would become money owed to staff out of a debt: refused.
+    let e = refused(at_bar(Some(bob), "1", json!([pay(&credit, "120")]), "10")).await;
+    assert!(e.contains("a tip is paid in cash or by card"), "tip_is_paid_in_money: {e}");
+    // no_tip_on_a_return.
+    let back = json!({"pos_profile": bar.to_string(), "is_return": true, "return_against": plain["id"], "items": [line(widget, "-1")], "payments": [pay(&cash, "-110")], "tip_amount": "10"});
+    let e = refused(back).await;
+    assert!(e.contains("a return carries no tip"), "no_tip_on_a_return: {e}");
+    // tip_on_a_credit_sale_leaves_the_invoice_open: 110 on account and a 10 tip in cash.
+    let on_account = t.sell(&cashier, at_bar(Some(bob), "1", json!([pay(&credit, "110"), pay(&cash, "10")]), "10")).await;
+    // return_never_refunds_the_tip: paid 120 by card with a 10 tip, a full return gives back 110 at most.
+    let by_card = t.sell(&cashier, at_bar(None, "1", json!([pay(&card, "120")]), "10")).await;
+    let back = |pays: Value| json!({"pos_profile": bar.to_string(), "is_return": true, "return_against": by_card["id"], "items": [line(widget, "-1")], "payments": pays});
+    let e = refused(back(json!([pay(&card, "-120")]))).await;
+    assert!(e.contains("refunds of 120 must equal the return total of 110") || e.contains("at most 110"), "return_never_refunds_the_tip: {e}");
+    t.sell(&cashier, back(json!([pay(&card, "-110")]))).await;
+    // points_do_not_come_back_as_cash_through_a_tip: 4 points (2.00) and 118 by card for 110 and a 10 tip; the card's tip comes off
+    // what it may give back, so a full return gives at most 108 in money and the points go back as points.
+    let mixed = t.sell(&cashier, at_bar(Some(alice), "1", json!([{"mode_of_payment": points["id"], "loyalty_points": 4}, pay(&card, "118")]), "10")).await;
+    let back = |pays: Value| json!({"pos_profile": bar.to_string(), "is_return": true, "return_against": mixed["id"], "items": [line(widget, "-1")], "payments": pays});
+    let e = refused(back(json!([pay(&card, "-110")]))).await;
+    assert!(e.contains("at most 108 can be refunded"), "points_do_not_come_back_as_cash_through_a_tip: {e}");
+    t.sell(&cashier, back(json!([{"mode_of_payment": points["id"], "loyalty_points": 4}, pay(&card, "-108")]))).await;
+    // void_takes_the_tip_with_it: a tipped sale voided before the closing books no tip.
+    let voided = t.sell(&cashier, at_bar(None, "1", json!([pay(&cash, "120")]), "10")).await;
+    let why = t.find_one("PosReason", json!({"reason": "Scanned in error"})).await;
+    t.k.run_action(&manager, "PosInvoice", uid(&voided), "void", json!({"reason": why["id"]})).await.expect("void_takes_the_tip_with_it: voided");
+    // tip_account_is_fixed_at_the_sale: the register's account changes after the sales; the closing credits the one each sale took.
+    t.k.update(&a, "PosProfile", bar, obj(json!({"tip_account": tips2.to_string()})), None).await.expect("another tips account");
+    // closing_books_the_tip_as_owed_not_income: four tips of 10 (the voided sale's is not one), owed in the tips account on the
+    // sales' day; the invoices settled for what paid for the goods; income moved by the goods only; the drawer expected the tips.
+    let (tips_before, sales_before) = (t.gl("Tips Payable").await, t.gl("Sales").await);
+    let closing = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": tb.to_string()})).await;
+    let cash_row = closing["payments"].as_array().unwrap().iter().find(|r| r["mode_of_payment"] == cash["id"]).cloned().unwrap_or_default();
+    assert_eq!(dec(&cash_row["expected_amount"]), n("240"), "closing_books_the_tip_as_owed_not_income: 110 + 120 + 10 in the drawer: {closing:?}");
+    let closed = t.submit(&manager, "PosClosingEntry", uid(&closing)).await;
+    assert_eq!(dec(&closed["tips"]), n("40"), "closing_books_the_tip_as_owed_not_income: the shift's tips");
+    assert_eq!(t.gl("Tips Payable").await - tips_before, n("-40"), "closing_books_the_tip_as_owed_not_income: owed, a credit of 40");
+    assert_eq!(t.gl("Sales").await - sales_before, n("-300"), "closing_books_the_tip_as_owed_not_income: income is the goods only (5 sold, 2 returned)");
+    assert_eq!(t.gl("Tips Payable 2").await, Decimal::ZERO, "tip_account_is_fixed_at_the_sale");
+    let si = |sale: &Doc| sale["consolidated_invoice"].as_str().map(|s| s.parse::<Uuid>().unwrap());
+    let alice_si = t.get("SalesInvoice", si(&t.get("PosInvoice", uid(&tipped)).await).expect("invoiced")).await;
+    assert_eq!(dec(&alice_si["outstanding_amount"]), Decimal::ZERO, "closing_books_the_tip_as_owed_not_income: settled for the goods, nothing outstanding");
+    let bob_si = t.get("SalesInvoice", si(&t.get("PosInvoice", uid(&on_account)).await).expect("invoiced")).await;
+    assert_eq!(dec(&bob_si["outstanding_amount"]), n("110"), "tip_on_a_credit_sale_leaves_the_invoice_open");
+    let day: Vec<chrono::NaiveDate> = {
+        let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query_scalar("select l.posting_date from journal_line l where l.tenant_id = $1 and l.account_id = $2")
+            .bind(tenant)
+            .bind(tips)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap()
+    };
+    assert!(!day.is_empty() && day.iter().all(|d| d.to_string() == tipped["posting_date"].as_str().unwrap()), "on the sales' day: {day:?}");
+    t.books_balance(cid).await;
+    // cancelled_closing_takes_the_tip_back: the tips account is back where it was.
+    t.k.cancel(&manager, "PosClosingEntry", uid(&closed), None).await.expect("cancelled_closing_takes_the_tip_back: cancelled");
+    assert_eq!(t.gl("Tips Payable").await, tips_before, "cancelled_closing_takes_the_tip_back");
+    t.books_balance(cid).await;
 }

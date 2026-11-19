@@ -4,6 +4,7 @@
 //! and the register's dates on the workspace's day rather than UTC's.
 
 use chrono::Timelike;
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery, SiteRequest};
 use ferrum_meta::Catalog;
@@ -89,6 +90,30 @@ impl T {
         };
         let res = ferrum_kernel::Site::handle(&ferrum_app_pos::site::PosSite, &self.k, req).await?;
         Ok(serde_json::from_slice(&res.body).unwrap_or(Value::Null))
+    }
+    /// An action of a record, as a person's request runs it.
+    async fn act(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value, Error> {
+        self.k.run_action(ctx, entity, id, action, params).await
+    }
+    /// A person's PIN as it is kept: its hash and the wrong tries counted.
+    async fn pin(&self, email: &str) -> Option<(String, i32)> {
+        let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+        sqlx::query_as("select pin_hash, failures from pos_staff_pin where tenant_id = $1 and email = $2")
+            .bind(self.tenant)
+            .bind(email)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap()
+    }
+    /// The approvals made for one sale (by the id the till gave it).
+    async fn approvals_for(&self, sale: &str) -> i64 {
+        let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+        sqlx::query_scalar("select count(*) from e_pos_approval where tenant_id = $1 and sale = $2")
+            .bind(self.tenant)
+            .bind(sale)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap()
     }
 }
 
@@ -245,23 +270,116 @@ async fn scenario() {
     let e = t.refused(&cashier, back.clone()).await;
     assert!(messages(&e).contains("more than the 50 you may give"), "{e:?}");
 
+    // whole_sale_discount_within_the_limit: the sale's own discount counts with its lines' against the cashier's 5% here; within
+    // it the sale is taken, and the discount is that share of the total.
+    let whole = |pct: &str, pays: Value| {
+        let mut v = sale(json!([line(widget, "1")]), pays);
+        v["discount_percent"] = json!(pct);
+        v
+    };
+    let within = t.sell(&cashier, whole("5", json!([pay(&card, "104.50")]))).await;
+    assert_eq!(
+        (dec(&within["total"]), dec(&within["discount_amount"]), dec(&within["rounded_total"])),
+        (n("100"), n("5"), n("104.50")),
+        "whole_sale_discount_within_the_limit: {within:?}"
+    );
+    // whole_sale_discount_beyond_the_limit_needs_an_approval: 8% is past it; another person's approval of that discount for that
+    // sale lets it through.
+    let past = Uuid::now_v7().to_string();
+    let mut beyond = whole("8", json!([pay(&card, "101.20")]));
+    beyond["id"] = json!(past);
+    let e = t.refused(&cashier, beyond.clone()).await;
+    assert!(messages(&e).contains("exceeds"), "whole_sale_discount_beyond_the_limit_needs_an_approval: {e:?}");
+    t.act(&a, "PosProfile", counter, "set_pin", json!({"pin": "86420"})).await.expect("the administrator's PIN");
+    let approval = json!({"approver": "admin@shop.test", "pin": "86420", "act": "Discount", "amount": "8", "reason": "a regular", "sale": past});
+    let ok =
+        t.act(&cashier, "PosOpeningEntry", uid(&open), "approve", approval).await.expect("whole_sale_discount_beyond_the_limit_needs_an_approval: approved");
+    beyond["approvals"] = json!([{"approval": ok["approval"]}]);
+    let approved = t.sell(&cashier, beyond).await;
+    assert_eq!(dec(&approved["discount_amount"]), n("8"), "whole_sale_discount_beyond_the_limit_needs_an_approval: {approved:?}");
+    // offline_sale_with_a_whole_sale_discount_agrees: sold offline with the register's snapshot and the sale's discount, the
+    // server prices it again with the same discount and finds no difference.
+    let snap = t.site(&cashier, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("the snapshot");
+    let mut gone = whole("5", json!([pay(&card, "104.50")]));
+    gone["sold_offline"] = json!(true);
+    gone["price_snapshot"] = snap["version"].clone();
+    gone["till_total"] = json!("104.50");
+    let gone = t.sell(&cashier, gone).await;
+    assert_eq!(dec(&gone["replay_total"]), n("104.50"), "offline_sale_with_a_whole_sale_discount_agrees: {gone:?}");
+    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"pos_invoice": gone["id"]})).unwrap(), ..Default::default() };
+    assert!(t.k.list(&a, "PosPriceDifference", &q).await.unwrap().rows.is_empty(), "offline_sale_with_a_whole_sale_discount_agrees: a difference was recorded");
+
     // ───────────── 2. approval by another person's PIN, voids with reasons ─────────────
-    let profile = counter.to_string();
-    let ask = |who: &str, pin: &str, action: &str, amount: Option<&str>, sale: &str| json!({"profile": profile, "approver": who, "pin": pin, "action": action, "amount": amount, "reason": "regular customer", "sale": sale});
+    // Both are operations, as an agent or an API client asks them too: `set_pin` of a register, and `approve` of the
+    // cashier's own open session. The register's site has no route for either.
+    let session = uid(&open);
+    let ask = |who: &str, pin: &str, act: &str, amount: Option<&str>, sale: &str| json!({"approver": who, "pin": pin, "act": act, "amount": amount, "reason": "regular customer", "sale": sale});
+    let approve = |key: &str, params: Value| Invocation::new("pos.pos_opening_entry.approve", json!({"id": session, "params": params})).key(key);
     let new_id = || Uuid::now_v7().to_string();
     let (w1, w2, w3) = (new_id(), new_id(), new_id());
-    let no_pin = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
+    let no_pin = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
     assert!(no_pin.is_err(), "no PIN set yet");
-    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "12"})).await.expect_err("a PIN is four to twelve digits");
-    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("set a PIN");
-    let wrong = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "1111", "Discount", Some("15"), &w1)).await;
-    assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m.contains("does not match")), "{wrong:?}");
-    let own = t.site(&manager, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
-    assert!(own.is_err(), "nobody approves their own act");
-    let unbound = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), "")).await;
+
+    // existing_actions_say_what_done_means: the three actions the till already had say what "done" is, and what they answer.
+    for (id, done) in [
+        ("pos.pos_invoice.void", "The sale is cancelled: its stock is back, it is out of the session's takings, and it keeps who voided it and why"),
+        ("pos.pos_stock_shortfall.resolve", "The shortfall is Put Right, with how, by whom and when"),
+        ("pos.pos_price_difference.review", "The price difference is Reviewed, with what was found, by whom and when"),
+    ] {
+        let cap = t.k.capability(&manager, id).unwrap_or_else(|e| panic!("existing_actions_say_what_done_means: {id}: {e:?}"));
+        assert_eq!(cap.completion, done, "existing_actions_say_what_done_means: {id}");
+        assert!(cap.output["properties"]["status"].is_object(), "existing_actions_say_what_done_means: {id} answers its status: {}", cap.output);
+    }
+
+    // set_pin_is_an_operation: in a cashier's catalog, changing something, run through the gate; the route is gone.
+    let cap = t.k.capability(&cashier, "pos.pos_profile.set_pin").expect("set_pin_is_an_operation: in a cashier's catalog");
+    assert!(cap.effect.changes(), "set_pin_is_an_operation: it changes something");
+    t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "12"})).await.expect_err("a PIN is four to twelve digits");
+    let set =
+        t.k.invoke(&manager, Invocation::new("pos.pos_profile.set_pin", json!({"id": counter, "params": {"pin": "4321"}})).key("pin-1"))
+            .await
+            .expect("set_pin_is_an_operation: set through the gate");
+    assert_eq!(set.result, json!({"ok": true}), "set_pin_is_an_operation");
+    let kept = t.pin("manager@shop.test").await.expect("set_pin_is_an_operation: the manager's PIN is kept");
+    assert!(kept.0.starts_with("$argon2id$") && kept.1 == 0, "set_pin_is_an_operation: as a hash, no wrong tries: {kept:?}");
+    let gone = t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await;
+    assert!(matches!(gone, Err(Error::NotFound(_))), "set_pin_is_an_operation: no route sets a PIN: {gone:?}");
+
+    // outside_person_sets_no_pin: a portal person or a guest, or someone with no e-mail, keeps no PIN in the workspace.
+    let strips: [fn(&mut Ctx); 2] = [|c| c.outside = true, |c| c.email.clear()];
+    for strip in strips {
+        let mut outsider = cashier.clone();
+        strip(&mut outsider);
+        let refused = t.act(&outsider, "PosProfile", counter, "set_pin", json!({"pin": "5555"})).await;
+        assert!(matches!(refused, Err(Error::Forbidden(ref m)) if m.contains("only a member")), "outside_person_sets_no_pin: {refused:?}");
+    }
+    assert_eq!(t.pin("cashier@shop.test").await, None, "outside_person_sets_no_pin: nothing kept");
+
+    let own = t.act(&manager, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
+    assert!(own.as_ref().is_err_and(|e| messages(e).contains("someone else approves")), "nobody approves their own act: {own:?}");
+    let unbound = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), "")).await;
     assert!(messages(&unbound.unwrap_err()).contains("name the sale"), "an approval is for one sale");
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await.expect("approved");
-    let approval = ok["approval"].as_str().unwrap().to_string();
+
+    // approve_is_an_operation_of_the_open_session: asked through the gate, it answers an approval that a sale then uses.
+    let first = t.k.invoke(&cashier, approve("a-1", ask("manager@shop.test", "4321", "Discount", Some("15"), &w1))).await;
+    let first = first.expect("approve_is_an_operation_of_the_open_session: approved");
+    assert!(!first.repeated, "approve_is_an_operation_of_the_open_session: done, not repeated");
+    assert_eq!(
+        (first.result["approver"].clone(), first.result["action"].clone()),
+        (json!("manager@shop.test"), json!("Discount")),
+        "approve_is_an_operation_of_the_open_session: {first:?}"
+    );
+    let approval = first.result["approval"].as_str().expect("approve_is_an_operation_of_the_open_session: the approval's id").to_string();
+    let gone = t
+        .site(
+            &cashier,
+            "POST",
+            "/approve",
+            Value::Null,
+            json!({"profile": counter, "approver": "manager@shop.test", "pin": "4321", "action": "Discount", "reason": "r", "sale": w1}),
+        )
+        .await;
+    assert!(matches!(gone, Err(Error::NotFound(_))), "approve_is_an_operation_of_the_open_session: no route approves: {gone:?}");
     let mut with = sale(off("15", "1"), json!([pay(&card, "93.50")]));
     with["approvals"] = json!([{"approval": approval}]);
     // Bound to the sale it was given for: another sale naming it is refused.
@@ -273,17 +391,41 @@ async fn scenario() {
     assert_eq!(approved["approvals"][0]["approver"], json!("manager@shop.test"), "the sale keeps who approved it");
     let used = t.find_one("PosApproval", json!({"id": approval})).await;
     assert_eq!(used["used_for"], approved["id"]);
+
+    // approve_repeat_answers_the_same_approval: the same call under the same key is answered, and nothing is made again.
+    let repeat = t.k.invoke(&cashier, approve("a-1", ask("manager@shop.test", "4321", "Discount", Some("15"), &w1))).await;
+    let repeat = repeat.expect("approve_repeat_answers_the_same_approval: answered");
+    assert!(repeat.repeated && repeat.result["approval"] == json!(approval), "approve_repeat_answers_the_same_approval: {repeat:?}");
+    assert_eq!(t.approvals_for(&w1).await, 1, "approve_repeat_answers_the_same_approval: one row");
+
+    // approve_wrong_pin_is_counted_and_leaves_nothing: refused and counted, whatever becomes of the action; no approval and no
+    // receipt are kept, so the same key may try again, and with the right PIN it is done.
+    let w6 = new_id();
+    let wrong = t.k.invoke(&cashier, approve("a-2", ask("manager@shop.test", "1111", "Discount", Some("15"), &w6))).await;
+    assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m.contains("does not match")), "approve_wrong_pin_is_counted_and_leaves_nothing: {wrong:?}");
+    assert_eq!(t.approvals_for(&w6).await, 0, "approve_wrong_pin_is_counted_and_leaves_nothing: no approval");
+    assert_eq!(t.pin("manager@shop.test").await.map(|p| p.1), Some(1), "approve_wrong_pin_is_counted_and_leaves_nothing: the wrong try is counted");
+    let receipts: i64 = {
+        let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query_scalar("select count(*) from logic_effect where tenant_id = $1 and effect_key = 'a-2'").bind(tenant).fetch_one(&mut *tx).await.unwrap()
+    };
+    assert_eq!(receipts, 0, "approve_wrong_pin_is_counted_and_leaves_nothing: no receipt");
+    let right = t.k.invoke(&cashier, approve("a-2", ask("manager@shop.test", "4321", "Discount", Some("15"), &w6))).await;
+    let right = right.expect("approve_wrong_pin_is_counted_and_leaves_nothing: the same key, the right PIN");
+    assert!(!right.repeated && right.result["approval"].is_string(), "approve_wrong_pin_is_counted_and_leaves_nothing: {right:?}");
+    assert_eq!(t.approvals_for(&w6).await, 1, "approve_wrong_pin_is_counted_and_leaves_nothing: made once");
+
     other["id"] = json!(new_id());
     let again = t.refused(&cashier, other).await;
     assert!(messages(&again).contains("exceeds the 5% allowed") || messages(&again).contains("already used"), "used once: {again:?}");
     let mut more = sale(off("20", "1"), json!([pay(&card, "88")]));
     more["id"] = json!(w3);
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w3)).await.expect("approved");
+    let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w3)).await.expect("approved");
     more["approvals"] = json!([{"approval": ok["approval"]}]);
     assert!(messages(&t.refused(&cashier, more.clone()).await).contains("exceeds"), "approved for 15%, not 20%: a sale changed beyond it needs a new one");
     // Lapsed: unused after the register's minutes, it covers nothing.
     let w4 = new_id();
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w4)).await.expect("approved");
+    let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w4)).await.expect("approved");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     sqlx::query("update e_pos_approval set expires_at = now() - interval '1 second' where tenant_id = $1 and id = $2")
         .bind(tenant)
@@ -299,17 +441,29 @@ async fn scenario() {
     // Approved now for a sale made after the session closes: it lapses with the session.
     let w5 = new_id();
     let kept_for_later =
-        t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w5)).await.expect("approved");
+        t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w5)).await.expect("approved");
     // The refund over the cashier's 50, approved for up to 100.
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("100"), &back_id)).await.expect("approved");
+    let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Refund", Some("100"), &back_id)).await.expect("approved");
     let mut back = back;
     back["approvals"] = json!([{"approval": ok["approval"]}]);
     t.sell(&cashier, back).await;
     // Someone whose own limits do not reach cannot approve.
     let colleague = t.user("colleague@shop.test", &["Cashier"]).await;
-    t.site(&colleague, "POST", "/pin", Value::Null, json!({"pin": "2468"})).await.expect("PIN");
-    let weak = t.site(&cashier, "POST", "/approve", Value::Null, ask("colleague@shop.test", "2468", "Void Sale", None, &w1)).await;
+    t.act(&colleague, "PosProfile", counter, "set_pin", json!({"pin": "2468"})).await.expect("PIN");
+    let weak = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("colleague@shop.test", "2468", "Void Sale", None, &w1)).await;
     assert!(matches!(weak, Err(Error::Forbidden(ref m)) if m.contains("may not approve")), "{weak:?}");
+
+    // approve_only_in_your_own_session: another cashier does not find this session at all; a manager, who may write it, is
+    // refused, although the administrator they name may approve anything.
+    t.act(&a, "PosProfile", counter, "set_pin", json!({"pin": "86420"})).await.expect("the administrator's PIN");
+    let theirs = t.act(&colleague, "PosOpeningEntry", session, "approve", ask("admin@shop.test", "86420", "Discount", Some("15"), &w1)).await;
+    assert!(matches!(theirs, Err(Error::NotFound(_))), "approve_only_in_your_own_session: another cashier: {theirs:?}");
+    let managed = t.act(&manager, "PosOpeningEntry", session, "approve", ask("admin@shop.test", "86420", "Discount", Some("15"), &w1)).await;
+    assert!(
+        matches!(managed, Err(Error::Forbidden(ref m)) if m.contains("in your own session")),
+        "approve_only_in_your_own_session: a manager on the cashier's session: {managed:?}"
+    );
+    assert_eq!(t.approvals_for(&w1).await, 1, "approve_only_in_your_own_session: nothing made");
     // Voided lines carry one of the business's reasons.
     let scanned = t.find_one("PosReason", json!({"reason": "Scanned in error"})).await;
     let faulty = t.find_one("PosReason", json!({"reason": "Faulty"})).await;
@@ -324,7 +478,7 @@ async fn scenario() {
     let alone = t.k.run_action(&cashier, "PosInvoice", uid(&kept), "void", params.clone()).await;
     assert!(matches!(alone, Err(Error::Forbidden(_))), "{alone:?}");
     let ok = t
-        .site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Void Sale", None, kept["id"].as_str().unwrap()))
+        .act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Void Sale", None, kept["id"].as_str().unwrap()))
         .await
         .expect("approved");
     let mut params = params;
@@ -337,9 +491,9 @@ async fn scenario() {
     );
     // Five wrong tries lock the PIN, the right one included, for a while; nothing keeps the PIN itself.
     for _ in 0..5 {
-        let _ = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "0000", "Discount", Some("15"), &w1)).await;
+        let _ = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "0000", "Discount", Some("15"), &w1)).await;
     }
-    let locked = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
+    let locked = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &w1)).await;
     assert!(matches!(locked, Err(Error::TooManyRequests(_))), "{locked:?}");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     let (hash, leaked): (String, bool) = sqlx::query_as(
@@ -351,6 +505,90 @@ async fn scenario() {
     .unwrap();
     assert!(hash.starts_with("$argon2id$") && !leaked, "{hash}");
     drop(tx);
+
+    // ───────────── 3. held sales, kept by the server for the holder and the managers ─────────────
+    let counts = || {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            let (moves, sales): (i64, i64) =
+                sqlx::query_as("select (select count(*) from stock_move where tenant_id = $1), (select count(*) from e_pos_invoice where tenant_id = $1)")
+                    .bind(t.tenant)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+            (moves, sales)
+        }
+    };
+    let before = counts().await;
+    let held = |key: &str, cart: Value| {
+        json!({"id": key, "pos_profile": counter.to_string(), "cashier": "manager@shop.test", "customer_title": "Walk-in",
+               "held_at": "2026-11-19T10:00:00Z", "total": "220", "cart": cart})
+    };
+    let basket = json!({"key": "k", "customer": {"id": null}, "lines": [{"key": "w", "item": widget.to_string(), "item_name": "widget", "qty": 2}]});
+    // held_sale_is_its_holders: whatever `cashier` says, it is the caller's; a colleague neither reads nor deletes it; a manager does.
+    let h1 = new_id();
+    let h1u: Uuid = h1.parse().unwrap();
+    let kept = t.insert(&cashier, "PosHeldSale", held(&h1, basket.clone())).await;
+    assert_eq!((kept["cashier"].clone(), kept["line_count"].clone()), (json!("cashier@shop.test"), json!(1)), "held_sale_is_its_holders: {kept:?}");
+    assert!(t.k.get(&colleague, "PosHeldSale", h1u, false).await.is_err(), "held_sale_is_its_holders: a colleague does not read it");
+    assert!(t.k.delete(&colleague, "PosHeldSale", h1u, None).await.is_err(), "held_sale_is_its_holders: a colleague does not delete it");
+    let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"pos_profile": counter.to_string()})).unwrap(), ..Default::default() };
+    assert!(t.k.list(&manager, "PosHeldSale", &q).await.unwrap().rows.iter().any(|r| r["id"] == json!(h1)), "held_sale_is_its_holders: a manager lists it");
+    t.k.delete(&manager, "PosHeldSale", h1u, None).await.expect("held_sale_is_its_holders: a manager discards it");
+    // held_sale_needs_the_register: someone a register does not admit holds nothing there.
+    let back_room = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Back Room", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(),
+                   "invoice_prefix": "BR", "payments": [{"mode_of_payment": cash["id"], "is_default": true}], "users": [{"user": "cashier@shop.test"}]}),
+        )
+        .await);
+    let mut there = held(&new_id(), basket.clone());
+    there["pos_profile"] = json!(back_room.to_string());
+    let e = t.k.insert(&colleague, "PosHeldSale", obj(there)).await.unwrap_err();
+    assert!(matches!(e, Error::Forbidden(ref m) if m.contains("not allowed at register")), "held_sale_needs_the_register: {e:?}");
+    // held_sale_never_keeps_a_card: a card's code or PIN on a line is refused.
+    for f in ["stored_value_code", "stored_value_pin"] {
+        let mut with_card = basket.clone();
+        with_card["lines"][0][f] = json!("GIFT-0000-0000-0009");
+        let e = t.k.insert(&cashier, "PosHeldSale", obj(held(&new_id(), with_card))).await.unwrap_err();
+        assert!(messages(&e).contains("a card's code is never held"), "held_sale_never_keeps_a_card: {f}: {e:?}");
+    }
+    // held_sale_cart_is_bounded: a basket is 1 to 500 lines, each an item and a quantity above zero, and not too large.
+    let many: Vec<Value> = (0..501).map(|i| json!({"key": format!("l{i}"), "item": widget.to_string(), "item_name": "widget", "qty": 1})).collect();
+    let wrong_qty = json!({"lines": [{"key": "w", "item": widget.to_string(), "qty": 0}]});
+    for (what, cart) in [
+        ("no lines", json!({"lines": []})),
+        ("501 lines", json!({"lines": many})),
+        ("a string", json!("lines")),
+        ("no quantity", wrong_qty),
+        ("none", Value::Null),
+    ] {
+        let e = t.k.insert(&cashier, "PosHeldSale", obj(held(&new_id(), cart))).await;
+        assert!(e.as_ref().is_err_and(|e| messages(e).contains("cart")), "held_sale_cart_is_bounded: {what}: {e:?}");
+    }
+    // held_sale_create_twice_is_one: the same create under its key is answered, and one row is kept.
+    let h2 = new_id();
+    let create = Invocation::new("pos.pos_held_sale.create", json!({"values": held(&h2, basket.clone())})).key(format!("held:{h2}"));
+    let first = t.k.invoke(&cashier, create.clone()).await.expect("held_sale_create_twice_is_one: held");
+    let again = t.k.invoke(&cashier, create).await.expect("held_sale_create_twice_is_one: held again");
+    assert!(!first.repeated && again.repeated, "held_sale_create_twice_is_one: {again:?}");
+    assert_eq!(t.k.list(&manager, "PosHeldSale", &q).await.unwrap().rows.iter().filter(|r| r["id"] == json!(h2)).count(), 1, "held_sale_create_twice_is_one");
+    // held_sale_resumed_once: resuming deletes it; the second till to resume it finds nothing.
+    let h2u: Uuid = h2.parse().unwrap();
+    t.k.delete(&cashier, "PosHeldSale", h2u, None).await.expect("held_sale_resumed_once: resumed");
+    let twice = t.k.delete(&cashier, "PosHeldSale", h2u, None).await;
+    assert!(matches!(twice, Err(Error::NotFound(_))), "held_sale_resumed_once: {twice:?}");
+    // held_sale_is_no_sale: nothing was sold and no stock moved.
+    assert_eq!(counts().await, before, "held_sale_is_no_sale");
+    // held_sale_is_erasable: an erasure by customer blanks its basket and the name on it.
+    let pos = ferrum_app_pos::packages().unwrap().into_iter().find(|p| p.name() == "pos").expect("the package");
+    assert!(
+        pos.manifest.personal_data.iter().any(|d| d.entity == "PosHeldSale" && d.match_field == "customer" && d.erase.iter().any(|f| f == "cart")),
+        "held_sale_is_erasable"
+    );
 
     // ───────────── 4. stored value at the till ─────────────
     let current = uid(&t.find_one("Account", json!({"account_name": "Current Liabilities", "company": cid.to_string()})).await);
@@ -547,10 +785,10 @@ async fn scenario() {
     // At the lowest price sold over the window (85, a 15% sale), less the 20% fee for damaged goods, taxed: 74.80.
     let e = t.refused(&cashier, unreceipted(&r1, json!([onto_new.clone()]))).await;
     assert!(messages(&e).contains("may not take returns without a receipt"), "{e:?}");
-    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "4321"})).await.expect("the manager's PIN again");
+    t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "4321"})).await.expect("the manager's PIN again");
     let mut approvals = Vec::new();
     for (act, amount) in [("Return Without Receipt", None), ("Refund", Some("100"))] {
-        let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", act, amount, &r1)).await.expect("approved");
+        let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", act, amount, &r1)).await.expect("approved");
         approvals.push(json!({"approval": ok["approval"]}));
     }
     let mut by_card = unreceipted(&r1, json!([pay(&card, "-74.80")]));
@@ -564,33 +802,67 @@ async fn scenario() {
     assert_eq!((dec(&back_in["rounded_total"]), back_in["items"][0]["warehouse"].clone()), (n("-74.80"), damaged["id"].clone()), "{back_in:?}");
     assert_eq!(back_in["invoiced_at_sale"], json!(true), "its own credit note at once");
     assert_eq!(balance("GIFT-CRED-0000-0003").await, n("74.80"), "refunded onto new store credit");
-    // An exchange, the customer paying the difference: one widget back (with its receipt), two out.
+    // An exchange, the customer paying the difference: one widget back (with its receipt), two out. As the till does it: each
+    // half a draft made under its own id, then the return's `exchange` action names the sale going out.
     let bought = t.sell(&cashier, sale(json!([line(widget, "1")]), json!([pay(&card, "110")]))).await;
-    let ex = |back: Value, out_qty: &str, pays: Value| {
-        json!({"back": {"pos_profile": counter.to_string(), "return_against": bought["id"], "items": back["items"], "payments": back["payments"]},
-               "out": {"pos_profile": counter.to_string(), "items": [line(widget, out_qty)], "payments": pays}})
-    };
-    let one_back = json!({"items": [line(widget, "-1")], "payments": []});
-    // As the till sends it: each half under the id the till gave it, which it keeps while the exchange is unchanged.
-    let mut first = ex(one_back, "2", json!([pay(&cash, "110")]));
-    (first["back"]["id"], first["out"]["id"]) = (json!(new_id()), json!(new_id()));
-    let done = t.site(&cashier, "POST", "/exchange", Value::Null, first.clone()).await.expect("exchanged");
+    let exchange =
+        |key: String, back: &Doc, out: &Doc| Invocation::new("pos.pos_invoice.exchange", json!({"id": back["id"], "params": {"out": out["id"]}})).key(key);
+    let draft = |v: Value| t.insert(&cashier, "PosInvoice", v);
+    let back =
+        draft(json!({"pos_profile": counter.to_string(), "is_return": true, "return_against": bought["id"], "items": [line(widget, "-1")], "payments": []}))
+            .await;
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "2")], "payments": [pay(&cash, "50")]})).await;
+    // exchange_is_all_or_nothing: a tender too small for what is still due: refused, and both halves stay drafts, unlinked.
+    let short = t.k.invoke(&cashier, exchange("x-short".into(), &back, &out)).await;
+    assert!(short.as_ref().is_err_and(|e| messages(e).contains("insufficient payment")), "exchange_is_all_or_nothing: {short:?}");
+    for half in [&back, &out] {
+        let now = t.find_one("PosInvoice", json!({"id": half["id"]})).await;
+        assert!(now["status"] == json!("Draft") && now["exchange"].is_null(), "exchange_is_all_or_nothing: {now:?}");
+    }
+    t.k.update(&cashier, "PosInvoice", uid(&out), obj(json!({"payments": [pay(&cash, "110")]})), None).await.expect("the tender");
+    let key = format!("exchange:{}", uid(&back));
+    let done = t.k.invoke(&cashier, exchange(key.clone(), &back, &out)).await.expect("exchanged").result;
     assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), n("110"), Decimal::ZERO), "{done}");
-    assert_eq!((done["return"]["exchange"].clone(), done["sale"]["exchange"].clone()), (done["sale"]["id"].clone(), done["return"]["id"].clone()));
-    assert_eq!((dec(&done["return"]["rounded_total"]), dec(&done["sale"]["rounded_total"]), dec(&done["sale"]["total_taxes"])), (n("-110"), n("220"), n("20")));
-    // Its answer lost, the till sends the same exchange again: refused, and nothing is made twice.
-    assert!(t.site(&cashier, "POST", "/exchange", Value::Null, first).await.is_err(), "the same exchange again");
-    t.find_one("PosInvoice", json!({"exchange": done["sale"]["id"]})).await;
-    t.find_one("PosInvoice", json!({"exchange": done["return"]["id"]})).await;
+    let (ret, sold) = (t.find_one("PosInvoice", json!({"id": done["return"]})).await, t.find_one("PosInvoice", json!({"id": done["sale"]})).await);
+    assert_eq!(
+        (ret["exchange"].clone(), sold["exchange"].clone(), done["sale_number"].clone()),
+        (done["sale"].clone(), done["return"].clone(), sold["number"].clone())
+    );
+    assert_eq!((dec(&ret["rounded_total"]), dec(&sold["rounded_total"]), dec(&sold["total_taxes"])), (n("-110"), n("220"), n("20")));
+    // exchange_repeat_is_answered_not_made_again: its answer lost, the till sends the same exchange under the same key: it is
+    // answered (until 0.12.0 it was refused), and nothing is made twice.
+    let again = t.k.invoke(&cashier, exchange(key, &back, &out)).await.expect("exchange_repeat_is_answered_not_made_again");
+    assert!(again.repeated && again.result["sale"] == done["sale"], "exchange_repeat_is_answered_not_made_again: {again:?}");
+    t.find_one("PosInvoice", json!({"exchange": done["sale"]})).await;
+    t.find_one("PosInvoice", json!({"exchange": done["return"]})).await;
     // And refunded the difference as the sale was paid: two back, one out.
     let bought = t.sell(&cashier, sale(json!([line(widget, "2")]), json!([pay(&card, "220")]))).await;
     let r2 = new_id();
-    let ok = t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "4321", "Refund", Some("110"), &r2)).await.expect("approved");
-    let two_back = json!({"back": {"id": r2, "pos_profile": counter.to_string(), "return_against": bought["id"], "items": [line(widget, "-2")],
-                                   "payments": [pay(&card, "-110")], "approvals": [{"approval": ok["approval"]}]},
-                          "out": {"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []}});
-    let done = t.site(&cashier, "POST", "/exchange", Value::Null, two_back).await.expect("exchanged");
+    let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Refund", Some("110"), &r2)).await.expect("approved");
+    let back = draft(json!({"id": r2, "pos_profile": counter.to_string(), "is_return": true, "return_against": bought["id"], "items": [line(widget, "-2")],
+                            "payments": [pay(&card, "-110")], "approvals": [{"approval": ok["approval"]}]}))
+    .await;
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []})).await;
+    let done = t.act(&cashier, "PosInvoice", uid(&back), "exchange", json!({"out": out["id"]})).await.expect("exchanged");
     assert_eq!((dec(&done["carried"]), dec(&done["due"]), dec(&done["refund"])), (n("110"), Decimal::ZERO, n("110")), "{done}");
+    // exchange_refund_onto_a_new_card: two back without a receipt (85 each, the lowest in the window, taxed: 187), one out
+    // (110); the 77 left goes onto new store credit, which the card's saved row still opens after the action updates it.
+    let r3 = new_id();
+    let mut asked = Vec::new();
+    for (act, amount) in [("Return Without Receipt", None), ("Refund", Some("100"))] {
+        let ok = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", act, amount, &r3)).await.expect("approved");
+        asked.push(json!({"approval": ok["approval"]}));
+    }
+    let mut onto_card = pay(&giftcard, "-77");
+    onto_card["stored_value_code"] = json!("GIFT-CRED-0000-0004");
+    let back = draft(json!({"id": r3, "pos_profile": counter.to_string(), "is_return": true, "without_receipt": true, "reason": faulty["id"],
+                            "items": [line(widget, "-2")], "payments": [onto_card], "approvals": asked}))
+    .await;
+    assert_eq!(dec(&back["rounded_total"]), n("-187"), "exchange_refund_onto_a_new_card: {back:?}");
+    let out = draft(json!({"pos_profile": counter.to_string(), "items": [line(widget, "1")], "payments": []})).await;
+    let done = t.act(&cashier, "PosInvoice", r3.parse().unwrap(), "exchange", json!({"out": out["id"]})).await.expect("exchange_refund_onto_a_new_card");
+    assert_eq!((dec(&done["carried"]), dec(&done["refund"])), (n("110"), n("77")), "exchange_refund_onto_a_new_card: {done}");
+    assert_eq!(balance("GIFT-CRED-0000-0004").await, n("77"), "exchange_refund_onto_a_new_card: the new card holds the refund");
 
     // A sale invoiced when the cashier asks (a customer's tax invoice now), not again at closing.
     let mut now = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
@@ -601,6 +873,12 @@ async fn scenario() {
     // The day closes: invoiced sales are only settled, and the cards agree with the books.
     let close = t.insert(&cashier, "PosClosingEntry", json!({"pos_opening_entry": open["id"]})).await;
     t.k.submit(&manager, "PosClosingEntry", uid(&close), None).await.expect("close the day");
+    // approve_not_on_a_closed_session: the session's own condition refuses it, in its words, before any PIN is checked.
+    let closed = t.act(&cashier, "PosOpeningEntry", session, "approve", ask("manager@shop.test", "4321", "Discount", Some("15"), &new_id())).await;
+    assert!(
+        matches!(closed, Err(Error::Invalid(ref m)) if m == "This session is not open: an approval is for an open session"),
+        "approve_not_on_a_closed_session: {closed:?}"
+    );
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
     assert_eq!(ferrum_app_erp::stored_value::check(&a, &mut tx).await.unwrap(), Vec::<String>::new());
     drop(tx);
@@ -615,7 +893,12 @@ async fn scenario() {
     };
     assert!(twice.await.is_err(), "a session closes once");
     let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
-    let opened = [("GIFT-0000-0000-0001", None, "issue"), ("GIFT-PIN0-0000-0002", Some("Pq-card-77"), "issue"), ("GIFT-CRED-0000-0003", None, "refund")];
+    let opened = [
+        ("GIFT-0000-0000-0001", None, "issue"),
+        ("GIFT-PIN0-0000-0002", Some("Pq-card-77"), "issue"),
+        ("GIFT-CRED-0000-0003", None, "refund"),
+        ("GIFT-CRED-0000-0004", None, "refund"),
+    ];
     for (code, pin, how) in opened {
         let sec = ferrum_app_erp::stored_value::secret(tenant, code, pin).unwrap();
         let (accounts, loads): (i64, i64) = sqlx::query_as(
@@ -643,8 +926,30 @@ async fn scenario() {
     assert!(messages(&t.refused(&cashier, after).await).contains("exceeds the 5% allowed"), "lapsed with its session");
 
     // ───────────── neither a staff PIN nor a card's code or PIN comes to rest ─────────────
-    t.site(&manager, "POST", "/pin", Value::Null, json!({"pin": "93718264055"})).await.expect("a new PIN");
-    t.site(&cashier, "POST", "/approve", Value::Null, ask("manager@shop.test", "93718264055", "Discount", Some("15"), &new_id())).await.expect("approved");
+    t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "93718264055"})).await.expect("a new PIN");
+    // pin_is_never_kept: approved through the gate, the PIN is in no audit entry of an approval and not in the kept receipt.
+    let reopened = json!({"id": uid(&reopen), "params": ask("manager@shop.test", "93718264055", "Discount", Some("15"), &new_id())});
+    t.k.invoke(&cashier, Invocation::new("pos.pos_opening_entry.approve", reopened).key("a-3")).await.expect("pin_is_never_kept: approved");
+    {
+        let mut tx = t.k.db.pool.begin().await.unwrap();
+        sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await.unwrap();
+        let audited: Vec<Value> = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and action = 'action:approve'")
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        assert!(!audited.is_empty(), "pin_is_never_kept: each approval is audited");
+        for diff in &audited {
+            assert!(diff["pin"] == json!("[redacted]") && !diff.to_string().contains("93718264055"), "pin_is_never_kept: audited as {diff}");
+        }
+        let kept: Value =
+            sqlx::query_scalar("select result from logic_effect where tenant_id = $1 and capability = 'pos.pos_opening_entry.approve' and effect_key = 'a-3'")
+                .bind(tenant)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert!(kept["approval"].is_string() && !kept.to_string().contains("93718264055"), "pin_is_never_kept: the receipt keeps {kept}");
+    }
     let secrets = ["93718264055", "GIFT-0000-0000-0001", "GIFT000000000001", "GIFT-PIN0-0000-0002", "GIFTPIN000000002", "Pq-card-77"];
     let like: Vec<String> = secrets.iter().map(|s| format!("%{s}%")).collect();
     // Nor a card's code or PIN as hashes (the form ERP keeps on the card itself, and the till once kept on its lines):

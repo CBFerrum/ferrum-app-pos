@@ -27,6 +27,9 @@ uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+# ERP's Stock Operations add-on, for one test only (`tests/variants_it.rs`): the till reads its `stk_variant_of` through
+# the kernel and never depends on its code.
+ferrum-stock-ops = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 
 [lints.clippy]
 # Deliberate patterns shared with the platform: sqlx row tuples, index-based maths, engine entry points.

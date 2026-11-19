@@ -114,18 +114,26 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
     staleTime: 300_000,
     retry: false,
   });
+  // The item groups, for the tabs above the tiles: a cashier may read them; refused, there are no tabs.
+  const groupsQ = useQuery({
+    queryKey: ["pos", "groups"],
+    queryFn: ({ signal }) => list("ItemGroup", { fields: "id,group_name,parent_group", limit: 500, sort: "group_name asc" }, signal),
+    staleTime: 300_000,
+    retry: false,
+  });
   const manager = useManager(memory?.manager);
   // The server's answer, else what this device last kept (the register's own switches before any).
   const limits = (limitsQ.data !== undefined ? parseLimits(limitsQ.data) : null) ?? memory?.limits;
   const reasons = reasonsQ.data?.rows ?? memory?.reasons ?? [];
+  const groups = groupsQ.data?.rows ?? memory?.groups ?? [];
   // What the server says, else (offline) what this device last knew.
   const offline = [profile.error, session.error].some((e) => e && unreachable(e));
   const profileDoc = profile.data ?? (offline ? memory?.profile : undefined);
   const open = session.data ? (session.data.rows[0] ? { id: str(session.data.rows[0].id), number: str(session.data.rows[0].number) } : null) : offline ? (memory?.session ?? null) : null;
   const modeRows = modes.data?.rows ?? memory?.modes ?? [];
   useEffect(() => {
-    if (profile.data && session.data) rememberTill({ email, profile: profile.data, session: open, modes: modeRows, manager, limits, reasons } satisfies TillMemory);
-  }, [profile.data, session.data, modes.data, manager, limitsQ.data, reasonsQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (profile.data && session.data) rememberTill({ email, profile: profile.data, session: open, modes: modeRows, manager, limits, reasons, groups } satisfies TillMemory);
+  }, [profile.data, session.data, modes.data, manager, limitsQ.data, reasonsQ.data, groupsQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const book = usePriceBook(profileId, open?.id ?? null);
 
   if ((profile.isLoading || session.isLoading) && !memory) return <ListSkeleton rows={6} />;
@@ -134,7 +142,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   if (error || !profileDoc) {
     return <Problem error={error ?? new Error(t("This register is not on this device yet: connect once to set it up."))} onRetry={() => void Promise.all([profile.refetch(), session.refetch()])} />;
   }
-  if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} limits={limits} reasons={reasons} offline={offline} onSwitch={onSwitch} />;
+  if (open) return <Till profile={profileDoc} session={open} modes={modeRows} book={book} manager={manager} limits={limits} reasons={reasons} groups={groups} offline={offline} onSwitch={onSwitch} />;
   return (
     <div className="pos-away">
       <div className="pos-head">

@@ -91,7 +91,8 @@ export function useCalc(body: Doc | null, lines: CartLine[], book: PriceBook | n
     const onDevice = async () => {
       if (!book) return setState({ doc: null, pending: false, error: notAvailable() });
       try {
-        const doc = await priceOffline(book, linesRef.current, { customer: str((JSON.parse(settled) as Doc).customer) || null });
+        const asked = JSON.parse(settled) as Doc;
+        const doc = await priceOffline(book, linesRef.current, { customer: str(asked.customer) || null, discount: str(asked.discount_percent) || null });
         if (!ctl.signal.aborted) setState({ doc, pending: false, offline: true });
       } catch (err) {
         if (!ctl.signal.aborted) setState({ doc: null, pending: false, error: errorMessage(err) });
