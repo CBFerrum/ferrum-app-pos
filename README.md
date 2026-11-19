@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.18.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.19.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -171,6 +171,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 
 - **Limits by role** (POS Role Limit): the largest discount in percent and in money, price changes, voiding a line and a sale, the largest refund, returns without a receipt, opening the drawer without a sale, and reprints. A person with several roles gets the most generous. A row can name one register.
 - **Approval by another person's PIN.** Over a limit, the till asks another person (their email and PIN) to approve one act on this sale, without the cashier signing out. An approval is used once, lapses after a number of minutes and when the session closes, and is recorded with the approver's limits. The PIN is kept only as an argon2id hash and locks after five wrong tries.
+- **Someone else serving at the till.** A till stays signed in as the cashier whose session is open, who answers for its drawer. Another person who works the tills serves at it with their PIN: the session names them, each sale made online records who served it (Served By) and is held to the narrower of their limits and the cashier's, so serving never lends the cashier's rights and claiming to be someone can only lose rights. The person serving cannot approve their own acts. The cashier takes the till back with their own PIN. Offline nothing switches: a sale made offline is the cashier's.
 - **Voids with a reason.** Taking a line off after it was rung asks for a reason from the business's list, and a sale not yet closed is voided from its receipt with a reason. Who voided and why is kept.
 - **Reasons** (POS Reason) for voids, returns, opening the drawer without a sale and reprints are the business's own list.
 - **Set my PIN** is one menu away.
@@ -234,7 +235,7 @@ A cashier who reads only their own sales sees only their own figures.
 
 - **Two roles,** below. Row-level security applies to every table.
 - **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay; a held sale's basket and name are erased with its customer. A held sale for the walk-in customer with a typed buyer is matched by no customer: it lives until it is resumed or discarded.
-- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.print_receipt`, `.reprint`, `.send_receipt`) and exchanges (`pos.pos_invoice.exchange`).
+- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, serving at another's till and handing it back, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.take_over`, `.hand_back`, `.print_receipt`, `.reprint`, `.send_receipt`) and exchanges (`pos.pos_invoice.exchange`).
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
 ### 🌍 Languages
@@ -272,8 +273,8 @@ Limits live on the server and are kept on the device so the till starts offline 
 | Entity | What it is | Key fields or states |
 |---|---|---|
 | **POS Profile** | A register and its rules | Company, warehouse, price list, payments, users, limits, return policy, buyer rules, blind close, safe account, receipt paper |
-| **POS Opening Entry** | A cashier's session | Register, user, opening balances, status (Draft, Open, Closed, Cancelled) |
-| **POS Invoice** | A sale or a return | Items, payments, taxes, status (Draft, Paid, Unpaid, Return, Consolidated, Cancelled), loyalty, approvals, voided lines, buyer registration |
+| **POS Opening Entry** | A cashier's session | Register, user, who serves now, opening balances, status (Draft, Open, Closed, Cancelled) |
+| **POS Invoice** | A sale or a return | Items, payments, taxes, status (Draft, Paid, Unpaid, Return, Consolidated, Cancelled), loyalty, approvals, voided lines, buyer registration, served by |
 | **POS Closing Entry** | Ends a session | Counted amounts by method, denominations, differences, paid in, paid out, safe drops, tax rows, status (Draft, Submitted, Cancelled) |
 | **POS Cash Movement** | Cash in, out or to the safe | Type (Cash In, Cash Out, Safe Drop), amount, account, reason |
 | **POS Return Policy** | How a register takes returns | Window, price basis, store credit, refund methods, fees, exchange mode |
@@ -371,6 +372,10 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### ✅ Recently shipped
 
 - [x] **0.16.0:** tips typed at the till: the pay window adds the tip to what is to pay, online and offline.
+- [x] **0.19.0:** someone else serves at a cashier's till by their PIN: the session names them, their online sales say so and are held to the narrower of the two people's limits; the cashier takes the till back with their own PIN.
+- [x] **0.18.0:** a template's variants as one tile with a chooser, where ERP's Stock Operations is installed, online and offline.
+- [x] **0.17.0:** item groups as tabs above the tiles, online and offline.
+- [x] **0.16.0:** a tip typed at the till, on top of what is due, paid in money.
 - [x] **0.15.0:** tips on the sale, owed in the books at closing (never income), on the receipt and the shift report.
 - [x] **0.14.0:** held sales kept by the server too, seen on the cashier's other tills and by a manager, resumed by one till only; holding still works offline.
 - [x] **0.13.0:** a discount on the whole sale at the till: a percent, held to the cashier's limits, kept on hold and priced offline.

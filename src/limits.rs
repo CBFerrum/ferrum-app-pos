@@ -6,7 +6,7 @@
 
 use crate::logic::{Act, Limits};
 use crate::{Profile, is_manager};
-use ferrum_domain::util::{b, d, elevated, id, s};
+use ferrum_domain::util::{b, d, elevated, id, s, sys};
 use ferrum_kernel::{Ctx, Doc, Error, HookCtx, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -230,7 +230,9 @@ pub(crate) async fn approve(hc: &mut HookCtx<'_>, session: &Doc, params: &Value)
     let ctx = hc.ctx;
     let me = ctx.email.to_lowercase();
     let not_you = || Error::field("approver", "someone else approves what is beyond your own limits");
-    if ask.approver.to_lowercase() == me {
+    // The person serving at the till (`take_over`) is not someone else either.
+    let serving = s(session, "operator").map(str::to_lowercase);
+    if ask.approver.to_lowercase() == me || serving.as_deref() == Some(ask.approver.to_lowercase().as_str()) {
         return Err(not_you());
     }
     // A manager may write anyone's session; an approval is still the cashier's own to ask.
@@ -240,7 +242,7 @@ pub(crate) async fn approve(hc: &mut HookCtx<'_>, session: &Doc, params: &Value)
     let profile = Profile::load(hc.kernel, ctx, hc.tx, id(session, "pos_profile").ok_or_else(|| Error::internal("a session without a register"))?).await?;
     // Its own short transactions: a wrong PIN stays counted when this action fails.
     let approver = prove(hc.kernel, ctx.tenant, ask.approver, ask.pin).await?;
-    if approver.user == ctx.user {
+    if approver.user == ctx.user || serving.as_deref() == Some(approver.email.to_lowercase().as_str()) {
         return Err(not_you());
     }
     let theirs = of(&approver, hc.tx, &profile).await?;
@@ -255,6 +257,107 @@ pub(crate) async fn approve(hc: &mut HookCtx<'_>, session: &Doc, params: &Value)
     });
     let made = hc.kernel.insert_tx(&elevated(ctx), hc.tx, "PosApproval", row.as_object().cloned().unwrap_or_default()).await?;
     Ok(json!({"approval": made.get("id"), "approver": approver.email, "action": ask.act.label()}))
+}
+
+// ───────────────────────────── someone else serving at the till ─────────────────────────────
+//
+// POS-12. The till stays signed in as the cashier whose session is open, who answers for the drawer. Someone else serves
+// at it by their PIN (`take_over`, the same proof as an approval): the session names them (`operator`) with what they may
+// do at the register as they took over, a sale made online is theirs (`served_by`, `invoice.rs`) and is held to the
+// narrower of their limits and the cashier's (`for_sale`, `at_till`), so serving never lends the cashier's rights and
+// claiming to be someone can only lose rights. `hand_back` takes the cashier's own PIN, as it gives the cashier's rights
+// back. Offline nothing switches: a sale made offline is the cashier's own.
+
+/// The caller's email when the session is their own: a till is handed over and back only by its session's cashier (a
+/// manager may write anyone's session, not hand over their till).
+fn own_session(ctx: &Ctx, session: &Doc) -> Result<String> {
+    let me = ctx.email.to_lowercase();
+    match s(session, "user") {
+        Some(u) if u.to_lowercase() == me => Ok(me),
+        _ => Err(Error::Forbidden("only the session's cashier hands its till over".into())),
+    }
+}
+
+/// `take_over` of the cashier's open session: `operator`, proved by their PIN and working this register, serves at its
+/// till from now. The kernel has checked the caller may write the session and that it is submitted and open, and holds
+/// its row. Answers who serves and since when.
+pub(crate) async fn take_over(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let operator = param(params, "operator").ok_or_else(|| Error::field("operator", "is required"))?;
+    let pin = param(params, "pin").ok_or_else(|| Error::field("pin", "is required"))?;
+    let ctx = hc.ctx;
+    let me = own_session(ctx, session)?;
+    let yours = || Error::field("operator", "you answer for this session already: hand it back instead");
+    if operator.to_lowercase() == me {
+        return Err(yours());
+    }
+    let sid = id(session, "id").ok_or_else(|| Error::internal("a session without an id"))?;
+    let profile = Profile::load(hc.kernel, ctx, hc.tx, id(session, "pos_profile").ok_or_else(|| Error::internal("a session without a register"))?).await?;
+    let barred = |email: &str| Error::Forbidden(format!("{email} is not allowed at register {}", profile.name()));
+    if !profile.admits(operator) {
+        return Err(barred(operator));
+    }
+    // Its own short transactions: a wrong PIN stays counted when this action fails.
+    let who = prove(hc.kernel, ctx.tenant, operator, pin).await?;
+    if who.user == ctx.user {
+        return Err(yours());
+    }
+    // Someone who works a till: a cashier or a manager (a PIN outlives a role taken away).
+    if !(who.has_role("Cashier") || is_manager(&who)) {
+        return Err(barred(&who.email));
+    }
+    let theirs = of(&who, hc.tx, &profile).await?;
+    let email = who.email.to_lowercase();
+    let since = chrono::Utc::now().to_rfc3339();
+    let v = json!({"operator": email, "operator_since": since, "operator_limits": theirs});
+    hc.kernel.set_values_tx(&sys(ctx), hc.tx, "PosOpeningEntry", sid, v.as_object().cloned().unwrap_or_default()).await?;
+    Ok(json!({"operator": email, "since": since}))
+}
+
+/// `hand_back` of the cashier's open session: nobody else serves at its till from now. It gives the cashier's own rights
+/// back, so it takes the cashier's own PIN, counted as any, whether or not someone was serving.
+pub(crate) async fn hand_back(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
+    let pin = param(params, "pin").ok_or_else(|| Error::field("pin", "is required"))?;
+    let ctx = hc.ctx;
+    let me = own_session(ctx, session)?;
+    let back = prove(hc.kernel, ctx.tenant, &me, pin).await?;
+    if back.user != ctx.user {
+        return Err(Error::Forbidden("only the session's cashier hands its till over".into()));
+    }
+    if s(session, "operator").is_some() {
+        let sid = id(session, "id").ok_or_else(|| Error::internal("a session without an id"))?;
+        let v = json!({"operator": null, "operator_since": null, "operator_limits": null});
+        hc.kernel.set_values_tx(&sys(ctx), hc.tx, "PosOpeningEntry", sid, v.as_object().cloned().unwrap_or_default()).await?;
+    }
+    Ok(json!({"operator": null}))
+}
+
+/// What a sale at `profile` is held to: the caller's limits, narrowed by those of whoever serves at its session's till when
+/// it is made online. A sale made offline is the cashier's own: nothing switches offline.
+pub(crate) async fn for_sale(ctx: &Ctx, tx: &mut Tx, profile: &Profile, sale: &Doc) -> Result<Limits> {
+    match id(sale, "pos_opening_entry") {
+        Some(sid) if !b(sale, "sold_offline") => at_till(ctx, tx, profile, sid).await,
+        _ => of(ctx, tx, profile).await,
+    }
+}
+
+/// What the caller may do at session `sid`'s till now: their limits, narrowed by those of whoever serves at it.
+pub(crate) async fn at_till(ctx: &Ctx, tx: &mut Tx, profile: &Profile, sid: Uuid) -> Result<Limits> {
+    let own = of(ctx, tx, profile).await?;
+    let found: Option<(Option<String>, Option<Value>)> =
+        sqlx::query_as(r#"select "operator", operator_limits from e_pos_opening_entry where tenant_id = $1 and id = $2"#)
+            .bind(ctx.tenant)
+            .bind(sid)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match found {
+        Some((Some(_), Some(theirs))) => {
+            let theirs: Limits = serde_json::from_value(theirs).map_err(|e| Error::internal(format!("the limits of the person serving: {e}")))?;
+            Ok(own.narrower(&theirs))
+        }
+        // Someone serves and nothing says what they may do: refused, never the cashier's rights.
+        Some((Some(_), None)) => Err(Error::internal("the person serving at this till has no limits kept")),
+        _ => Ok(own),
+    }
 }
 
 /// How long an approval lasts at a register (its setting; five minutes when unset).

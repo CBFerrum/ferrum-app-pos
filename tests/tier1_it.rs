@@ -106,6 +106,10 @@ impl T {
             .unwrap()
     }
     /// The approvals made for one sale (by the id the till gave it).
+    /// Who serves at a session's till now (`operator`), as the record says.
+    async fn serving(&self, session: Uuid) -> Value {
+        self.k.get(&self.admin, "PosOpeningEntry", session, false).await.unwrap()["operator"].clone()
+    }
     async fn approvals_for(&self, sale: &str) -> i64 {
         let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
         sqlx::query_scalar("select count(*) from e_pos_approval where tenant_id = $1 and sale = $2")
@@ -924,6 +928,122 @@ async fn scenario() {
     after["id"] = json!(w5);
     after["approvals"] = json!([{"approval": kept_for_later["approval"]}]);
     assert!(messages(&t.refused(&cashier, after).await).contains("exceeds the 5% allowed"), "lapsed with its session");
+
+    // ───────────── 6. someone else serving at the till by their PIN (POS-12) ─────────────
+    // The till stays signed in as the session's cashier, who answers for the drawer. Someone else serves at it by their PIN
+    // (`take_over` of the session): the session names them, a sale made online is theirs (`served_by`) and is held to the
+    // narrower of their limits and the cashier's. `hand_back` takes the cashier's own PIN, as it gives the cashier's rights
+    // back. Here at the manager's own session at the counter (no limits), where a cashier may give 5%.
+    t.act(&cashier, "PosProfile", counter, "set_pin", json!({"pin": "13579"})).await.expect("the cashier's PIN");
+    let desk = uid(&mopen);
+    let serve = |who: &str, pin: &str| json!({"operator": who, "pin": pin});
+    // take_over_needs_their_pin: a wrong PIN is refused in a wrong PIN's words, counted, and nobody serves.
+    let wrong = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("cashier@shop.test", "97531")).await;
+    assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m == "that person's PIN does not match"), "take_over_needs_their_pin: {wrong:?}");
+    assert_eq!((t.serving(desk).await, t.pin("cashier@shop.test").await.map(|p| p.1)), (Value::Null, Some(1)), "take_over_needs_their_pin");
+    // take_over_only_in_your_own_session: the session's cashier hands the till over; a colleague cannot reach the session,
+    // and a manager, who may write any session, is refused in another's.
+    let theirs = t.act(&cashier, "PosOpeningEntry", desk, "take_over", serve("colleague@shop.test", "2468")).await;
+    assert!(matches!(theirs, Err(Error::NotFound(_)) | Err(Error::Forbidden(_))), "take_over_only_in_your_own_session: {theirs:?}");
+    let managed = t.act(&manager, "PosOpeningEntry", uid(&reopen), "take_over", serve("colleague@shop.test", "2468")).await;
+    assert!(matches!(managed, Err(Error::Forbidden(_))), "take_over_only_in_your_own_session: a manager in a cashier's session: {managed:?}");
+    assert_eq!((t.serving(desk).await, t.serving(uid(&reopen)).await), (Value::Null, Value::Null), "take_over_only_in_your_own_session");
+    // take_over_is_someone_else: the session's own cashier already answers for it.
+    let me = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("Manager@Shop.test", "4321")).await;
+    assert!(matches!(me, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "operator")), "take_over_is_someone_else: {me:?}");
+    // take_over_only_by_someone_working_here: not one of the register's Allowed Users, or no longer a cashier.
+    t.k.update(&a, "PosProfile", counter, obj(json!({"users": [{"user": "manager@shop.test"}, {"user": "colleague@shop.test"}]})), None)
+        .await
+        .expect("allowed users");
+    let outside = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("cashier@shop.test", "13579")).await;
+    assert!(
+        matches!(outside, Err(Error::Forbidden(ref m)) if m.contains("not allowed at register Counter")),
+        "take_over_only_by_someone_working_here: not an allowed user: {outside:?}"
+    );
+    t.k.update(&a, "PosProfile", counter, obj(json!({"users": []})), None).await.expect("anyone again");
+    let former = t.user("former@shop.test", &["Cashier"]).await;
+    t.act(&former, "PosProfile", counter, "set_pin", json!({"pin": "24680"})).await.expect("their PIN");
+    t.k.set_user_roles(&a, former.user, &[]).await.expect("no longer a cashier");
+    let gone = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("former@shop.test", "24680")).await;
+    assert!(
+        matches!(gone, Err(Error::Forbidden(ref m)) if m.contains("not allowed at register Counter")),
+        "take_over_only_by_someone_working_here: no longer a cashier: {gone:?}"
+    );
+    // take_over_locked_after_wrong_pins: five wrong PINs lock theirs for a while, the right one with it.
+    let spare = t.user("spare@shop.test", &["Cashier"]).await;
+    t.act(&spare, "PosProfile", counter, "set_pin", json!({"pin": "11223"})).await.expect("their PIN");
+    for _ in 0..5 {
+        let _ = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("spare@shop.test", "00000")).await;
+    }
+    let locked = t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("spare@shop.test", "11223")).await;
+    assert!(matches!(locked, Err(Error::TooManyRequests(_))), "take_over_locked_after_wrong_pins: {locked:?}");
+    assert_eq!(t.serving(desk).await, Value::Null, "take_over_locked_after_wrong_pins");
+    // take_over_not_on_a_closed_session: the session's own condition refuses it, in its words, before any PIN.
+    let closed = t.act(&cashier, "PosOpeningEntry", session, "take_over", serve("colleague@shop.test", "2468")).await;
+    assert!(matches!(closed, Err(Error::Invalid(ref m)) if m.starts_with("This session is not open")), "take_over_not_on_a_closed_session: {closed:?}");
+
+    // served_by_names_who_served: the cashier serves at the manager's till; the manager's online sale is theirs, whatever
+    // the till says, and the session's cashier is still the manager.
+    let took =
+        t.act(&manager, "PosOpeningEntry", desk, "take_over", serve("Cashier@Shop.test", "13579")).await.expect("served_by_names_who_served: taken over");
+    assert_eq!(took["operator"], json!("cashier@shop.test"), "served_by_names_who_served: {took}");
+    assert_eq!(
+        (t.serving(desk).await, t.pin("cashier@shop.test").await.map(|p| p.1)),
+        (json!("cashier@shop.test"), Some(0)),
+        "served_by_names_who_served: serving, the wrong try forgotten"
+    );
+    let mut claimed = sale(json!([line(widget, "1")]), json!([pay(&card, "110")]));
+    claimed["served_by"] = json!("colleague@shop.test");
+    let served = t.sell(&manager, claimed).await;
+    assert_eq!(
+        (served["pos_opening_entry"].clone(), served["cashier"].clone(), served["served_by"].clone()),
+        (json!(desk.to_string()), json!("manager@shop.test"), json!("cashier@shop.test")),
+        "served_by_names_who_served: {served:?}"
+    );
+    // serving_narrows_the_limits: the manager has none, the cashier 5% here; while the cashier serves, 8% is beyond the till,
+    // the register's limits say 5%, and voiding a sale is beyond it.
+    let e = t.refused(&manager, sale(off("8", "1"), json!([pay(&card, "101.20")]))).await;
+    assert!(messages(&e).contains("exceeds the 5% allowed"), "serving_narrows_the_limits: {e:?}");
+    let held = t.site(&manager, "GET", "/limits", json!({"profile": counter.to_string()}), Value::Null).await.expect("limits");
+    assert_eq!((dec(&held["discount_percent"]), held["void_sale"].clone()), (n("5"), json!(false)), "serving_narrows_the_limits: {held}");
+    let void = t.act(&manager, "PosInvoice", uid(&served), "void", json!({"reason": scanned["id"]})).await;
+    assert!(matches!(void, Err(Error::Forbidden(ref m)) if m.contains("may not void sales")), "serving_narrows_the_limits: a void: {void:?}");
+    // the_server_does_not_approve_their_own: the person serving is not someone else, even for what their own limits allow.
+    let own = t.act(&manager, "PosOpeningEntry", desk, "approve", ask("cashier@shop.test", "13579", "Discount", Some("5"), &new_id())).await;
+    assert!(matches!(own, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "approver")), "the_server_does_not_approve_their_own: {own:?}");
+    // an_offline_sale_is_the_cashiers: nothing switches offline, so a sale made offline is the session's cashier's own,
+    // held to their limits, and served by nobody else.
+    let snap = t.site(&manager, "GET", "/snapshot", json!({"profile": counter.to_string()}), Value::Null).await.expect("the snapshot");
+    let mut away = sale(off("8", "1"), json!([pay(&card, "101.20")]));
+    away["sold_offline"] = json!(true);
+    away["price_snapshot"] = snap["version"].clone();
+    away["till_total"] = json!("101.20");
+    let away = t.sell(&manager, away).await;
+    assert_eq!(away["served_by"], Value::Null, "an_offline_sale_is_the_cashiers: {away:?}");
+    // take_over_twice_is_one: asked twice with one key through the gate, it is done once and the answer repeated.
+    let via = |key: &str| {
+        Invocation::new("pos.pos_opening_entry.take_over", json!({"id": desk, "params": {"operator": "colleague@shop.test", "pin": "2468"}})).key(key)
+    };
+    let first = t.k.invoke(&manager, via("serve-1")).await.expect("take_over_twice_is_one: first");
+    let since = t.k.get(&a, "PosOpeningEntry", desk, false).await.unwrap()["operator_since"].clone();
+    let again = t.k.invoke(&manager, via("serve-1")).await.expect("take_over_twice_is_one: again");
+    assert!(!first.repeated && again.repeated && again.result == first.result, "take_over_twice_is_one: {again:?}");
+    assert_eq!(
+        (t.serving(desk).await, t.k.get(&a, "PosOpeningEntry", desk, false).await.unwrap()["operator_since"].clone()),
+        (json!("colleague@shop.test"), since),
+        "take_over_twice_is_one: taken over once"
+    );
+    // hand_back_needs_the_cashiers_pin: it gives the till's own rights back, so it takes the session's cashier's PIN, counted;
+    // the person serving cannot reach it.
+    let wrong = t.act(&manager, "PosOpeningEntry", desk, "hand_back", json!({"pin": "2468"})).await;
+    assert!(matches!(wrong, Err(Error::Invalid(ref m)) if m == "that person's PIN does not match"), "hand_back_needs_the_cashiers_pin: {wrong:?}");
+    let colleague_tries = t.act(&colleague, "PosOpeningEntry", desk, "hand_back", json!({"pin": "2468"})).await;
+    assert!(colleague_tries.is_err(), "hand_back_needs_the_cashiers_pin: not the colleague's: {colleague_tries:?}");
+    assert_eq!(t.serving(desk).await, json!("colleague@shop.test"), "hand_back_needs_the_cashiers_pin: still serving");
+    let back = t.act(&manager, "PosOpeningEntry", desk, "hand_back", json!({"pin": "4321"})).await.expect("hand_back_needs_the_cashiers_pin: handed back");
+    assert_eq!((back["operator"].clone(), t.serving(desk).await), (Value::Null, Value::Null), "hand_back_needs_the_cashiers_pin: {back}");
+    let mine = t.sell(&manager, sale(off("8", "1"), json!([pay(&card, "101.20")]))).await;
+    assert_eq!((mine["served_by"].clone(), dec(&mine["rounded_total"])), (Value::Null, n("101.20")), "the manager's own again: {mine:?}");
 
     // ───────────── neither a staff PIN nor a card's code or PIN comes to rest ─────────────
     t.act(&manager, "PosProfile", counter, "set_pin", json!({"pin": "93718264055"})).await.expect("a new PIN");

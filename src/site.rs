@@ -170,14 +170,17 @@ pub(crate) async fn book_sale(k: &Kernel, ctx: &Ctx, profile_id: Uuid, after: Op
     Ok((json!({"items": shown, "barcodes": barcodes, "unpriced": unpriced, "templates": templates, "next": next}), Some(priced)))
 }
 
-/// `GET /limits?profile=`: what the signed-in person may do at the register on their own, for the
-/// till to check before it asks (and, offline, to hold the sale to the same limits the server will).
+/// `GET /limits?profile=`: what the signed-in person may do at the register on their own (narrowed while someone else
+/// serves at their till), for the till to check before it asks (and, offline, to hold the sale to the same limits).
 pub async fn limits(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let pid: Uuid = param(req, "profile").and_then(|v| v.parse().ok()).ok_or_else(|| Error::field("profile", "is required"))?;
     k.get(ctx, "PosProfile", pid, false).await?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let profile = crate::Profile::load(k, ctx, &mut tx, pid).await?;
-    let limits = crate::limits::of(ctx, &mut tx, &profile).await?;
+    let limits = match crate::open_session_in(&mut tx, ctx.tenant, pid, &ctx.email).await? {
+        Some(sid) => crate::limits::at_till(ctx, &mut tx, &profile, sid).await?,
+        None => crate::limits::of(ctx, &mut tx, &profile).await?,
+    };
     tx.commit().await?;
     serde_json::to_value(limits).map_err(|e| Error::internal(e.to_string()))
 }

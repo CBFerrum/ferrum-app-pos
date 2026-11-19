@@ -138,6 +138,8 @@ seed:
 personal_data:
   - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}
+  - {entity: PosOpeningEntry, match: operator, retain: "Who served at a session's till, kept with its cash records"}
+  - {entity: PosInvoice, match: served_by, retain: "Who served a sale, kept with the sale"}
   - {entity: PosInvoice, match: customer, erase: [buyer_name, buyer_tax_id]}
   - {entity: PosHeldSale, match: customer, erase: [cart, customer_title]}
 
