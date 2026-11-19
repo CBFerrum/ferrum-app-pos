@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.21.0
+
+Database: two new entities (`PosDevice`, `PosDrawerEvent`) and new nullable fields (`PosReceiptEvent.state`, `device`,
+`settled_by`; `PosProfile.fiscal_operation`; `PosInvoice.fiscal`); the schema sync adds them, nothing moves. A cashier now
+reads their own receipt events. The till's interface is unchanged.
+
+- **A register's devices** (S16, the server half): receipt printers with the cash drawer each opens, scales, customer
+  displays, and how the till reaches each (USB or serial from the browser, a second screen); a printer is never on a
+  second screen and only a printer opens a drawer. Through an IoT Edge gateway comes when the gateway takes a receipt's
+  bytes.
+- **The original to one printer.** `print_receipt` takes the register's printer (`device`): the original is issued to it
+  once, under the sale's lock, and stays Issued until the till says what came out with `settle` of the event (printed;
+  unknown until a person says; not sent or not printed gives the sale its original back, under the same lock). The
+  cashier who issued it or a manager settles it, once. Without a printer it is printed through the browser's dialog, as
+  before. The printer's lines are `GET /paper/{event}?format=text`, from the new text template `pos.receipt_text`.
+- **The cash drawer recorded.** A sale paid in cash whose original goes to a printer with a drawer opens it once
+  (`Drawer Opened`, kind Sale); a print that never left takes that record back. `open_drawer` of the session (No Sale)
+  takes one of the business's reasons and the right to it (Open Drawer in the role's limits, narrowed while someone else
+  serves) or another person's approval for No Sale, used once.
+- **A fiscal device's seam.** A register may name an operation a country's add-on offers (`fiscal_operation`): each sale
+  is queued for it once after it is made (job `pos.fiscalise`, key the sale), its answer is kept on the sale
+  (`fiscal`), the receipt waits for it and prints its text and QR, and a device that printed the receipt itself marks
+  the original printed.
+
 ## 0.20.0
 
 The till only: no server, database or package change. The till's interface is rebuilt.

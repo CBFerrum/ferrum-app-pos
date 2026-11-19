@@ -87,6 +87,8 @@
     - {name: print_format, type: select, options: [Thermal 80mm, Thermal 58mm, A4], default: Thermal 80mm}
     - {name: receipt_header, type: text}
     - {name: receipt_footer, type: text}
+    - {name: fiscal_operation, type: data, label: Fiscal Device Operation,
+       description: "An operation a country's add-on offers that signs or prints each sale on a fiscal device (its id); empty: no fiscal device. A receipt waits for its answer"}
     - {name: disabled, type: check, in_filter: true}
   form:
     - {label: Register, fields: [profile_name, company, warehouse, price_list, currency, customer, tax_template, cost_center, invoice_prefix, disabled]}
@@ -94,7 +96,7 @@
     - {label: Cashier Rights, fields: [users, allow_negative_stock, offline_shortfall, allow_discount_change, max_discount, allow_rate_change, approval_minutes]}
     - {label: Buyers and Cash, collapsible: true, fields: [buyer_customer, buyer_group, registered_buyer, named_buyer_above, blind_close, safe_account]}
     - {label: Returns, collapsible: true, fields: [return_policy, damaged_warehouse, scrap_warehouse]}
-    - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer]}
+    - {label: Display & Receipt, collapsible: true, fields: [item_groups, customer_groups, print_format, receipt_header, receipt_footer, fiscal_operation]}
   rules:
     - {name: discount_limit_set, check: "!doc.allow_discount_change || doc.max_discount > 0.0", message: "Set the maximum discount cashiers may give"}
   actions:
@@ -201,10 +203,26 @@
       condition_message: "This session is not open: receipts are given in an open session"
       params:
         - {name: sale, label: Sale, type: link, to: PosInvoice, required: true}
+        - {name: device, label: Printer, type: link, to: PosDevice, description: "The register's receipt printer it goes to; empty: the browser's print dialog"}
       contract:
         effect: transactional_action
-        completion: "The sale's first receipt is marked printed, once, and a Receipt Event of kind Original says who printed it"
-        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}}}
+        completion: "The sale's original receipt is issued once: printed through the browser's dialog, or issued to one printer until the till settles what it printed; a sale paid in cash opens that printer's drawer once"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosReceiptEvent}, kind: {type: string}, state: {type: string}, drawer: {type: boolean}}}
+    - name: open_drawer
+      label: Open the Drawer
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: the drawer opens in an open session"
+      params:
+        - {name: reason, label: Reason, description: "One of the business's reasons for opening the drawer without a sale (its id or its words) when it has some"}
+        - {name: approval, label: Approval, type: link, to: PosApproval, description: "When opening the drawer without a sale is beyond your limits; it covers one opening"}
+        - {name: device, label: Printer, type: link, to: PosDevice, description: "The receipt printer whose drawer opens"}
+      contract:
+        effect: transactional_action
+        completion: "A Drawer Opened record of kind No Sale says who opened the drawer, why and by whose approval; the till may then open it"
+        returns: {type: object, properties: {event: {type: string, format: uuid, x-ferrum-link: PosDrawerEvent}, kick: {type: boolean}}}
     - name: reprint
       label: Reprint Receipt
       permission: write
@@ -392,6 +410,8 @@
        description: "A sale made offline: the promotions its snapshot gave, as the server priced them again, passed to ERP to check, keep and count once"}
     - {name: reprints, type: int, default: 0, read_only: true, no_copy: true, label: Copies Printed}
     - {name: receipt_printed, type: check, read_only: true, no_copy: true, label: Receipt Printed, description: "The first receipt was printed; later ones are copies, marked and counted"}
+    - {name: fiscal, type: json, read_only: true, hidden: true, no_copy: true, label: Fiscal Device's Answer,
+       description: "What the register's fiscal device answered for the sale (signature, counter, QR, text, printed_by_device); set by its add-on"}
     - {name: needs_buyer, type: check, read_only: true, hidden: true, no_copy: true}
     - {name: replay_total, type: currency, read_only: true, hidden: true, no_copy: true}
     - {name: invoice_now, type: check, no_copy: true, label: Invoice Now, description: "Make this sale's own sales invoice when it is submitted instead of at closing (a business customer's tax invoice); stored value always is"}
@@ -710,7 +730,8 @@
   module: pos
   company_scoped: true
   title_field: kind
-  description: "A sale's first receipt, a receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the receipt actions of a cashier's session; read-only. The address a receipt was sent to is in the message log, not here."
+  description: "A sale's first receipt, a receipt printed again, a gift receipt, or a receipt sent to the buyer: who, when and for which sale. Written by the receipt actions of a cashier's session; read-only. The address a receipt was sent to is in the message log, not here. An original issued to a printer waits for the till to say what it printed (Settle)."
+  owner_fields: [cashier]
   fields:
     - {name: pos_invoice, type: link, to: PosInvoice, read_only: true, in_list: true, in_filter: true}
     - {name: company, type: link, to: Company, read_only: true, in_filter: true}
@@ -722,7 +743,24 @@
     - {name: channel, type: data, read_only: true, description: "A message's channel (e-mail, text)"}
     - {name: consent, type: select, options: [This Receipt Only, Opted In], read_only: true, description: "What the buyer agreed to when they gave an address: this receipt only, or later messages too"}
     - {name: approval, type: link, to: PosApproval, read_only: true}
-  list: {columns: [pos_invoice, kind, copy_no, cashier, printed_at], sort: created_at desc}
+    - {name: state, type: select, options: [Issued, Printed, Not Printed, Unknown], read_only: true, in_list: true, in_filter: true,
+       description: "An original issued to a printer: Issued until the till says what came out; Unknown until a person does"}
+    - {name: device, type: link, to: PosDevice, read_only: true, label: Printer}
+    - {name: settled_by, type: data, read_only: true}
+  actions:
+    - name: settle
+      label: Settle
+      permission: read
+      hidden: true
+      condition: "doc.state == 'Issued' || doc.state == 'Unknown'"
+      condition_message: "This receipt is settled already"
+      params:
+        - {name: outcome, label: What Came Out, type: select, options: [printed, not_sent, unknown, not_printed], required: true}
+      contract:
+        effect: transactional_action
+        completion: "The original says what the printer did; one that never left the till or did not print gives the sale its original back"
+        returns: {type: object, properties: {state: {type: string}, original: {type: boolean}}}
+  list: {columns: [pos_invoice, kind, state, cashier, printed_at], sort: created_at desc}
 
 - name: PosPriceDifference
   label: Price Difference

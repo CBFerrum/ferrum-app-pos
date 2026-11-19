@@ -1,0 +1,46 @@
+- name: PosDevice
+  label: Register Device
+  kind: master
+  module: pos
+  title_field: device_name
+  company_scoped: true
+  description: "A receipt printer (with the cash drawer it opens), a scale or a customer display at a register, and how the till reaches it. Through an IoT Edge gateway comes later."
+  fields:
+    - {name: device_name, type: data, required: true, in_list: true}
+    - {name: profile, type: link, to: PosProfile, required: true, in_list: true, in_filter: true, label: Register}
+    - {name: company, type: link, to: Company, fetch_from: profile.company, read_only: true, in_filter: true}
+    - {name: kind, type: select, options: [Receipt Printer, Scale, Customer Display], required: true, in_list: true}
+    - {name: route, type: select, options: [Browser USB, Browser Serial, Second Screen], required: true, in_list: true,
+       description: "How the till reaches it: USB or serial from the browser (Chrome, Edge), or a second screen on the same computer for a customer display"}
+    - {name: baud, type: int, default: 9600, visible_if: "doc.route == 'Browser Serial'"}
+    - {name: columns, type: int, default: 48, min: 16, max: 64, description: "Characters a line holds: 48 on 80 mm paper, 32 on 58 mm; 20 on a pole display"}
+    - {name: code_page, type: data, description: "Empty: chosen by the encoder per line"}
+    - {name: cash_drawer, type: select, options: [None, Pin 2, Pin 5], default: None, visible_if: "doc.kind == 'Receipt Printer'",
+       description: "The drawer the printer opens, and on which pin"}
+    - {name: scale_request, type: data, label: Ask for a Weight (Hex), visible_if: "doc.kind == 'Scale'", description: "Bytes sent to ask; empty: the scale sends on its own"}
+    - {name: scale_pattern, type: data, visible_if: "doc.kind == 'Scale'", description: "A regular expression with a group named weight, and optionally stable"}
+    - {name: scale_unit, type: select, options: [kg, lb], default: kg, visible_if: "doc.kind == 'Scale'"}
+    - {name: disabled, type: check}
+  unique: [[profile, device_name]]
+  list: {columns: [device_name, profile, kind, route], sort: device_name asc}
+
+- name: PosDrawerEvent
+  label: Drawer Opened
+  kind: master
+  module: pos
+  company_scoped: true
+  title_field: kind
+  description: "Each time the till opened the cash drawer: for a sale paid in cash, through the printer that printed its receipt, or as a No Sale with a reason and the right or an approval. Written by the receipt and drawer actions of a cashier's session; read-only."
+  fields:
+    - {name: pos_opening_entry, type: link, to: PosOpeningEntry, required: true, read_only: true, in_filter: true, label: Session}
+    - {name: company, type: link, to: Company, read_only: true, in_filter: true}
+    - {name: kind, type: select, options: [Sale, No Sale], read_only: true, in_list: true, in_filter: true}
+    - {name: pos_invoice, type: link, to: PosInvoice, read_only: true, in_list: true}
+    - {name: receipt_event, type: link, to: PosReceiptEvent, read_only: true, description: "The original receipt whose printing opened it"}
+    - {name: cashier, type: email, read_only: true, in_list: true, in_filter: true}
+    - {name: opened_at, type: datetime, read_only: true, in_list: true}
+    - {name: reason, type: data, read_only: true}
+    - {name: approval, type: link, to: PosApproval, read_only: true}
+    - {name: device, type: link, to: PosDevice, read_only: true}
+  unique: [[pos_invoice, kind]]
+  list: {columns: [kind, pos_invoice, cashier, opened_at], sort: opened_at desc}
