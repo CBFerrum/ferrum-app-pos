@@ -91,7 +91,7 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   });
   const session = useQuery({
     queryKey: ["pos", "session", profileId, email],
-    queryFn: ({ signal }) => list("PosOpeningEntry", { filters: JSON.stringify({ pos_profile: profileId, status: "Open", user: email }), fields: "id,number,period_start", limit: 1 }, signal),
+    queryFn: ({ signal }) => list("PosOpeningEntry", { filters: JSON.stringify({ pos_profile: profileId, status: "Open", user: email }), fields: "id,number,period_start,operator", limit: 1 }, signal),
     enabled: !!email,
     retry: false,
   });
@@ -129,7 +129,9 @@ function Register({ profileId, onSwitch }: { profileId: string; onSwitch?: () =>
   // What the server says, else (offline) what this device last knew.
   const offline = [profile.error, session.error].some((e) => e && unreachable(e));
   const profileDoc = profile.data ?? (offline ? memory?.profile : undefined);
-  const open = session.data ? (session.data.rows[0] ? { id: str(session.data.rows[0].id), number: str(session.data.rows[0].number) } : null) : offline ? (memory?.session ?? null) : null;
+  const row = session.data?.rows[0];
+  // Who serves at this till when it is not the session's cashier (`take_over`); offline, as this device last knew.
+  const open = session.data ? (row ? { id: str(row.id), number: str(row.number), operator: str(row.operator) || null } : null) : offline ? (memory?.session ?? null) : null;
   const modeRows = modes.data?.rows ?? memory?.modes ?? [];
   useEffect(() => {
     if (profile.data && session.data) rememberTill({ email, profile: profile.data, session: open, modes: modeRows, manager, limits, reasons, groups } satisfies TillMemory);

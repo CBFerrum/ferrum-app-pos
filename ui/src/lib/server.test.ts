@@ -16,7 +16,7 @@ vi.mock("./offline", async (actual) => ({
 
 import { approvalProblem } from "./approval";
 import { parseLimits } from "./rights";
-import { approve, cardBalance, dropHeld, exchange, heldSales, holdSale, madeCode, paper, paperOf, printReceipt, reprint, returnPlan, reviewDifference, sendReceipt, setPin, voidSale } from "./server";
+import { approve, cardBalance, dropHeld, exchange, handBack, heldSales, holdSale, madeCode, paper, paperOf, printReceipt, reprint, returnPlan, reviewDifference, sendReceipt, setPin, takeOver, voidSale } from "./server";
 import { cardProblem } from "./stored";
 import { makeCode } from "../Card";
 
@@ -29,6 +29,18 @@ beforeEach(() => {
 });
 
 describe("what the server was seen to take and answer", () => {
+  it("hands the till over and back through the session's take_over and hand_back actions, a new key for each press", async () => {
+    answer({ operator: "ravi@walk.test", since: "2026-11-19T05:00:00Z" });
+    expect((await takeOver("sess-1", "ravi@walk.test", "13579")).operator).toBe("ravi@walk.test");
+    const over = last();
+    expect([over.path, over.o.method, over.o.body]).toEqual(["/api/v1/PosOpeningEntry/sess-1/actions/take_over", "POST", { operator: "ravi@walk.test", pin: "13579" }]);
+    answer({ operator: null });
+    await handBack("sess-1", "4321");
+    const back = last();
+    expect([back.path, back.o.method, back.o.body]).toEqual(["/api/v1/PosOpeningEntry/sess-1/actions/hand_back", "POST", { pin: "4321" }]);
+    expect(typeof over.o.idempotencyKey === "string" && over.o.idempotencyKey !== back.o.idempotencyKey).toBe(true);
+  });
+
   it("approves one act on one sale through the session's approve action: the act as `act`, a new key for each press, the approval read from the answer", async () => {
     answer({ action: "Discount", approval: "01a1ce9d-bb9e-74e2-ac87-4a219f4742cf", approver: "manager@walk.test" });
     const ask = { session: "sess-1", approver: "manager@walk.test", pin: "4321", action: "Discount" as const, amount: "20", reason: "regular customer", sale: "sale-1" };

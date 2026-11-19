@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.19.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.20.0-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -175,6 +175,7 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Voids with a reason.** Taking a line off after it was rung asks for a reason from the business's list, and a sale not yet closed is voided from its receipt with a reason. Who voided and why is kept.
 - **Reasons** (POS Reason) for voids, returns, opening the drawer without a sale and reprints are the business's own list.
 - **Set my PIN** is one menu away.
+- **Lock the till.** Lock hides the sale and asks who serves next: the session's cashier, then the register's Allowed Users (or, when it names nobody, anyone who works the tills by their email). With their PIN the person serves from now: the header says "Serving: …", the till's limits narrow, and their sales say who served them. The cashier unlocks with their own PIN. A reload keeps the till locked. Offline nothing switches: the till carries on as whoever serves.
 - **Managers** may exceed cashier limits and act in any session.
 
 ### 🧾 Receipts
@@ -345,7 +346,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 | Multi-store sales reports | 🟡¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | API and webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ One tile per template, chosen by name, where ERP's Stock Operations add-on is installed; by size and colour waits for ERP. ⁹ PIN approvals by another person work; signing in and switching user by PIN does not. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² By category, a tab per item group; no pictures yet.</sub>
+<sub>¹ Odoo's Community edition is open source; some features are Enterprise only. ² Square has a free plan; hardware and payments carry fees. ³ Community is free; Enterprise is paid per user. ⁴ By accounting integrations, not one data set. ⁵ Kept by the server for the cashier who held it and for POS Managers, and on the device so holding works offline; not shared with every cashier. ⁶ ERP's promotions for the Point of Sale channel, including buy-some-get-some and minimum spend; offline the till takes the ones that need no code and no first order, and a code is checked by the server. ⁷ By email or message channels the workspace has; the receipt text is a template. ⁸ One tile per template, chosen by name, where ERP's Stock Operations add-on is installed; by size and colour waits for ERP. ⁹ Someone else serves at a cashier's till with their PIN, from its lock screen: attributed and held to the narrower of the two people's limits, while the till stays signed in as the cashier, who answers for the drawer. It is not a sign-in: a person with their own drawer opens their own session. Offline nothing switches. ¹⁰ Reports are per register or company; a Studio dashboard can group by register. ¹¹ A percent off the whole sale, held to the cashier's limits, offline too; an amount off is not there yet. ¹² By category, a tab per item group; no pictures yet.</sub>
 
 ### 🏆 Where Point of Sale stands out
 
@@ -359,7 +360,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### 🚧 Where the leaders are still ahead
 
 - 🖨️ **Hardware.** Direct receipt printing, cash drawers, card terminals, weighing scales and customer displays.
-- 📱 **A friendlier counter.** Pictures on the item tiles, size and colour buttons for variants, a camera scan and quick staff switching.
+- 📱 **A friendlier counter.** Pictures on the item tiles, size and colour buttons for variants, and a camera scan.
 - 💳 **Selling more.** Tip presets, an amount off the whole sale, special orders and layaway, and bundles.
 - 🕒 **Staff.** A time clock, and staff PIN sign-in.
 - 🧾 **Compliance.** Certified fiscal devices by country.
@@ -372,6 +373,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### ✅ Recently shipped
 
 - [x] **0.16.0:** tips typed at the till: the pay window adds the tip to what is to pay, online and offline.
+- [x] **0.20.0:** the till's lock screen: whoever serves next unlocks it with their PIN, and the header says who serves.
 - [x] **0.19.0:** someone else serves at a cashier's till by their PIN: the session names them, their online sales say so and are held to the narrower of the two people's limits; the cashier takes the till back with their own PIN.
 - [x] **0.18.0:** a template's variants as one tile with a chooser, where ERP's Stock Operations is installed, online and offline.
 - [x] **0.17.0:** item groups as tabs above the tiles, online and offline.
@@ -402,7 +404,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 - [ ] An amount off the whole sale (a percent is there since 0.13.0), and tip presets (a tip is typed since 0.16.0).
 
 **Cashier**
-- [ ] Staff PIN sign-in and quick user switch on a shared till.
+- [ ] Staff PIN sign-in on a shared till (serving at another's till by PIN, from its lock screen, is there since 0.20.0).
 - [ ] Pictures, colours and favourites on the item tiles (tabs by category are there since 0.17.0).
 - [ ] Choosing a variant by size and colour (one tile per template, chosen by name, since 0.18.0), and modifiers.
 - [ ] Camera barcode scan on a phone or tablet.

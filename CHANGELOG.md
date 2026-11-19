@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **The till's lock screen** (POS-12, the till). Lock, in the till's header, hides the sale (it is kept) and asks who
+  serves next: the session's cashier first, then the register's Allowed Users, or anyone who works the tills by their
+  email when the register names nobody. With their PIN the person serves from now (`take_over`); the cashier unlocks
+  with their own PIN (`hand_back`). The PIN is sent in its one request and dropped; a wrong PIN, a lockout and someone
+  who does not work this till are said plainly. The header says "Serving: …" while someone else serves, and the till's
+  limits are read again, so it holds the sale to the narrower limits the server holds it to. A reload keeps the till
+  locked. Offline nothing switches: the lock screen says so and the till carries on as whoever serves.
+
 ## 0.19.0
 
 Database: four new nullable fields (`PosOpeningEntry.operator`, `operator_since`, `operator_limits`,

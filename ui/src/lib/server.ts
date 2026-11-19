@@ -24,6 +24,14 @@ export interface ApproveAsk {
 export const approve = ({ session, action, ...rest }: ApproveAsk) =>
   till<{ action: string; approval: string; approver: string }>(docPath("PosOpeningEntry", session, "actions", "approve"), { method: "POST", body: { ...rest, act: action }, idempotencyKey: newKey() });
 
+/** The `take_over` action of the cashier's open session: `operator`, proved by their PIN, serves at this till from now. */
+export const takeOver = (session: string, operator: string, pin: string) =>
+  till<{ operator: string; since: string }>(docPath("PosOpeningEntry", session, "actions", "take_over"), { method: "POST", body: { operator, pin }, idempotencyKey: newKey() });
+
+/** The `hand_back` action of the cashier's open session: the session's cashier takes the till back with their own PIN. */
+export const handBack = (session: string, pin: string) =>
+  till<{ operator: null }>(docPath("PosOpeningEntry", session, "actions", "hand_back"), { method: "POST", body: { pin }, idempotencyKey: newKey() });
+
 /** The `set_pin` action of a register (`profile`): the signed-in person sets their own PIN (4 to 12 digits). */
 export const setPin = (profile: string, pin: string) =>
   till<{ ok: boolean }>(docPath("PosProfile", profile, "actions", "set_pin"), { method: "POST", body: { pin }, idempotencyKey: newKey() });
