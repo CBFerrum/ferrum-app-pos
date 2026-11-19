@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.21.1
+
+A fault fixed (Sharing K0-7); no database change. Builds against Ferrum with K0-1 (one read path, `reports::readable_*`).
+
+- **Reports read only what their caller may.** Daily Sales grouped by Item Group, and the item lookup browsing a group,
+  are refused for someone who may not read an item's group (a role's rule can hide it); their totals per group would
+  tell the groups. For them Daily Sales groups by item, as by default, and its Item Group column and values are left
+  out, as is the group in the lookup's rows.
+
 ## 0.21.0
 
 Database: two new entities (`PosDevice`, `PosDrawerEvent`) and new nullable fields (`PosReceiptEvent.state`, `device`,

@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.21.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.21.1-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -377,6 +377,7 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### ✅ Recently shipped
 
 - [x] **0.16.0:** tips typed at the till: the pay window adds the tip to what is to pay, online and offline.
+- [x] **0.21.1:** a report groups, browses and shows an item's group only for someone who may read it.
 - [x] **0.21.0:** a register's devices, the original issued to one printer and settled by what came out, the cash drawer recorded (No Sale with the right or an approval), and a fiscal device's seam.
 - [x] **0.20.0:** the till's lock screen: whoever serves next unlocks it with their PIN, and the header says who serves.
 - [x] **0.19.0:** someone else serves at a cashier's till by their PIN: the session names them, their online sales say so and are held to the narrower of the two people's limits; the cashier takes the till back with their own PIN.

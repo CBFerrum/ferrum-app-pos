@@ -7,7 +7,7 @@ use crate::closing::reconcile;
 use crate::logic::{self, Kind, Tender};
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use ferrum_domain::reports::{Params, ReportCompany, ReportSource, col, param_def, period, read_tx, resolve_company};
+use ferrum_domain::reports::{Params, ReportCompany, ReportSource, col, param_def, period, read_tx, readable_choice, readable_columns, resolve_company};
 use ferrum_domain::util::{get, money, rows, s};
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Tx};
 use rust_decimal::Decimal;
@@ -293,6 +293,10 @@ async fn sales_summary(k: &Kernel, ctx: &Ctx, tx: &mut Tx, r: &Range, session: O
 /// Sales per day and item (or item group): quantity, net amount and its share of the invoices'
 /// taxes. Returns count negatively, so the figures are net sales.
 async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_group: bool) -> Result<Value> {
+    // Grouped by an item's group only for someone who may read it: the totals per group would tell the groups.
+    if by_group {
+        readable_choice(ctx, "Item", "item_group")?;
+    }
     let (keys, cols) = if by_group {
         ("p.posting_date, coalesce(g.group_name, ''), null::text, null::text", "1, 2")
     } else {
@@ -345,7 +349,22 @@ async fn daily_sales(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, r: &Range, by_g
         columns.extend([col("item_code", "Item", "data"), col("item_name", "Item Name", "data")]);
     }
     columns.extend([col("qty", "Quantity", "decimal"), col("net_amount", "Net Amount", "currency"), col("tax_amount", "Tax", "currency")]);
+    // Columns of an item's fields the caller may not read (a rule may hide its group) are left out, and their values.
+    let columns = readable_columns(ctx, "Item", columns);
+    let out = if columns.iter().any(|c| c["name"] == "item_group") { out } else { without(out, "item_group") };
     Ok(json!({"columns": columns, "rows": out, "totals": {"qty": money(tq), "net_amount": money(tn), "tax_amount": money(taxes)}}))
+}
+
+/// Report rows without one of their values (a column the caller may not read).
+fn without(rows: Vec<Value>, key: &str) -> Vec<Value> {
+    rows.into_iter()
+        .map(|mut r| {
+            if let Value::Object(m) = &mut r {
+                m.remove(key);
+            }
+            r
+        })
+        .collect()
 }
 
 /// Expected against counted per closing and payment method.
@@ -520,6 +539,11 @@ async fn item_lookup(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
     let code = p.str("code");
     let search = p.str("search").map(|s| format!("%{}%", s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
     let group = p.uuid("item_group")?;
+    // Browsing a group, and seeing an item's group, only for someone who may read it.
+    if group.is_some() {
+        readable_choice(ctx, "Item", "item_group")?;
+    }
+    let groups_seen = readable_choice(ctx, "Item", "item_group").is_ok();
     if code.is_none() && search.is_none() && group.is_none() {
         return Err(Error::field("code", "give a barcode, a search text or an item group"));
     }
@@ -558,7 +582,7 @@ async fn item_lookup(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
         .map(|(item, code, name, uom, stock_uom, qty, rate, actual, is_stock, serial, batch, group)| {
             json!({"item": item, "item_code": code, "item_name": name, "uom": uom, "stock_uom": stock_uom, "qty": money(qty),
                    "rate": rate.map(money), "actual_qty": money(actual), "is_stock_item": is_stock, "has_serial_no": serial, "has_batch_no": batch,
-                   "item_group": group})
+                   "item_group": if groups_seen { group } else { None }})
         })
         .collect();
     Ok(json!({
