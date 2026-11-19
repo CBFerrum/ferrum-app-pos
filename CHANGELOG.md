@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.20.0
+
+The till only: no server, database or package change. The till's interface is rebuilt.
+
+- **The till's lock screen** (POS-12, the till). Lock, in the till's header, hides the sale (it is kept) and asks who
+  serves next: the session's cashier first, then the register's Allowed Users, or anyone who works the tills by their
+  email when the register names nobody. With their PIN the person serves from now (`take_over`); the cashier unlocks
+  with their own PIN (`hand_back`). The PIN is sent in its one request and dropped; a wrong PIN, a lockout and someone
+  who does not work this till are said plainly. The header says "Serving: …" while someone else serves, and the till's
+  limits are read again, so it holds the sale to the narrower limits the server holds it to. A reload keeps the till
+  locked. Offline nothing switches: the lock screen says so and the till carries on as whoever serves.
+
+## 0.19.0
+
+Database: four new nullable fields (`PosOpeningEntry.operator`, `operator_since`, `operator_limits`,
+`PosInvoice.served_by`); the schema sync adds the columns, nothing moves. The till's interface is unchanged.
+
+- **Someone else serving at a cashier's till by their PIN** (POS-12, the server). The till stays signed in as the
+  cashier whose session is open, who answers for the drawer. Two operations of the open session: `take_over`
+  (`operator`, `pin`): the person, proved by their PIN with the same wrong-PIN count and lockout as an approval,
+  allowed at the register and holding the Cashier or POS Manager role, serves from now; the session names them, when,
+  and what they may do there. `hand_back` (`pin`): the cashier's own PIN, since it gives the cashier's rights back. Only
+  the session's cashier hands its till over, never to themselves.
+- A sale made online records who served it (`served_by`, set by the server; what a till sends for it is ignored) and is
+  held to the narrower of the two people's limits (`Limits::narrower`), as are voids, reprints and receipts sent from
+  that till, and `GET /limits`. A sale made offline is the cashier's own: nothing switches offline.
+- The person serving cannot approve their own acts.
+- Both are kept with the records when a person's data is erased (`personal_data`, retained with a reason).
+
 ## 0.18.0
 
 The snapshot gains `variant_of` and `templates`; no database change. The till's interface is rebuilt.

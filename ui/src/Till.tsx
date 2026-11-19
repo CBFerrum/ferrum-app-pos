@@ -10,7 +10,7 @@
 // recorded with a reason.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CloudOff, ScanBarcode, Store, WifiOff } from "lucide-react";
+import { CloudOff, Lock, ScanBarcode, Store, WifiOff } from "lucide-react";
 import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { docPath, errorMessage, formatDecimal, formatMoment, newKey, shell, t as tr, isolate } from "@ferrum/client";
@@ -33,6 +33,8 @@ import { dropHeld, HELD_PAGE, heldSales, holdSale } from "./lib/server";
 import { groupOf, tabsOf, under, type Group } from "./lib/groups";
 import { tilesOf } from "./lib/variants";
 import { VariantDialog } from "./Variants";
+import { LockScreen } from "./Lock";
+import { isLocked, keepLocked, peopleOf } from "./lib/serving";
 import { denominations } from "./lib/shift";
 
 // Returns need the server, and are not needed to sell: they load when first asked for.
@@ -83,7 +85,8 @@ type Dialog = null | "pay" | "held" | "returns" | "keys" | "pin" | "variant";
 
 export interface TillProps {
   profile: Doc;
-  session: { id: string; number: string };
+  /** The open session; `operator`: who serves at its till when it is not the session's cashier. */
+  session: { id: string; number: string; operator?: string | null };
   modes: Doc[];
   book: PriceBook | null;
   manager: boolean;
@@ -133,6 +136,24 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   // The template whose variants the chooser lists (its tile's name with it).
   const [choosing, setChoosing] = useState<{ template: string; name: string } | null>(null);
   const [receipt, setReceipt] = useState<Doc | null>(null);
+  // Someone else serving at this till by their PIN (`take_over`), and whether the till is locked (it stays locked across a
+  // reload). The session's cashier answers for the drawer whoever serves.
+  const [serving, setServing] = useState<string | null>(session.operator ?? null);
+  useEffect(() => setServing(session.operator ?? null), [session.operator]);
+  const [locked, setLocked] = useState(() => isLocked(session.id));
+  const lock = () => {
+    keepLocked(session.id, true);
+    setDialog(null);
+    setLocked(true);
+  };
+  const unlock = (who: string | null) => {
+    keepLocked(session.id, false);
+    setServing(who);
+    setLocked(false);
+    // What the till may do now: the narrower limits while someone else serves, the cashier's own once they are back.
+    void qc.invalidateQueries({ queryKey: ["pos", "limits"] });
+    void qc.invalidateQueries({ queryKey: ["pos", "session"] });
+  };
   const scan = useRef<HTMLInputElement>(null);
   const outbox = useOutbox();
   // Whether a card's code is on a line: kept aside or reloaded, the sale says the card is to be asked for again, never the code.
@@ -232,7 +253,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
   }, [book, wanted, needed]);
 
   const asker = useAsk(session.id, () => away || serverDown());
-  const anyOpen = dialog !== null || receipt !== null || asker.open;
+  const anyOpen = dialog !== null || receipt !== null || asker.open || locked;
   useEffect(() => {
     if (!anyOpen) focusScan();
   }, [anyOpen, focusScan]);
@@ -638,6 +659,7 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
         <Store className="size-5 text-muted-foreground" aria-hidden="true" />
         <h1>{isolate(str(profile.profile_name))}</h1>
         <Badge>{session.number ? tr("Session {number}", { number: session.number }) : tr("Session open")}</Badge>
+        {serving && <Badge tone="blue">{tr("Serving: {who}", { who: serving })}</Badge>}
         {away ? (
           <Badge tone="amber" title={tr("Selling from this device; sales are sent when the connection is back")}>
             <CloudOff className="size-3.5" aria-hidden="true" /> {tr("Offline")}
@@ -677,6 +699,9 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
             </>
           )}
         </Menu>
+        <Button className="pos-btn" onClick={lock} title={tr("Lock the till; whoever serves next unlocks it with their PIN")}>
+          <Lock className="size-4" aria-hidden="true" /> {tr("Lock")}
+        </Button>
         <Button className="pos-btn" aria-label={tr("Keyboard shortcuts")} title={tr("Keyboard shortcuts")} onClick={() => setDialog("keys")}>
           ?
         </Button>
@@ -905,6 +930,31 @@ export function Till({ profile, session, modes, book, manager, limits: known, re
       {receipt && <ReceiptDialog profile={profile} session={session.id} sale={receipt} limits={limits} reasons={reasons} offline={away || serverDown()} onClose={() => setReceipt(null)} />}
     </div>
   );
+  if (locked) {
+    return (
+      <div className="pos-away">
+        <div className="pos-head">
+          <Store className="size-5 text-muted-foreground" aria-hidden="true" />
+          <h1>{isolate(str(profile.profile_name))}</h1>
+          <Badge>{session.number ? tr("Session {number}", { number: session.number }) : tr("Session open")}</Badge>
+          {away && (
+            <Badge tone="amber">
+              <CloudOff className="size-3.5" aria-hidden="true" /> {tr("Offline")}
+            </Badge>
+          )}
+        </div>
+        <LockScreen
+          session={session.id}
+          cashier={email}
+          serving={serving}
+          people={peopleOf(profile, email)}
+          anyone={!((profile.users as Doc[] | undefined) ?? []).length}
+          offline={away || serverDown()}
+          onUnlock={unlock}
+        />
+      </div>
+    );
+  }
   return <Currency.Provider value={{ precision, code }}>{view}</Currency.Provider>;
 }
 

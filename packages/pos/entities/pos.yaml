@@ -139,6 +139,11 @@
     - {name: status, type: select, options: [Draft, Open, Closed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: pos_closing_entry, type: link, to: PosClosingEntry, read_only: true, no_copy: true}
     - {name: open_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: Set while open; the unique index allows one open session per profile and cashier}
+    - {name: operator, type: email, label: Serving Now, read_only: true, no_copy: true, in_list: true, in_filter: true,
+       description: "Someone else serving at this till by their PIN (Serve at This Till); the cashier still answers for the drawer"}
+    - {name: operator_since, type: datetime, label: Serving Since, read_only: true, no_copy: true}
+    - {name: operator_limits, type: json, read_only: true, hidden: true, no_copy: true,
+       description: "What the person serving may do at this register, as when they took over: a sale made online is held to the narrower of theirs and the cashier's"}
     - {name: remarks, type: text}
   actions:
     - name: approve
@@ -160,6 +165,33 @@
         effect: transactional_action
         completion: "A POS Approval exists for one act on one sale in this session, usable once before it lapses"
         returns: {type: object, properties: {approval: {type: string, format: uuid, x-ferrum-link: PosApproval}, approver: {type: string}, action: {type: string}}}
+    - name: take_over
+      label: Serve at This Till
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: someone serves at an open session's till"
+      params:
+        - {name: operator, label: Their Email, required: true}
+        - {name: pin, label: Their PIN, required: true, secret: true}
+      contract:
+        effect: transactional_action
+        completion: "The session names who serves at its till now: its sales made online are theirs (Served By), held to the narrower of their limits and the cashier's"
+        returns: {type: object, properties: {operator: {type: string}, since: {type: string, format: date-time}}}
+    - name: hand_back
+      label: Hand Back the Till
+      permission: write
+      hidden: true
+      docstatus: [1]
+      condition: "doc.status == 'Open'"
+      condition_message: "This session is not open: there is no till to hand back"
+      params:
+        - {name: pin, label: Your PIN, required: true, secret: true}
+      contract:
+        effect: transactional_action
+        completion: "Nobody else serves at the session's till: its sales are the cashier's own again, held to the cashier's limits"
+        returns: {type: object, properties: {operator: {type: "null"}}}
     - name: print_receipt
       label: Print Receipt
       permission: write
@@ -295,6 +327,8 @@
     - {name: company, type: link, to: Company, required: true, fetch_from: pos_profile.company, read_only: true, in_filter: true}
     - {name: invoice_prefix, type: data, fetch_from: pos_profile.invoice_prefix, read_only: true, hidden: true}
     - {name: cashier, type: data, read_only: true, in_list: true, in_filter: true}
+    - {name: served_by, type: email, label: Served By, read_only: true, no_copy: true, in_filter: true,
+       description: "Who served the sale when someone else served at the cashier's till by their PIN; set by the server, never by the till"}
     - {name: customer, type: link, to: Customer, in_filter: true, description: Empty = the profile's default customer}
     - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}

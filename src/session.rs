@@ -97,6 +97,8 @@ impl DocHook for OpeningHook {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         match name {
             "approve" => crate::limits::approve(hc, doc, params).await.map(Some),
+            "take_over" => crate::limits::take_over(hc, doc, params).await.map(Some),
+            "hand_back" => crate::limits::hand_back(hc, doc, params).await.map(Some),
             "print_receipt" => crate::receipt::print(hc, doc, params).await.map(Some),
             "reprint" => crate::receipt::reprint(hc, doc, params).await.map(Some),
             "send_receipt" => crate::receipt::send(hc, doc, params).await.map(Some),

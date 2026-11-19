@@ -274,6 +274,15 @@ fn wider(a: Option<Decimal>, b: Option<Decimal>) -> Option<Decimal> {
     Some(a?.max(b?))
 }
 
+/// The smaller cap, where no cap is the largest.
+fn tighter(a: Option<Decimal>, b: Option<Decimal>) -> Option<Decimal> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
 impl Limits {
     /// No limit at all (a POS manager with no limits record).
     pub fn unlimited() -> Limits {
@@ -303,6 +312,22 @@ impl Limits {
             open_drawer: a.open_drawer || b.open_drawer,
             reprint: a.reprint || b.reprint,
         })
+    }
+
+    /// What both of two people may do: the least of each limit. Someone serving at another's till is held to it, so serving
+    /// never lends the till's cashier's rights, and claiming to be someone can only lose rights.
+    pub fn narrower(&self, other: &Limits) -> Limits {
+        Limits {
+            discount_percent: self.discount_percent.min(other.discount_percent),
+            discount_amount: tighter(self.discount_amount, other.discount_amount),
+            change_price: self.change_price && other.change_price,
+            void_line: self.void_line && other.void_line,
+            void_sale: self.void_sale && other.void_sale,
+            refund: tighter(self.refund, other.refund),
+            return_without_receipt: self.return_without_receipt && other.return_without_receipt,
+            open_drawer: self.open_drawer && other.open_drawer,
+            reprint: self.reprint && other.reprint,
+        }
     }
 
     /// Whether these limits let `act` through at `figure` (a saving percent or amount, a refund).
@@ -602,6 +627,21 @@ mod tests {
             open_drawer: false,
             reprint: true,
         }
+    }
+
+    #[test]
+    fn limits_of_two_people_take_the_least_of_each() {
+        let senior = Limits { discount_percent: n("20"), discount_amount: None, refund: None, void_sale: true, open_drawer: true, ..cashier() };
+        for both in [cashier().narrower(&senior), senior.narrower(&cashier())] {
+            assert_eq!(both, cashier(), "the senior's wider rights are lost, the cashier's kept");
+        }
+        let odd =
+            Limits { discount_percent: n("5"), discount_amount: Some(n("80")), refund: Some(n("300")), change_price: true, void_line: false, ..cashier() };
+        let both = cashier().narrower(&odd);
+        assert_eq!((both.discount_percent, both.discount_amount, both.refund), (n("5"), Some(n("50")), Some(n("200"))));
+        assert!(!both.change_price && !both.void_line && both.reprint);
+        assert_eq!(Limits::unlimited().narrower(&cashier()), cashier(), "no cap narrows to the other's cap");
+        assert_eq!(Limits::unlimited().narrower(&Limits::unlimited()), Limits::unlimited());
     }
 
     #[test]

@@ -149,8 +149,9 @@ pub(crate) async fn reprint(hc: &mut HookCtx<'_>, session: &Doc, params: &Value)
     let (reg, doc, sale) = start(hc, session, params).await?;
     let ctx = hc.ctx;
     let event = Uuid::now_v7();
-    if !crate::limits::of(ctx, hc.tx, &reg).await?.reprint {
-        let here = (ctx.email.as_str(), id(session, "id").unwrap_or_default());
+    let sid = id(session, "id").unwrap_or_default();
+    if !crate::limits::at_till(ctx, hc.tx, &reg, sid).await?.reprint {
+        let here = (ctx.email.as_str(), sid);
         let covered = match approval {
             Some(a) => crate::limits::covers(hc.tx, ctx.tenant, a, here, Act::Reprint, rust_decimal::Decimal::ZERO, false, sale).await?,
             None => false,
@@ -191,7 +192,7 @@ pub(crate) async fn send(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) ->
         _ => return Err(Error::field("consent", "is once or opt_in")),
     };
     let (reg, doc, sale) = start(hc, session, params).await?;
-    if !own_sale(hc.ctx, &doc) && !crate::limits::of(hc.ctx, hc.tx, &reg).await?.reprint {
+    if !own_sale(hc.ctx, &doc) && !crate::limits::at_till(hc.ctx, hc.tx, &reg, id(session, "id").unwrap_or_default()).await?.reprint {
         return Err(Error::Forbidden("you may send the receipts of your own sales; ask someone who may reprint for another's".into()));
     }
     let (k, ctx) = (hc.kernel, hc.ctx);

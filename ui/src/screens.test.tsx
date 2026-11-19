@@ -22,6 +22,7 @@ import ShiftPage from "./Shift";
 import DifferencesPage from "./Differences";
 import { Till } from "./Till";
 import { VariantDialog } from "./Variants";
+import { keepLocked } from "./lib/serving";
 import type { PriceBook } from "./lib/offline";
 import { Currency } from "./fmt";
 import { ownerOf, saveCart } from "./lib/held";
@@ -362,6 +363,33 @@ describe("the till", () => {
     expect(chooser).toContain("Choose one of Tee");
     expect([">M<", "TEE-M", ">S<", "TEE-S"].every((x) => chooser.includes(x))).toBe(true);
     expect(chooser.indexOf("TEE-M")).toBeLessThan(chooser.indexOf("TEE-S"));
+  });
+
+  it("shows who serves at the till when it is not the session's cashier, and a lock", () => {
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "POS-OPEN-1", operator: "ravi@shop.test" }} modes={modes} book={null} manager={false} offline={false} />);
+    expect(html).toContain("Serving: ravi@shop.test");
+    expect(html).toMatch(/<\/svg> Lock<\/button>/);
+    expect(draw(till)).not.toContain("Serving:");
+  });
+
+  it("asks who serves at a locked till, the session's cashier first, and their PIN; the register's people only when it names them", () => {
+    keepLocked("s1", true);
+    const html = draw(<Till profile={{ ...profile, users: [{ user: "ravi@shop.test" }] }} session={{ id: "s1", number: "POS-OPEN-1" }} modes={modes} book={null} manager={false} offline={false} />);
+    expect(html).toContain("Who is serving?");
+    expect(html).not.toContain("Scan a barcode or search items");
+    expect(html.indexOf("asha@shop.test")).toBeLessThan(html.indexOf("ravi@shop.test"));
+    expect(html).toContain("(this session&#x27;s cashier)");
+    expect(html).not.toContain("Someone else");
+    expect(html).toMatch(/type="password"[^>]*id="pos-lock-pin"|id="pos-lock-pin"[^>]*type="password"/);
+    expect(draw(till)).toContain("Someone else");
+  });
+
+  it("offline, a locked till carries on as whoever serves, without a PIN", () => {
+    keepLocked("s1", true);
+    const html = draw(<Till profile={profile} session={{ id: "s1", number: "", operator: "ravi@shop.test" }} modes={modes} book={null} manager={false} offline />);
+    expect(html).toContain("Switching people needs a connection. The till carries on as ravi@shop.test.");
+    expect(html).toContain("Carry on as ravi@shop.test");
+    expect(html).not.toContain('id="pos-lock-pin"');
   });
 
   it("says when it is selling offline", () => {

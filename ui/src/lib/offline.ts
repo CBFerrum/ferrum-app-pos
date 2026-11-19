@@ -273,7 +273,7 @@ export async function listPrices(book: PriceBook, ids: string[], at?: Date): Pro
 export interface TillMemory {
   email: string;
   profile: Doc;
-  session: { id: string; number: string } | null;
+  session: { id: string; number: string; operator?: string | null } | null;
   /** Ways of paying, with their kinds (cash shows quick amounts). */
   modes: Doc[];
   /** Whether they are a POS manager, which lifts the cashier's limits at the till. */

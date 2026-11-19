@@ -54,10 +54,17 @@ impl DocHook for PosInvoiceHook {
         {
             set(doc, "pos_opening_entry", sid.to_string());
         }
+        // Who served it: whoever serves at the session's till by their PIN (`take_over`) when it is made online; never what
+        // a till says, and nobody else for a sale made offline (nothing switches offline).
+        let mut served = Value::Null;
         if let Some(sid) = id(doc, "pos_opening_entry") {
             let session = get(hc.kernel, hc.ctx, hc.tx, "PosOpeningEntry", sid).await?;
             set(doc, "cashier", session.get("user").cloned().unwrap_or(Value::Null));
+            if !b(doc, "sold_offline") {
+                served = session.get("operator").cloned().unwrap_or(Value::Null);
+            }
         }
+        set(doc, "served_by", served);
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?).await?;
         // The register sells in the company currency, from its own warehouse.
         set(doc, "currency", co.currency_id.to_string());
@@ -200,7 +207,9 @@ impl DocHook for PosInvoiceHook {
                 errors.push(FieldError::new("reason", "choose one of the business's reasons for voiding").in_row("voided_lines", i));
             }
         }
-        if !voided.is_empty() && !crate::limits::of(hc.ctx, hc.tx, &profile).await?.void_line && !approved(hc, doc, Act::VoidLine, Decimal::ZERO, false).await?
+        if !voided.is_empty()
+            && !crate::limits::for_sale(hc.ctx, hc.tx, &profile, doc).await?.void_line
+            && !approved(hc, doc, Act::VoidLine, Decimal::ZERO, false).await?
         {
             errors.push(FieldError::new("voided_lines", "you may not void lines; ask someone who may to approve it"));
         }
@@ -464,7 +473,7 @@ async fn price_sale(hc: &mut HookCtx<'_>, doc: &mut Doc, profile: &Profile) -> R
         }
     }
 
-    let limits = crate::limits::of(hc.ctx, hc.tx, profile).await?;
+    let limits = crate::limits::for_sale(hc.ctx, hc.tx, profile, doc).await?;
     let header = d(doc, "discount_percent");
     let mut items = rows(doc, "items");
     let mut errors = Vec::new();
@@ -741,7 +750,7 @@ async fn check_return(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) -> Resu
     let refunds = tenders(&payments, -Decimal::ONE);
     let total = -d(doc, "rounded_total") - carried;
     logic::check_refunds(total, &refunds, &left).map_err(|m| Error::field("payments", m))?;
-    let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
+    let limits = crate::limits::for_sale(hc.ctx, hc.tx, &profile, doc).await?;
     refund_within(hc, doc, &limits, total).await
 }
 
@@ -889,7 +898,7 @@ async fn check_unreceipted(hc: &mut HookCtx<'_>, doc: &Doc, payments: &[Doc]) ->
     if !reason.is_some_and(|r| s(&r, "applies_to") == Some("Return") && !b(&r, "disabled")) {
         return Err(Error::field("reason", "choose one of the business's reasons for returns"));
     }
-    let limits = crate::limits::of(hc.ctx, hc.tx, &profile).await?;
+    let limits = crate::limits::for_sale(hc.ctx, hc.tx, &profile, doc).await?;
     if !limits.return_without_receipt && !approved(hc, doc, Act::ReturnWithoutReceipt, Decimal::ZERO, false).await? {
         return Err(Error::field("without_receipt", "you may not take returns without a receipt; ask someone who may to approve it"));
     }
@@ -1148,9 +1157,14 @@ async fn void_sale(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Va
         return Err(Error::field("reason", "choose one of the business's reasons for voiding"));
     }
     let profile = Profile::load(hc.kernel, hc.ctx, hc.tx, id(doc, "pos_profile").unwrap_or_default()).await?;
-    if !crate::limits::of(hc.ctx, hc.tx, &profile).await?.void_sale {
+    // Voided now, at the caller's till: held to what it may do now, with whoever serves at it.
+    let session = crate::open_session_in(hc.tx, hc.ctx.tenant, profile.id, &hc.ctx.email).await?;
+    let limits = match session {
+        Some(sid) => crate::limits::at_till(hc.ctx, hc.tx, &profile, sid).await?,
+        None => crate::limits::of(hc.ctx, hc.tx, &profile).await?,
+    };
+    if !limits.void_sale {
         let approval: Option<Uuid> = params.get("approval").and_then(Value::as_str).and_then(|a| a.parse().ok());
-        let session = crate::open_session_in(hc.tx, hc.ctx.tenant, profile.id, &hc.ctx.email).await?;
         let ok = match (approval, session) {
             (Some(a), Some(sid)) => crate::limits::covers(hc.tx, hc.ctx.tenant, a, (&hc.ctx.email, sid), Act::VoidSale, Decimal::ZERO, false, sale).await?,
             _ => false,
