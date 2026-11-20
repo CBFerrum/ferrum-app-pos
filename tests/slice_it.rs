@@ -116,6 +116,34 @@ impl T {
         .await
         .unwrap()
     }
+    /// The drawer openings recorded for a sale.
+    async fn drawers(&self, sale: &Value) -> Vec<Doc> {
+        let q = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"pos_invoice": sale})).unwrap(), ..Default::default() };
+        self.k.list(&self.admin, "PosDrawerEvent", &q).await.unwrap().rows
+    }
+    /// Jobs of `kind` queued under `key`.
+    async fn jobs(&self, kind: &str, key: &str) -> i64 {
+        let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+        sqlx::query_scalar("select count(*) from job where tenant_id = $1 and kind = $2 and dedupe_key = $3")
+            .bind(self.tenant)
+            .bind(kind)
+            .bind(key)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap()
+    }
+    /// What a fiscal device answered for a sale, as its add-on would set it.
+    async fn fiscal(&self, sale: &Value, answer: Value) {
+        let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+        sqlx::query("update e_pos_invoice set fiscal = $3 where tenant_id = $1 and id = $2")
+            .bind(self.tenant)
+            .bind(sale.as_str().unwrap().parse::<Uuid>().unwrap())
+            .bind(answer)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
     /// A request answered with a page (a receipt), as its text.
     async fn page(&self, ctx: &Ctx, method: &str, path: &str, query: Value, body: Value) -> Result<(String, Vec<(String, String)>), Error> {
         let req = SiteRequest {
@@ -1004,6 +1032,170 @@ async fn scenario() {
     let report = String::from_utf8_lossy(&t.k.render_document(&manager, "pos.shift_report", uid(&close), None, false).await.expect("the shift report").bytes)
         .to_string();
     assert!(report.contains("<td>Tips</td>") && report.contains("7.00"), "receipt_and_shift_report_show_the_tip: {report}");
+
+    // ───────────── devices: the original to one printer, its drawer, No Sale, the fiscal seam (S14-10) ─────────────
+    // A register's devices are records (a widget costs 132 with its tax by now). Printing the original names the printer: issued once under the sale's lock, then
+    // settled by what the printer did (a print that never left gives the original back); a sale paid in cash opens that
+    // printer's drawer once, recorded; opening it without a sale takes the right or another person's approval.
+    let bench = uid(&t
+        .insert(
+            &a,
+            "PosProfile",
+            json!({"profile_name": "Bench", "company": cid.to_string(), "warehouse": stores.to_string(), "price_list": selling["id"], "customer": walk_in.to_string(),
+                   "invoice_prefix": "BN", "payments": [{"mode_of_payment": cash["id"], "is_default": true}, {"mode_of_payment": card["id"]}]}),
+        )
+        .await);
+    let device = |name: &str, kind: &str, route: &str, drawer: &str| json!({"device_name": name, "profile": bench.to_string(), "kind": kind, "route": route, "cash_drawer": drawer});
+    let printer = uid(&t.insert(&manager, "PosDevice", device("Front printer", "Receipt Printer", "Browser USB", "Pin 2")).await);
+    let plain = uid(&t.insert(&manager, "PosDevice", device("Back printer", "Receipt Printer", "Browser Serial", "None")).await);
+    // device_kinds_hold_together: a printer is not on a second screen, and only a printer opens a drawer.
+    let odd = t.k.insert(&manager, "PosDevice", obj(device("Odd", "Receipt Printer", "Second Screen", "None"))).await;
+    assert!(matches!(odd, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "route")), "device_kinds_hold_together: {odd:?}");
+    let scale = t.k.insert(&manager, "PosDevice", obj(device("Scale", "Scale", "Browser Serial", "Pin 5"))).await;
+    assert!(matches!(scale, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "cash_drawer")), "device_kinds_hold_together: {scale:?}");
+    let opened = |who: &Ctx| {
+        let (t, who) = (&t, who.clone());
+        async move {
+            let s = t.insert(&who, "PosOpeningEntry", json!({"pos_profile": bench.to_string()})).await;
+            uid(&t.k.submit(&who, "PosOpeningEntry", uid(&s), None).await.expect("a session at the bench"))
+        }
+    };
+    let (till, desk) = (opened(&cashier).await, opened(&manager).await);
+    let at_bench = |pays: Value| json!({"pos_profile": bench.to_string(), "items": widgets("1"), "payments": pays});
+    let print = |who: &Ctx, session: Uuid, sale: &Doc, device: Option<Uuid>| {
+        let mut p = json!({"sale": sale["id"]});
+        if let Some(d) = device {
+            p["device"] = json!(d);
+        }
+        let (t, who) = (&t, who.clone());
+        async move { t.act(&who, "PosOpeningEntry", session, "print_receipt", p).await }
+    };
+    let event_of = |answer: &Value| answer["event"].as_str().unwrap().parse::<Uuid>().unwrap();
+
+    // receipt_issued_once_under_two_tills: the cashier's till and the manager's print the original of one sale at once: one
+    // is issued, the other is told it was printed already.
+    let sold = t.sell(&cashier, at_bench(json!([pay(&cash, "132")]))).await;
+    let (one, two) = tokio::join!(print(&cashier, till, &sold, Some(printer)), print(&manager, desk, &sold, Some(printer)));
+    let won: Vec<Value> = [&one, &two].into_iter().filter_map(|r| r.as_ref().ok().cloned()).collect();
+    assert_eq!(won.len(), 1, "receipt_issued_once_under_two_tills: {one:?} {two:?}");
+    assert!(
+        [&one, &two].into_iter().any(|r| matches!(r, Err(Error::Invalid(m)) if m.contains("printed already"))),
+        "receipt_issued_once_under_two_tills: {one:?} {two:?}"
+    );
+    let issued = won[0].clone();
+    // drawer_only_with_cash: paid in cash, through a printer with a drawer: it opens, recorded once.
+    assert_eq!((issued["state"].clone(), issued["drawer"].clone()), (json!("Issued"), json!(true)), "drawer_only_with_cash: {issued}");
+    assert_eq!(t.drawers(&sold["id"]).await.len(), 1, "drawer_only_with_cash: recorded once");
+    // the_printer_gets_lines: the issued original as text, the template's lines with their markers.
+    // (Read as the manager: either till may have won.)
+    let (lines, _) = t.page(&manager, "GET", &format!("/paper/{}", event_of(&issued)), json!({"format": "text"}), Value::Null).await.expect("the lines");
+    assert!(lines.contains("[[c]]") && lines.contains("132.00") && lines.trim_end().ends_with("[[cut]]"), "the_printer_gets_lines: {lines}");
+    // drawer_only_with_cash: paid by card, a printer with no drawer, or the browser's dialog: no drawer.
+    let by_card = t.sell(&cashier, at_bench(json!([pay(&card, "132")]))).await;
+    let r = print(&cashier, till, &by_card, Some(printer)).await.expect("by card");
+    assert_eq!(r["drawer"], json!(false), "drawer_only_with_cash: by card {r}");
+    let drawerless = t.sell(&cashier, at_bench(json!([pay(&cash, "132")]))).await;
+    let r = print(&cashier, till, &drawerless, Some(plain)).await.expect("a printer without a drawer");
+    assert_eq!(r["drawer"], json!(false), "drawer_only_with_cash: a printer without a drawer {r}");
+    let dialog = t.sell(&cashier, at_bench(json!([pay(&cash, "132")]))).await;
+    let r = print(&cashier, till, &dialog, None).await.expect("the dialog");
+    assert_eq!((r["state"].clone(), r["drawer"].clone()), (json!("Printed"), json!(false)), "drawer_only_with_cash: the browser's dialog {r}");
+    for s in [&by_card, &drawerless, &dialog] {
+        assert!(t.drawers(&s["id"]).await.is_empty(), "drawer_only_with_cash: no drawer for {}", s["id"]);
+    }
+    // a_printer_of_this_register: another register's printer, or a scale, is refused.
+    let elsewhere = uid(&t
+        .insert(
+            &manager,
+            "PosDevice",
+            json!({"device_name": "Corner printer", "profile": corner.to_string(), "kind": "Receipt Printer", "route": "Browser USB"}),
+        )
+        .await);
+    let another = t.sell(&cashier, at_bench(json!([pay(&cash, "132")]))).await;
+    let r = print(&cashier, till, &another, Some(elsewhere)).await;
+    assert!(matches!(r, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "device")), "a_printer_of_this_register: {r:?}");
+
+    // not_sent_restores_original: nothing reached the printer: the sale has its original back, no drawer opened, and the
+    // next press issues it again.
+    let settled = t.act(&manager, "PosReceiptEvent", event_of(&issued), "settle", json!({"outcome": "not_sent"})).await.expect("not_sent_restores_original");
+    assert_eq!((settled["state"].clone(), settled["original"].clone()), (json!("Not Printed"), json!(true)), "not_sent_restores_original: {settled}");
+    assert_eq!(
+        (t.find_one("PosInvoice", json!({"id": sold["id"]})).await["receipt_printed"].clone(), t.drawers(&sold["id"]).await.len()),
+        (json!(false), 0),
+        "not_sent_restores_original"
+    );
+    let again = print(&cashier, till, &sold, Some(printer)).await.expect("not_sent_restores_original: issued again");
+    assert_eq!((again["state"].clone(), again["drawer"].clone()), (json!("Issued"), json!(true)), "not_sent_restores_original: {again}");
+    // unknown_needs_person: a write that broke off is Unknown until a person says what came out, by the cashier who printed
+    // it or a manager, once; not printed gives the original back and keeps the drawer's opening.
+    let theirs = t.act(&other, "PosReceiptEvent", event_of(&again), "settle", json!({"outcome": "printed"})).await;
+    assert!(matches!(theirs, Err(Error::Forbidden(_)) | Err(Error::NotFound(_))), "unknown_needs_person: not another cashier's: {theirs:?}");
+    let unsure = t.act(&cashier, "PosReceiptEvent", event_of(&again), "settle", json!({"outcome": "unknown"})).await.expect("unknown_needs_person: unknown");
+    assert_eq!(unsure["state"], json!("Unknown"), "unknown_needs_person: {unsure}");
+    let lost =
+        t.act(&cashier, "PosReceiptEvent", event_of(&again), "settle", json!({"outcome": "not_printed"})).await.expect("unknown_needs_person: not printed");
+    assert_eq!(
+        (lost["state"].clone(), t.find_one("PosInvoice", json!({"id": sold["id"]})).await["receipt_printed"].clone(), t.drawers(&sold["id"]).await.len()),
+        (json!("Not Printed"), json!(false), 1),
+        "unknown_needs_person: the original back, the drawer's opening kept"
+    );
+    let twice = t.act(&cashier, "PosReceiptEvent", event_of(&again), "settle", json!({"outcome": "printed"})).await;
+    assert!(matches!(twice, Err(Error::Invalid(ref m)) if m.contains("settled already")), "unknown_needs_person: settled once: {twice:?}");
+    let third = print(&cashier, till, &sold, Some(printer)).await.expect("issued a third time");
+    assert_eq!(third["drawer"], json!(false), "the drawer opens once for a sale: {third}");
+    let done = t.act(&cashier, "PosReceiptEvent", event_of(&third), "settle", json!({"outcome": "printed"})).await.expect("printed");
+    assert_eq!(done["state"], json!("Printed"));
+    let fourth = print(&cashier, till, &sold, Some(printer)).await;
+    assert!(matches!(fourth, Err(Error::Invalid(ref m)) if m.contains("printed already")), "printed once: {fourth:?}");
+
+    // no_sale_needs_right_or_approval: opening the drawer without a sale is beyond a cashier: refused alone, done once with
+    // another person's approval and one of the business's reasons; a manager opens it on their own.
+    let reason = t.insert(&a, "PosReason", json!({"reason": "Change for the float", "applies_to": "No Sale"})).await;
+    let alone = t.act(&cashier, "PosOpeningEntry", till, "open_drawer", json!({"reason": reason["id"], "device": printer})).await;
+    assert!(matches!(alone, Err(Error::Forbidden(ref m)) if m.contains("drawer")), "no_sale_needs_right_or_approval: alone: {alone:?}");
+    let why = t.act(&manager, "PosOpeningEntry", desk, "open_drawer", json!({"device": printer})).await;
+    assert!(matches!(why, Err(Error::Validation(ref v)) if v.iter().any(|f| f.field == "reason")), "no_sale_needs_right_or_approval: why: {why:?}");
+    let ok = t
+        .act(
+            &cashier,
+            "PosOpeningEntry",
+            till,
+            "approve",
+            json!({"approver": "manager@shop.test", "pin": "4321", "act": "No Sale", "reason": "float", "sale": null}),
+        )
+        .await
+        .expect("no_sale_needs_right_or_approval: approved");
+    let open = json!({"reason": reason["id"], "approval": ok["approval"], "device": printer});
+    let kicked = t.act(&cashier, "PosOpeningEntry", till, "open_drawer", open.clone()).await.expect("no_sale_needs_right_or_approval: opened");
+    assert_eq!(kicked["kick"], json!(true), "no_sale_needs_right_or_approval: {kicked}");
+    let kept = t.k.get(&a, "PosDrawerEvent", event_of(&kicked), false).await.expect("the drawer's opening");
+    assert_eq!(
+        (kept["kind"].clone(), kept["cashier"].clone(), kept["reason"].clone(), kept["approval"].clone(), kept["pos_opening_entry"].clone()),
+        (json!("No Sale"), json!("cashier@shop.test"), json!("Change for the float"), ok["approval"].clone(), json!(till.to_string())),
+        "no_sale_needs_right_or_approval: {kept:?}"
+    );
+    let reused = t.act(&cashier, "PosOpeningEntry", till, "open_drawer", open).await;
+    assert!(reused.is_err(), "no_sale_needs_right_or_approval: an approval opens it once: {reused:?}");
+    t.act(&manager, "PosOpeningEntry", desk, "open_drawer", json!({"reason": "Change for the float", "device": printer})).await.expect("a manager opens it");
+
+    // fiscal_blocks_issue_until_set: at a register with a fiscal device, each sale is queued for it once, and its receipt
+    // waits until the device's answer is on the sale; a device that prints its own receipt makes the original printed.
+    t.k.update(&a, "PosProfile", bench, obj(json!({"fiscal_operation": "fiscal.device.sign"})), None).await.expect("a fiscal device");
+    let signed = t.sell(&cashier, at_bench(json!([pay(&card, "132")]))).await;
+    let key = format!("pos.fiscal:{}", signed["id"].as_str().unwrap());
+    assert_eq!(t.jobs("pos.fiscalise", &key).await, 1, "fiscal_blocks_issue_until_set: queued once");
+    let waiting = print(&cashier, till, &signed, Some(printer)).await;
+    assert!(matches!(waiting, Err(Error::Invalid(ref m)) if m.contains("waiting for the fiscal device")), "fiscal_blocks_issue_until_set: {waiting:?}");
+    t.fiscal(&signed["id"], json!({"signature": "SIG-1", "counter": 1, "qr": "FQ-1", "text": "FISCAL No. 1", "printed_by_device": false})).await;
+    let r = print(&cashier, till, &signed, Some(printer)).await.expect("fiscal_blocks_issue_until_set: issued once answered");
+    assert_eq!(r["state"], json!("Issued"), "fiscal_blocks_issue_until_set: {r}");
+    let (lines, _) = t.page(&cashier, "GET", &format!("/paper/{}", event_of(&r)), json!({"format": "text"}), Value::Null).await.expect("the lines");
+    assert!(lines.contains("FISCAL No. 1") && lines.contains("[[qr:FQ-1]]"), "fiscal_blocks_issue_until_set: the device's answer printed: {lines}");
+    let on_device = t.sell(&cashier, at_bench(json!([pay(&card, "132")]))).await;
+    t.fiscal(&on_device["id"], json!({"printed_by_device": true})).await;
+    let r = print(&cashier, till, &on_device, Some(printer)).await.expect("printed by the device");
+    assert_eq!(r["state"], json!("Printed"), "fiscal_blocks_issue_until_set: printed by the device: {r}");
+    t.k.update(&a, "PosProfile", bench, obj(json!({"fiscal_operation": null})), None).await.expect("no fiscal device");
 }
 
 async fn plan_for(t: &T, who: &Ctx, profile: Uuid, sale: Uuid, line: &Value) -> Value {

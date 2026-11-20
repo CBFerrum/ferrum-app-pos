@@ -100,6 +100,7 @@ impl DocHook for OpeningHook {
             "take_over" => crate::limits::take_over(hc, doc, params).await.map(Some),
             "hand_back" => crate::limits::hand_back(hc, doc, params).await.map(Some),
             "print_receipt" => crate::receipt::print(hc, doc, params).await.map(Some),
+            "open_drawer" => crate::devices::open_drawer(hc, doc, params).await.map(Some),
             "reprint" => crate::receipt::reprint(hc, doc, params).await.map(Some),
             "send_receipt" => crate::receipt::send(hc, doc, params).await.map(Some),
             _ => Ok(None),

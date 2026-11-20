@@ -36,7 +36,7 @@ modules:
     label: POS
     icon: store
     order: 45
-    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval, PosHeldSale,
+    items: [PosInvoice, PosOpeningEntry, PosClosingEntry, PosCashMovement, PosStockShortfall, PosPriceDifference, PosReceiptEvent, PosProfile, ModeOfPayment, LoyaltyProgram, LoyaltyPointEntry, ItemBarcode, PosRoleLimit, PosReason, PosApproval, PosHeldSale, PosDevice, PosDrawerEvent,
             report:pos_sales_summary, report:pos_daily_sales, report:pos_payment_reconciliation, report:pos_top_items, report:pos_hourly_sales,
             report:pos_returns, report:pos_shift_report]
 
@@ -49,6 +49,8 @@ roles:
       - {entity: PosClosingEntry, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: PosCashMovement, read: true, write: true, create: true, delete: true, submit: true, if_owner: true}
       - {entity: PosHeldSale, read: true, create: true, delete: true, if_owner: true}
+      - {entity: PosReceiptEvent, read: true, if_owner: true}
+      - {entity: PosDevice, read: true}
       - {entity: PosProfile, read: true}
       - {entity: ModeOfPayment, read: true}
       - {entity: ItemBarcode, read: true}
@@ -84,6 +86,8 @@ roles:
       - {entity: PosStockShortfall, read: true, write: true, export: true}
       - {entity: PosPriceDifference, read: true, write: true, export: true}
       - {entity: PosReceiptEvent, read: true, export: true}
+      - {entity: PosDevice, read: true, write: true, create: true, delete: true}
+      - {entity: PosDrawerEvent, read: true, export: true}
       - {entity: PosProfile, read: true, write: true, create: true, delete: true}
       - {entity: ModeOfPayment, read: true, write: true, create: true, delete: true}
       - {entity: ItemBarcode, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -138,6 +142,7 @@ seed:
 personal_data:
   - {entity: PosOpeningEntry, match: user, retain: "Cash records of the session they ran"}
   - {entity: PosClosingEntry, match: user, retain: "Cash records of the session they ran"}
+  - {entity: PosDrawerEvent, match: cashier, retain: "Who opened the cash drawer, kept with the cash records"}
   - {entity: PosOpeningEntry, match: operator, retain: "Who served at a session's till, kept with its cash records"}
   - {entity: PosInvoice, match: served_by, retain: "Who served a sale, kept with the sale"}
   - {entity: PosInvoice, match: customer, erase: [buyer_name, buyer_tax_id]}
@@ -148,6 +153,32 @@ personal_data:
 # the event they answer (GET /paper/{event}).
 # values: `pos.receipt_sent` reads company (the seller's name) and currency (its code).
 documents:
+  - key: pos.receipt_text
+    label: Receipt for a receipt printer
+    entity: PosInvoice
+    output: text
+    languages:
+      en:
+        body: |-
+          [[c]][[b]]{{ links.company.company_name }}
+          {% if links.pos_profile.receipt_header %}[[c]]{{ links.pos_profile.receipt_header }}
+          {% endif %}[[c]]{% if doc.is_return %}RETURN{% elif doc.tax_invoice %}TAX INVOICE{% else %}RECEIPT{% endif %}{% if doc.reprints|int > 0 %} - COPY {{ doc.reprints }}{% endif %}
+          No. {{ doc.number }}  {{ doc.posting_date|date('short') }} {{ (doc.posting_time or '')[:5] }}
+          {% if doc.cashier %}Cashier {{ doc.cashier }}
+          {% endif %}--------
+          {% for l in doc["items"] %}{{ l.item_name }}
+            {{ l.qty|number }} x {{ l.rate|amount }} = {{ l.amount|amount }}
+          {% endfor %}--------
+          {% if doc.discount_amount|float != 0 %}Discount -{{ doc.discount_amount|amount }}
+          {% endif %}{% for t in doc.taxes or [] %}{{ t.description }} {{ t.tax_amount|amount }}
+          {% endfor %}[[b]]Total {{ doc.rounded_total|amount }}
+          {% if doc.tip_amount|float > 0 %}Tip {{ doc.tip_amount|amount }}
+          {% endif %}{% for p in doc.payments or [] %}{{ (p._titles or {}).mode_of_payment }} {{ p.amount|amount }}
+          {% endfor %}{% if doc.change_amount|float > 0 %}Change {{ doc.change_amount|amount }}
+          {% endif %}{% if doc.fiscal and doc.fiscal.text %}{{ doc.fiscal.text }}
+          {% endif %}{% if doc.fiscal and doc.fiscal.qr %}[[qr:{{ doc.fiscal.qr }}]]
+          {% endif %}{% if links.pos_profile.receipt_footer %}[[c]]{{ links.pos_profile.receipt_footer }}
+          {% endif %}[[cut]]
   - key: pos.receipt
     label: Receipt
     entity: PosInvoice

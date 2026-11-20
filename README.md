@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.20.0-ea580c?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.21.1-ea580c?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -185,7 +185,9 @@ Ferrum Point of Sale is for shops, counters and pop-ups that sell over a counter
 - **Copies and gift receipts.** A copy needs a reason where the business has some, and another person's approval where the cashier may not reprint. A gift receipt has no prices.
 - **Receipts by message.** Send a receipt to an address or number with the buyer's consent (this receipt only, or this and later ones). An opt-in puts the address on a named customer's record when it has none.
 - **A log of every receipt** (Receipt Event): the first printing, each copy and gift receipt and each message: who, when, why and by whose approval. The till asks for a receipt through its session's actions and prints the page of the event they answer.
-- **Printing is the browser's print dialog.** There is no direct printer or cash drawer support yet.
+- **A register's devices** (Register Device): its receipt printers and the cash drawer each opens, a scale, a customer display, and how the till reaches each (USB or serial from Chrome or Edge, or a second screen). The server side is in: the original goes to one printer and waits until the till says what came out (printed, not sent, not printed, or unknown until a person says), so a print that never left gives the original back; the printer gets the receipt as lines (`pos.receipt_text`, a template the workspace edits). The till's own printing to these devices is next; until then it prints through the browser's dialog.
+- **The cash drawer is recorded** (Drawer Opened): the server decides when it opens: for a sale paid in cash, once, through the printer that printed its original; without a sale (No Sale) only for someone whose limits allow it or with another person's approval, and one of the business's reasons. From the browser the drawer is recorded, not enforced: a tampered till could send the drawer's bytes itself; only through an IoT Edge gateway (to come) does nothing but a server-issued command reach the printer.
+- **A fiscal device's seam.** A register can name the operation a country's add-on offers for its fiscal device: each sale is sent to it once after it is made, and the sale's receipt waits for the device's answer and prints it (or is marked printed when the device printed it). Nothing of a country is in Point of Sale.
 
 ### 💵 Cash management
 
@@ -236,7 +238,7 @@ A cashier who reads only their own sales sees only their own figures.
 
 - **Two roles,** below. Row-level security applies to every table.
 - **Personal data.** A request exports the sessions a cashier ran and says why they are kept (they are cash records). A buyer's name and registration on their sales are erased and the sales stay; a held sale's basket and name are erased with its customer. A held sale for the walk-in customer with a typed buyer is matched by no customer: it lives until it is resumed or discarded.
-- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, serving at another's till and handing it back, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.take_over`, `.hand_back`, `.print_receipt`, `.reprint`, `.send_receipt`) and exchanges (`pos.pos_invoice.exchange`).
+- **Records for free.** Lists, forms, search, exports, audit trail, REST and MCP. The till's own server routes under `/api/app/pos/` only read (snapshot, limits, balance, returns, a receipt's page). Everything the till changes is an operation with a contract, so an agent or an API client does it as the till does: setting one's PIN (`pos.pos_profile.set_pin`), approving by PIN, serving at another's till and handing it back, the first receipt, copies and gift receipts, receipts by message (`pos.pos_opening_entry.approve`, `.take_over`, `.hand_back`, `.print_receipt`, `.open_drawer`, `.reprint`, `.send_receipt`; `pos.pos_receipt_event.settle`) and exchanges (`pos.pos_invoice.exchange`).
 - **The assistant** knows what the records mean and suggests questions such as what each register sold today and which sessions are still open.
 
 ### 🌍 Languages
@@ -282,7 +284,9 @@ Limits live on the server and are kept on the device so the till starts offline 
 | **POS Role Limit** | What a role may do without approval | Discount, price change, voids, refund, returns, drawer, reprint |
 | **POS Reason** | Reasons the till offers | For voids, returns, no sale and reprints |
 | **POS Approval** | One approval by PIN | Approver, action, amount, reason, limits, expiry |
-| **Receipt Event** | A first receipt, a reprint, a gift receipt or a message | Who, when, why, consent |
+| **Receipt Event** | A first receipt, a reprint, a gift receipt or a message | Who, when, why, consent, printer, state (Issued, Printed, Not Printed, Unknown) |
+| **Register Device** | A printer, scale or customer display at a register | Kind, how the till reaches it, columns, cash drawer |
+| **Drawer Opened** | Each opening of the cash drawer | Session, kind (Sale, No Sale), sale, who, why, approval, printer |
 | **Held Sale** | A sale set aside at a till, until it is resumed or discarded | Register, held by, customer, when, total, basket |
 | **Stock Shortfall** | Stock sold offline beyond the warehouse | Item, quantity, sale, status (Open, Put Right), resolution |
 | **Price Difference** | An offline sale priced differently | The three totals, review |
@@ -306,7 +310,7 @@ Limits live on the server and are kept on the device so the till starts offline 
 | **Webhooks and the outbox** | Record events from the platform | An endpoint |
 | **REST and MCP** | Every record and action, within each person's permissions | An API token |
 
-Card terminals, UPI payment requests, receipt printers, cash drawers and scales are not connected yet: a card or UPI payment is a method with a reference the cashier types.
+Card terminals and UPI payment requests are not connected: a card or UPI payment is a method with a reference the cashier types. Receipt printers, cash drawers, scales and customer displays are described per register; the till reaching them from the browser is next.
 
 ## 📊 How it compares
 
@@ -373,6 +377,8 @@ Leaders: Square POS, Shopify POS, Lightspeed Retail and Odoo POS (open source).
 ### ✅ Recently shipped
 
 - [x] **0.16.0:** tips typed at the till: the pay window adds the tip to what is to pay, online and offline.
+- [x] **0.21.1:** a report groups, browses and shows an item's group only for someone who may read it.
+- [x] **0.21.0:** a register's devices, the original issued to one printer and settled by what came out, the cash drawer recorded (No Sale with the right or an approval), and a fiscal device's seam.
 - [x] **0.20.0:** the till's lock screen: whoever serves next unlocks it with their PIN, and the header says who serves.
 - [x] **0.19.0:** someone else serves at a cashier's till by their PIN: the session names them, their online sales say so and are held to the narrower of the two people's limits; the cashier takes the till back with their own PIN.
 - [x] **0.18.0:** a template's variants as one tile with a chooser, where ERP's Stock Operations is installed, online and offline.

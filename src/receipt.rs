@@ -19,6 +19,8 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 const RECEIPT: &str = "pos.receipt";
+/// The receipt as lines for a receipt printer (the till encodes them).
+const RECEIPT_TEXT: &str = "pos.receipt_text";
 const GIFT: &str = "pos.receipt_gift";
 const MESSAGE: &str = "pos.receipt_sent";
 
@@ -84,12 +86,23 @@ async fn record(hc: &mut HookCtx<'_>, doc: &Doc, more: Value) -> Result<Value> {
     Ok(made.get("id").cloned().unwrap_or(Value::Null))
 }
 
-/// `print_receipt` of the caller's open session: the sale's first receipt, once. The cashier who made the sale (or a manager)
-/// has it; a second ask is a copy, which is `reprint`.
+/// `print_receipt` of the caller's open session: the sale's original receipt, once (the sale's row is held). The cashier who
+/// made the sale (or a manager) has it; a second ask is a copy, which is `reprint`. Through the browser's dialog it is
+/// printed now; to a register's printer (`device`) it is issued until the till settles what came out (`settle`), and a
+/// sale paid in cash opens that printer's drawer once. A register with a fiscal device prints the device's answer, so
+/// the receipt waits for it; a device that printed it itself makes it printed.
 pub(crate) async fn print(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -> Result<Value> {
-    let (_, doc, sale) = start(hc, session, params).await?;
+    let (reg, doc, sale) = start(hc, session, params).await?;
     if !own_sale(hc.ctx, &doc) && !is_manager(hc.ctx) {
         return Err(Error::Forbidden("the receipt is printed at the till that made the sale; another asks for a copy".into()));
+    }
+    let device = match text(params, "device") {
+        Some(given) => Some(crate::devices::printer(hc, &reg, given).await?),
+        None => None,
+    };
+    let fiscal = doc.get("fiscal").filter(|f| f.is_object());
+    if s(&reg.doc, "fiscal_operation").is_some() && fiscal.is_none() {
+        return Err(Error::invalid("waiting for the fiscal device: the receipt prints once it has answered"));
     }
     if b(&doc, "receipt_printed") {
         return Err(Error::invalid("this receipt was printed already: ask for a copy"));
@@ -97,8 +110,80 @@ pub(crate) async fn print(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -
     let mut mark = Doc::new();
     mark.insert("receipt_printed".into(), json!(true));
     hc.kernel.set_values_tx(&elevated(hc.ctx), hc.tx, "PosInvoice", sale, mark).await?;
-    let event = record(hc, &doc, json!({"kind": "Original"})).await?;
-    Ok(json!({"event": event, "kind": "Original"}))
+    let by_device = fiscal.is_some_and(|f| f.get("printed_by_device") == Some(&Value::Bool(true)));
+    let state = if device.is_some() && !by_device { "Issued" } else { "Printed" };
+    let event = record(hc, &doc, json!({"kind": "Original", "state": state, "device": device.as_ref().map(|p| p.id)})).await?;
+    let drawer = match &device {
+        Some(p) if p.drawer && crate::devices::cash_taken(&doc) => {
+            crate::devices::opened_for_sale(hc, &doc, id(session, "id").unwrap_or_default(), p.id, &event).await?
+        }
+        _ => false,
+    };
+    Ok(json!({"event": event, "kind": "Original", "state": state, "drawer": drawer}))
+}
+
+/// The receipt event's actions (`settle`); the event itself is written by the engine only (`masters::EngineOnly`).
+pub struct ReceiptEventHook;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::DocHook for ReceiptEventHook {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        match name {
+            "settle" => settle(hc, doc, params).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// `settle` of an original issued to a printer: what came out, said by the till or, for one in doubt, by a person. Printed;
+/// Unknown until a person says; or, when nothing left the till (`not_sent`) or it did not print (`not_printed`), the sale
+/// has its original back under the sale's own lock, and for `not_sent` the drawer's opening goes too (no byte was sent).
+/// The cashier who issued it or a manager settles it, from Issued or Unknown only, the event's row held.
+async fn settle(hc: &mut HookCtx<'_>, event: &Doc, params: &Value) -> Result<Value> {
+    let ctx = hc.ctx;
+    if !s(event, "cashier").is_some_and(|c| c.eq_ignore_ascii_case(&ctx.email)) && !is_manager(ctx) {
+        return Err(Error::Forbidden("a receipt is settled by the cashier who printed it or a manager".into()));
+    }
+    let eid = id(event, "id").ok_or_else(|| Error::internal("an event without an id"))?;
+    let now: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("select kind, state from e_pos_receipt_event where tenant_id = $1 and id = $2 for update")
+            .bind(ctx.tenant)
+            .bind(eid)
+            .fetch_optional(&mut **hc.tx)
+            .await?;
+    let Some((Some(kind), state)) = now else { return Err(Error::NotFound("receipt".into())) };
+    if kind != "Original" || !matches!(state.as_deref(), Some("Issued" | "Unknown")) {
+        return Err(Error::invalid("This receipt is settled already"));
+    }
+    let outcome = text(params, "outcome").unwrap_or_default();
+    let state = match outcome {
+        "printed" => "Printed",
+        "unknown" => "Unknown",
+        "not_sent" | "not_printed" => {
+            let sale = id(event, "pos_invoice").ok_or_else(|| Error::internal("a receipt without its sale"))?;
+            // The sale's lock, as issuing takes it: its original goes back to be printed again.
+            hc.kernel.get_tx(&sys(ctx), hc.tx, "PosInvoice", sale, true).await?;
+            let mut back = Doc::new();
+            back.insert("receipt_printed".into(), json!(false));
+            hc.kernel.set_values_tx(&elevated(ctx), hc.tx, "PosInvoice", sale, back).await?;
+            if outcome == "not_sent" {
+                sqlx::query("delete from e_pos_drawer_event where tenant_id = $1 and receipt_event = $2")
+                    .bind(ctx.tenant)
+                    .bind(eid)
+                    .execute(&mut **hc.tx)
+                    .await?;
+            }
+            "Not Printed"
+        }
+        _ => return Err(Error::field("outcome", "is printed, not_sent, unknown or not_printed")),
+    };
+    let mut v = Doc::new();
+    v.insert("state".into(), json!(state));
+    if state != "Unknown" {
+        v.insert("settled_by".into(), json!(ctx.email.to_lowercase()));
+    }
+    hc.kernel.set_values_tx(&elevated(ctx), hc.tx, "PosReceiptEvent", eid, v).await?;
+    Ok(json!({"state": state, "original": state == "Not Printed"}))
 }
 
 /// `GET /paper/{event}?language=&format=pdf`: the page of a receipt event (the first receipt, a copy, a gift receipt), for the
@@ -106,9 +191,11 @@ pub(crate) async fn print(hc: &mut HookCtx<'_>, session: &Doc, params: &Value) -
 pub async fn paper(k: &Kernel, ctx: &Ctx, req: &SiteRequest, event: Uuid) -> Result<SiteResponse> {
     let nothing = || Error::NotFound("page".into());
     let ev = k.get(&sys(ctx), "PosReceiptEvent", event, false).await.map_err(|_| nothing())?;
-    let key = match s(&ev, "kind") {
-        Some("Original" | "Copy") => RECEIPT,
-        Some("Gift") => GIFT,
+    // `format=text`: the lines a receipt printer prints (the till encodes them).
+    let key = match (s(&ev, "kind"), param(req, "format")) {
+        (Some("Original" | "Copy"), Some("text")) => RECEIPT_TEXT,
+        (Some("Original" | "Copy"), _) => RECEIPT,
+        (Some("Gift"), _) => GIFT,
         _ => return Err(nothing()),
     };
     let asked = s(&ev, "cashier").is_some_and(|c| c.eq_ignore_ascii_case(&ctx.email));
@@ -119,22 +206,20 @@ pub async fn paper(k: &Kernel, ctx: &Ctx, req: &SiteRequest, event: Uuid) -> Res
     render(k, ctx, key, sale, param(req, "language"), param(req, "format") == Some("pdf")).await
 }
 
-/// What reprints are given, as the business has them: when it has reasons, one of them is chosen.
-async fn reason_of(tx: &mut ferrum_kernel::Tx, tenant: Uuid, given: Option<&str>) -> Result<Option<String>> {
+/// Why something is done, as the business has its reasons for it (`applies_to`): when it has some, one of them is chosen
+/// (`ask` says so otherwise).
+pub(crate) async fn reason_of(tx: &mut ferrum_kernel::Tx, tenant: Uuid, applies_to: &str, given: Option<&str>, ask: &str) -> Result<Option<String>> {
     let reasons: Vec<(Uuid, String)> =
-        sqlx::query_as("select id, reason from e_pos_reason where tenant_id = $1 and applies_to = 'Reprint' and not coalesce(disabled, false)")
+        sqlx::query_as("select id, reason from e_pos_reason where tenant_id = $1 and applies_to = $2 and not coalesce(disabled, false)")
             .bind(tenant)
+            .bind(applies_to)
             .fetch_all(&mut **tx)
             .await?;
     if reasons.is_empty() {
         return Ok(given.map(str::to_string));
     }
-    let given = given.ok_or_else(|| Error::field("reason", "choose one of the business's reasons for a copy"))?;
-    reasons
-        .into_iter()
-        .find(|(i, r)| i.to_string() == given || r.eq_ignore_ascii_case(given))
-        .map(|(_, r)| Some(r))
-        .ok_or_else(|| Error::field("reason", "choose one of the business's reasons for a copy"))
+    let given = given.ok_or_else(|| Error::field("reason", ask))?;
+    reasons.into_iter().find(|(i, r)| i.to_string() == given || r.eq_ignore_ascii_case(given)).map(|(_, r)| Some(r)).ok_or_else(|| Error::field("reason", ask))
 }
 
 /// `reprint` of the caller's open session: a copy of the receipt (marked and counted) or a gift receipt (no prices), by someone
@@ -162,7 +247,7 @@ pub(crate) async fn reprint(hc: &mut HookCtx<'_>, session: &Doc, params: &Value)
         // Used once: the next copy asks again.
         crate::limits::use_approvals(hc.tx, ctx.tenant, &[approval.unwrap_or_default()], event).await?;
     }
-    let reason = reason_of(hc.tx, ctx.tenant, text(params, "reason")).await?;
+    let reason = reason_of(hc.tx, ctx.tenant, "Reprint", text(params, "reason"), "choose one of the business's reasons for a copy").await?;
     let copies = doc.get("reprints").and_then(Value::as_i64).unwrap_or(0) + i64::from(!gift);
     if !gift {
         let mut count = Doc::new();

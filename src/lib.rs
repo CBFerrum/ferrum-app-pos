@@ -8,6 +8,7 @@
 
 mod buyer;
 mod closing;
+mod devices;
 mod invoice;
 mod keys;
 mod limits;
@@ -51,6 +52,10 @@ pub fn register(h: &mut HookRegistry) {
         .register("PosStockShortfall", Arc::new(shortfall::ShortfallHook))
         .register("PosPriceDifference", Arc::new(shortfall::DifferenceHook))
         .register("PosReceiptEvent", Arc::new(masters::EngineOnly))
+        .register("PosReceiptEvent", Arc::new(receipt::ReceiptEventHook))
+        .register("PosDevice", Arc::new(devices::DeviceHook))
+        .register("PosDrawerEvent", Arc::new(masters::EngineOnly))
+        .add_job_handler(Arc::new(devices::Fiscalise))
         .register("SalesInvoice", Arc::new(closing::ConsolidatedGuard))
         .add_site("pos", site);
 }

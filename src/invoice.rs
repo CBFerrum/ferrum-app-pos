@@ -325,6 +325,8 @@ impl DocHook for PosInvoiceHook {
             return Err(e);
         }
         record_difference(hc, doc).await?;
+        // A register with a fiscal device: the sale goes to it once, after it commits; its receipt waits for the answer.
+        crate::devices::queue_fiscal(hc, &profile, iid).await?;
         if let Some(before) = before {
             record_shortfalls(hc, doc, &co, &before).await?;
         }

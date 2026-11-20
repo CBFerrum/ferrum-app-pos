@@ -786,6 +786,55 @@ async fn scenario() {
     assert_eq!(rets["totals"]["count"], json!(3), "the voided return does not count");
     let mine = t.report(&other, "pos_sales_summary", &p).await;
     assert_eq!(mine["rows"].as_array().unwrap().len(), 0, "a cashier sees only their own takings");
+    // K0-7, a report's groupings and columns: someone who runs the reports but whose rule hides an item's group cannot
+    // group or browse by it, gets the item grouping by default, and sees no Item Group column or value.
+    let rule = |v: Value| serde_json::from_value::<ferrum_meta::PermissionDef>(v).unwrap();
+    for r in [
+        json!({"entity": "PosInvoice", "read": true}),
+        json!({"entity": "Company", "read": true}),
+        json!({"entity": "PosProfile", "read": true}),
+        json!({"entity": "Item", "read": true, "hide": ["item_group"]}),
+    ] {
+        t.k.set_role_permission(&t.admin, "Shop Analyst", &rule(r)).await.expect("the analyst's rules");
+    }
+    let analyst = t.user("analyst@shop.test", "Shop Analyst").await;
+    let run = |who: &Ctx, name: &'static str, params: Vec<(&'static str, String)>| {
+        let (k, who) = (t.k.clone(), who.clone());
+        async move {
+            let p: HashMap<String, String> = params.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            ferrum_domain::reports::run(&k, &who, name, &p).await
+        }
+    };
+    // a_report_refuses_grouping_by_a_field_the_caller_cannot_read: their totals by group would tell the groups.
+    let by_group = vec![("company", cid.to_string()), ("group_by", "Item Group".to_string())];
+    let refused = run(&analyst, "pos_daily_sales", by_group.clone()).await;
+    assert!(
+        matches!(refused, Err(Error::Forbidden(ref m)) if m.contains("item_group")),
+        "a_report_refuses_grouping_by_a_field_the_caller_cannot_read: {refused:?}"
+    );
+    run(&manager, "pos_daily_sales", by_group).await.expect("a manager reads an item's group, and groups by it");
+    let browse = vec![("pos_profile", counter1.to_string()), ("item_group", products["id"].as_str().unwrap().to_string())];
+    let refused = run(&analyst, "pos_item_lookup", browse).await;
+    assert!(
+        matches!(refused, Err(Error::Forbidden(ref m)) if m.contains("item_group")),
+        "a_report_refuses_grouping_by_a_field_the_caller_cannot_read: browsing: {refused:?}"
+    );
+    // a_report_s_default_falls_back_to_a_readable_grouping, a_report_leaves_out_columns_the_caller_cannot_read: by item,
+    // the same sales, no group column and no group in a row.
+    let theirs = run(&analyst, "pos_daily_sales", vec![("company", cid.to_string())]).await.expect("by item");
+    let names: Vec<&str> = theirs["columns"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
+    assert!(names.contains(&"item_code") && !names.contains(&"item_group"), "a_report_leaves_out_columns_the_caller_cannot_read: {names:?}");
+    assert!(theirs["rows"].as_array().unwrap().iter().all(|r| r.get("item_group").is_none()), "a_report_leaves_out_columns_the_caller_cannot_read: {theirs}");
+    assert_eq!(
+        dec(&theirs["totals"]["net_amount"]),
+        dec(&daily["totals"]["net_amount"]),
+        "a_report_s_default_falls_back_to_a_readable_grouping: the same sales"
+    );
+    let looked = run(&analyst, "pos_item_lookup", vec![("pos_profile", counter1.to_string()), ("code", "WIDGET".to_string())]).await.expect("a scan");
+    assert!(
+        looked["rows"].as_array().unwrap().iter().all(|r| r["item_group"].is_null()),
+        "a_report_leaves_out_columns_the_caller_cannot_read: a scan: {looked}"
+    );
 
     // ───────────── loyalty expiry ─────────────
     let before = t.count("select coalesce(sum(points), 0)::bigint from e_loyalty_point_entry where tenant_id = $1 and customer = $2", Some(alice)).await;
